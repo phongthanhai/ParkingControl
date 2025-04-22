@@ -1,10 +1,26 @@
 import os
+import re
 
 # Camera Settings
 CAMERA_SOURCES = {
-    'entry': 0,  # /dev/video0
-    'exit': 2    # /dev/video2
+    'entry': 0, 
+    'exit': 2
 }
+
+# GPIO Settings
+GPIO_PINS = {
+    'entry': 17,
+    'exit': 27
+}
+
+# Timing Settings
+AUTO_CLOSE_DELAY = 5  # seconds
+OCR_TIMEOUT = 30  # seconds
+
+# Validation Settings
+VIETNAMESE_PLATE_PATTERN = re.compile(r"^\d{2}[A-Za-z]-?\d{4,5}$")
+
+# Hardware Settings
 CAMERA_RESOLUTION = (640, 480)
 CAMERA_FPS = 10
 
@@ -17,6 +33,7 @@ CONFIDENCE_THRESHOLD = 0.25
 PLATE_RECOGNIZER_API_KEY = "api_token_here"
 PLATE_RECOGNIZER_URL = "https://api.platerecognizer.com/v1/plate-reader"
 OCR_RATE_LIMIT = 5  # seconds between API calls
+SERVER_URL = "http://backend-endpoint-here/logs"
 
 # UI Settings
 UI_REFRESH_RATE = 100  # ms

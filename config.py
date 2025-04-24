@@ -18,7 +18,7 @@ AUTO_CLOSE_DELAY = 5  # seconds
 OCR_TIMEOUT = 30  # seconds
 
 # Validation Settings
-VIETNAMESE_PLATE_PATTERN = re.compile(r"^\d{2}[A-Za-z]-?\d{4,5}$")
+VIETNAMESE_PLATE_PATTERN = re.compile(r"^\d{2}[A-Za-z]\d{4,5}$")
 
 # Hardware Settings
 CAMERA_RESOLUTION = (640, 480)

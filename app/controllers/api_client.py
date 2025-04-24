@@ -13,7 +13,7 @@ class PlateRecognizer(QObject):
         self.last_call = 0
 
     def process(self, image):
-        """Returns plate text or None"""
+        """Returns (plate text, confidence score) tuple or None"""
         try:
             if time.time() - self.last_call < OCR_RATE_LIMIT:
                 return None
@@ -36,7 +36,8 @@ class PlateRecognizer(QObject):
                 results = response.json()
                 if results['results']:
                     self.last_call = time.time()
-                    return results['results'][0]['plate']
+                    plate_data = results['results'][0]
+                    return (plate_data['plate'], plate_data['score'])
         except requests.exceptions.RequestException as e:
             self.error_signal.emit(f"Connection error: {str(e)}")
         except Exception as e:

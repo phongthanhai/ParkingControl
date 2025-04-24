@@ -143,6 +143,7 @@ class ControlScreen(QWidget):
         # Open gate
         if GPIO_PINS.get(lane):
             GPIO.output(GPIO_PINS[lane], GPIO.HIGH)
+            print(f"[GPIO] Gate for '{lane}' lane opened (GPIO pin {GPIO_PINS[lane]})")
         
         # Set timer to close gate
         timer = QTimer(self)
@@ -154,6 +155,8 @@ class ControlScreen(QWidget):
         # Close gate
         if GPIO_PINS.get(lane):
             GPIO.output(GPIO_PINS[lane], GPIO.LOW)
+            print(f"[GPIO] Gate for '{lane}' lane closed (GPIO pin {GPIO_PINS[lane]})")
+
         
         # Reset UI
         widget = self.lane_widgets[lane]

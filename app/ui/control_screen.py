@@ -1,38 +1,38 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                            QFrame, QLineEdit, QPushButton, QSizePolicy)
+                            QFrame, QLineEdit, QPushButton)
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 import cv2
 import RPi.GPIO as GPIO
 import time
-from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE_PATTERN
+from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY
 from app.controllers.lane_controller import LaneWorker
 
 class LaneWidget(QWidget):
     def __init__(self, title):
         super().__init__()
+        # Initialize all UI elements
         self.title_label = QLabel(title)
         self.image_label = QLabel()
-        self.plate_label = QLabel("Scanning...")
+        self.plate_label = QLabel("Initializing...")
         self.manual_input = QLineEdit()
         self.submit_btn = QPushButton("Submit")
         self._setup_ui()
-    
+
     def _setup_ui(self):
         layout = QVBoxLayout()
-        
         # Title
         self.title_label.setAlignment(Qt.AlignCenter)
-        self.title_label.setStyleSheet("font-weight: bold; font-size: 18px;")
+        self.title_label.setStyleSheet("font-weight: bold; font-size: 18px; color: #2c3e50;")
         
         # Image display
         self.image_label.setFixedSize(640, 480)
         self.image_label.setAlignment(Qt.AlignCenter)
-        self.image_label.setStyleSheet("border: 2px solid #ccc;")
+        self.image_label.setStyleSheet("border: 2px solid #ccc; background: black;")
         
         # Plate text
         self.plate_label.setAlignment(Qt.AlignCenter)
-        self.plate_label.setStyleSheet("font-size: 16px;")
+        self.plate_label.setStyleSheet("font-size: 16px; color: #2c3e50;")
         
         # Manual input
         self.manual_input.setPlaceholderText("Enter plate manually")
@@ -52,8 +52,8 @@ class LaneWidget(QWidget):
 
 class ControlScreen(QWidget):
     log_signal = pyqtSignal(dict)
-    manual_submit_signal = pyqtSignal(str, str)  # lane, plate
-    
+    manual_submit_signal = pyqtSignal(str, str)
+
     def __init__(self):
         super().__init__()
         self.lane_widgets = {}
@@ -83,7 +83,7 @@ class ControlScreen(QWidget):
             main_layout.addWidget(entry_widget)
             
         if CAMERA_SOURCES.get('exit') is not None:
-            exit_widget = LaneWidget("Exit Lane") 
+            exit_widget = LaneWidget("Exit Lane")
             exit_widget.submit_btn.clicked.connect(
                 lambda: self._handle_manual_submit('exit')
             )
@@ -95,95 +95,105 @@ class ControlScreen(QWidget):
     def _setup_camera_workers(self):
         for lane in ['entry', 'exit']:
             if CAMERA_SOURCES.get(lane) is not None:
-                worker = LaneWorker(lane)
-                worker.detection_signal.connect(self._handle_detection)
-                worker.status_signal.connect(self._handle_worker_status)
-                worker.error_signal.connect(self._handle_worker_error)
-                worker.start()
-                self.lane_workers[lane] = worker
+                try:
+                    worker = LaneWorker(lane)
+                    worker.detection_signal.connect(self._handle_detection)
+                    worker.status_signal.connect(self._handle_status)
+                    worker.error_signal.connect(self._handle_error)
+                    worker.start()
+                    self.lane_workers[lane] = worker
+                except Exception as e:
+                    self._show_error(lane, f"Worker Error: {str(e)}")
 
-    def _handle_detection(self, lane, frame, plate_text, confidence, is_valid):
-        widget = self.lane_widgets[lane]
-        
-        # Convert frame to QImage
-        rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_image.shape
-        q_img = QImage(rgb_image.data, w, h, QImage.Format_RGB888)
-        
-        # Update UI
-        widget.image_label.setPixmap(QPixmap.fromImage(q_img))
-        widget.plate_label.setText(plate_text or "Scanning...")
-        
-        if not is_valid and plate_text:
-            widget.manual_input.setVisible(True)
-            widget.submit_btn.setVisible(True)
+    def _handle_detection(self, lane, frame, text, confidence, valid):
+        widget = self.lane_widgets.get(lane)
+        if not widget:
+            return
 
-    def _handle_worker_status(self, lane, status, plate_data):
+        try:
+            # Convert frame to QImage
+            rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb_image.shape
+            bytes_per_line = ch * w
+            q_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            
+            # Update UI
+            widget.image_label.setPixmap(QPixmap.fromImage(q_img))
+            widget.plate_label.setText(text)
+            
+            # Show manual input if needed
+            if text.startswith("Invalid"):
+                widget.manual_input.setVisible(True)
+                widget.submit_btn.setVisible(True)
+        except Exception as e:
+            self._show_error(lane, f"UI Error: {str(e)}")
+
+    def _handle_status(self, lane, status, data):
         if status == "success":
-            self._trigger_gate_open(lane)
-            self.log_signal.emit({
-                "lane": lane,
-                "plate": plate_data['text'],
-                "confidence": plate_data['confidence'],
-                "timestamp": time.time(),
-                "status": "automatic"
-            })
+            self._activate_gate(lane)
+            self._log_entry(lane, data, "auto")
         elif status == "requires_manual":
-            self.lane_widgets[lane].plate_label.setText("Requires manual input")
+            self.lane_widgets[lane].plate_label.setText("Manual input required")
 
-    def _handle_worker_error(self, lane, error):
-        widget = self.lane_widgets[lane]
-        widget.image_label.setText("Camera Error")
-        widget.plate_label.setText(error)
-        if lane in self.lane_workers:
-            self.lane_workers[lane].stop()
-            del self.lane_workers[lane]
-
-    def _trigger_gate_open(self, lane):
-        # Open gate
+    def _activate_gate(self, lane):
+        # Activate GPIO
         if GPIO_PINS.get(lane):
             GPIO.output(GPIO_PINS[lane], GPIO.HIGH)
-            print(f"[GPIO] Gate for '{lane}' lane opened (GPIO pin {GPIO_PINS[lane]})")
         
-        # Set timer to close gate
+        # Set reset timer
         timer = QTimer(self)
         timer.timeout.connect(lambda: self._reset_lane(lane))
         timer.start(AUTO_CLOSE_DELAY * 1000)
         self.active_timers[lane] = timer
 
     def _reset_lane(self, lane):
-        # Close gate
+        # Reset GPIO
         if GPIO_PINS.get(lane):
             GPIO.output(GPIO_PINS[lane], GPIO.LOW)
-            print(f"[GPIO] Gate for '{lane}' lane closed (GPIO pin {GPIO_PINS[lane]})")
-
         
         # Reset UI
-        widget = self.lane_widgets[lane]
-        widget.manual_input.setVisible(False)
-        widget.submit_btn.setVisible(False)
-        widget.plate_label.setText("Scanning...")
+        widget = self.lane_widgets.get(lane)
+        if widget:
+            widget.manual_input.setVisible(False)
+            widget.submit_btn.setVisible(False)
+            widget.plate_label.setText("Scanning...")
         
-        # Restart processing
+        # Resume processing
         if lane in self.lane_workers:
             self.lane_workers[lane].resume_processing()
 
+    def _handle_error(self, lane, error):
+        widget = self.lane_widgets.get(lane)
+        if widget:
+            widget.image_label.setText("Camera Error")
+            widget.plate_label.setText(error)
+        if lane in self.lane_workers:
+            self.lane_workers[lane].stop()
+
     def _handle_manual_submit(self, lane):
-        widget = self.lane_widgets[lane]
+        widget = self.lane_widgets.get(lane)
+        if not widget:
+            return
+            
         plate_text = widget.manual_input.text()
-        
+        if not plate_text:
+            widget.plate_label.setText("Please enter plate")
+            return
+            
         if VIETNAMESE_PLATE_PATTERN.match(plate_text):
-            self.manual_submit_signal.emit(lane, plate_text)
-            self._trigger_gate_open(lane)
-            self.log_signal.emit({
-                "lane": lane,
-                "plate": plate_text,
-                "confidence": None,
-                "timestamp": time.time(),
-                "status": "manual"
-            })
+            self._activate_gate(lane)
+            self._log_entry(lane, {"text": plate_text}, "manual")
         else:
-            widget.plate_label.setText("Invalid plate format")
+            widget.plate_label.setText("Invalid format")
+
+    def _log_entry(self, lane, data, entry_type):
+        self.log_signal.emit({
+            "lane": lane,
+            "plate": data.get('text', 'N/A'),
+            "confidence": data.get('confidence', 0.0),
+            "timestamp": time.time(),
+            "type": entry_type
+        })
 
     def closeEvent(self, event):
         for worker in self.lane_workers.values():

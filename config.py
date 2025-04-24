@@ -4,7 +4,7 @@ import re
 # Camera Settings
 CAMERA_SOURCES = {
     'entry': 0, 
-    'exit': 2
+    'exit': 3
 }
 
 # GPIO Settings
@@ -30,7 +30,7 @@ INPUT_SIZE = (320, 320)
 CONFIDENCE_THRESHOLD = 0.25
 
 # API Settings
-PLATE_RECOGNIZER_API_KEY = "api_token_here"
+PLATE_RECOGNIZER_API_KEY = "48c3a3ab6f959e54b8019143ce087201fd32833c"
 PLATE_RECOGNIZER_URL = "https://api.platerecognizer.com/v1/plate-reader"
 OCR_RATE_LIMIT = 5  # seconds between API calls
 SERVER_URL = "http://backend-endpoint-here/logs"

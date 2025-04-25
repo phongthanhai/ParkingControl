@@ -78,26 +78,26 @@ class LoginScreen(QWidget):
         main_layout.addStretch(1)
         
         self.setLayout(main_layout)
+
+        self.setAutoFillBackground(True)
         
         # Set background image
         self.set_background_image("background.jpg")  # Update path as needed
 
     def set_background_image(self, image_path):
         try:
-            # Set background image using stylesheet
+            # Set background for the main window using QPalette
+            background = QPixmap(image_path)
+            palette = QPalette()
+            palette.setBrush(QPalette.Background, QBrush(background))
+            self.setPalette(palette)
+            
+            # Style the login container and controls with supported properties
             self.setStyleSheet(f"""
-                QWidget {{
-                    background-image: url({image_path});
-                    background-position: center;
-                    background-repeat: no-repeat;
-                    background-attachment: fixed;
-                    background-size: cover;
-                }}
-                
                 #loginContainer {{
                     background-color: white;
                     border-radius: 8px;
-                    box-shadow: 0px 0px 15px rgba(0, 0, 0, 0.2);
+                    border: 1px solid #cccccc;
                 }}
                 
                 #title {{

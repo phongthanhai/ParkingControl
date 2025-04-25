@@ -217,6 +217,26 @@ class ControlScreen(QWidget):
         except Exception as e:
             self._show_error(lane, f"UI Update Error: {str(e)}")
 
+    # def _handle_status(self, lane, status, data):
+    #     widget = self.lane_widgets.get(lane)
+    #     if not widget:
+    #         return
+            
+    #     try:
+    #         if status == "success":
+    #             self._activate_gate(lane)
+    #             self._log_entry(lane, data, "auto")
+    #             widget.status_label.setText("Access granted - automatic")
+    #             widget.status_label.setStyleSheet("font-size: 14px; color: #28a745;")
+    #         elif status == "requires_manual":
+    #             widget.plate_label.setText("Manual input required")
+    #             widget.manual_input.setVisible(True)
+    #             widget.submit_btn.setVisible(True)
+    #             widget.status_label.setText("Waiting for manual input")
+    #             widget.status_label.setStyleSheet("font-size: 14px; color: #ffc107;")
+    #     except Exception as e:
+    #         print(f"Status handling error: {str(e)}")
+
     def _handle_status(self, lane, status, data):
         widget = self.lane_widgets.get(lane)
         if not widget:
@@ -228,20 +248,81 @@ class ControlScreen(QWidget):
                 self._log_entry(lane, data, "auto")
                 widget.status_label.setText("Access granted - automatic")
                 widget.status_label.setStyleSheet("font-size: 14px; color: #28a745;")
+                print(f"GPIO {GPIO_PINS[lane]} activated for {lane} lane")
             elif status == "requires_manual":
-                widget.plate_label.setText("Manual input required")
+                reason = data.get('reason', 'unknown')
+                widget.plate_label.setText(f"Manual input required: {reason}")
+                
+                # Pre-populate with detected text if available
+                if 'text' in data:
+                    widget.manual_input.setText(data['text'])
+                    widget.manual_input.selectAll()  # Select all for easy editing
+                
                 widget.manual_input.setVisible(True)
                 widget.submit_btn.setVisible(True)
-                widget.status_label.setText("Waiting for manual input")
+                
+                if reason == "API timeout":
+                    widget.status_label.setText("API timeout - Enter plate manually")
+                elif reason == "low confidence":
+                    conf = data.get('confidence', 0)
+                    widget.status_label.setText(f"Low confidence ({conf:.2f}) - Verify plate")
+                elif reason == "invalid format":
+                    widget.status_label.setText("Invalid plate format - Enter correct plate")
+                else:
+                    widget.status_label.setText("Waiting for manual input")
+                    
                 widget.status_label.setStyleSheet("font-size: 14px; color: #ffc107;")
         except Exception as e:
             print(f"Status handling error: {str(e)}")
+
+    # def _activate_gate(self, lane):
+    #     try:
+    #         # Activate GPIO
+    #         if GPIO_PINS.get(lane):
+    #             GPIO.output(GPIO_PINS[lane], GPIO.HIGH)
+    #             print(f"")
+    #         # Set reset timer - cancel existing timer if present
+    #         if lane in self.active_timers and self.active_timers[lane].isActive():
+    #             self.active_timers[lane].stop()
+            
+    #         timer = QTimer(self)
+    #         timer.timeout.connect(lambda: self._reset_lane(lane))
+    #         timer.setSingleShot(True)
+    #         timer.start(AUTO_CLOSE_DELAY * 1000)
+    #         self.active_timers[lane] = timer
+    #     except Exception as e:
+    #         self._show_error(lane, f"Gate Control Error: {str(e)}")
+
+    
+
+    # def _reset_lane(self, lane):
+    #     try:
+    #         # Reset GPIO
+    #         if GPIO_PINS.get(lane):
+    #             GPIO.output(GPIO_PINS[lane], GPIO.LOW)
+            
+    #         # Reset UI
+    #         widget = self.lane_widgets.get(lane)
+    #         if widget:
+    #             widget.manual_input.clear()
+    #             widget.manual_input.setVisible(False)
+    #             widget.submit_btn.setVisible(False)
+    #             widget.plate_label.setText("Scanning...")
+    #             widget.status_label.setText("")
+            
+    #         # Resume processing safely
+    #         with self.worker_guard:
+    #             if lane in self.lane_workers and self.lane_workers[lane].isRunning():
+    #                 self.lane_workers[lane].resume_processing()
+    #     except Exception as e:
+    #         self._show_error(lane, f"Reset Error: {str(e)}")
 
     def _activate_gate(self, lane):
         try:
             # Activate GPIO
             if GPIO_PINS.get(lane):
                 GPIO.output(GPIO_PINS[lane], GPIO.HIGH)
+                print(f"GPIO {GPIO_PINS[lane]} set HIGH for {lane} lane")
             
             # Set reset timer - cancel existing timer if present
             if lane in self.active_timers and self.active_timers[lane].isActive():
@@ -252,6 +333,7 @@ class ControlScreen(QWidget):
             timer.setSingleShot(True)
             timer.start(AUTO_CLOSE_DELAY * 1000)
             self.active_timers[lane] = timer
+            print(f"Auto-close timer started for {lane} lane: {AUTO_CLOSE_DELAY} seconds")
         except Exception as e:
             self._show_error(lane, f"Gate Control Error: {str(e)}")
 
@@ -260,6 +342,7 @@ class ControlScreen(QWidget):
             # Reset GPIO
             if GPIO_PINS.get(lane):
                 GPIO.output(GPIO_PINS[lane], GPIO.LOW)
+                print(f"GPIO {GPIO_PINS[lane]} set LOW for {lane} lane")
             
             # Reset UI
             widget = self.lane_widgets.get(lane)
@@ -269,6 +352,7 @@ class ControlScreen(QWidget):
                 widget.submit_btn.setVisible(False)
                 widget.plate_label.setText("Scanning...")
                 widget.status_label.setText("")
+                print(f"{lane} lane UI reset - resuming detection")
             
             # Resume processing safely
             with self.worker_guard:
@@ -322,15 +406,29 @@ class ControlScreen(QWidget):
             widget.status_label.setText("Invalid format - Vietnamese plates only")
             widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545;")
 
+    # def _log_entry(self, lane, data, entry_type):
+    #     try:
+    #         self.log_signal.emit({
+    #             "lane": lane,
+    #             "plate": data.get('text', 'N/A'),
+    #             "confidence": data.get('confidence', 0.0),
+    #             "timestamp": time.time(),
+    #             "type": entry_type
+    #         })
+    #     except Exception as e:
+    #         print(f"Logging error: {str(e)}")
+
     def _log_entry(self, lane, data, entry_type):
         try:
-            self.log_signal.emit({
+            log_data = {
                 "lane": lane,
                 "plate": data.get('text', 'N/A'),
                 "confidence": data.get('confidence', 0.0),
                 "timestamp": time.time(),
                 "type": entry_type
-            })
+            }
+            print(f"Log entry created: {log_data}")
+            self.log_signal.emit(log_data)
         except Exception as e:
             print(f"Logging error: {str(e)}")
 

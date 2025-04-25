@@ -19,14 +19,15 @@ class LogHandler:
     def send_logs(self):
         for log in self.queue:
             try:
-                #CALL API TO LOG
-                #response = requests.post(SERVER_URL, json=log)
-                #Test:
-                print(log)
-                #if response.ok:
-                    #log['status'] = 'sent'
-            except Exception:
-                pass
+                # CALL API TO LOG
+                # response = requests.post(SERVER_URL, json=log)
+                # Test:
+                print(f"Sending log to server: {log}")
+                # if response.ok:
+                #     log['status'] = 'sent'
+                log['status'] = 'sent'  # For testing
+            except Exception as e:
+                print(f"Log sending error: {str(e)}")
     
     def retry_failed(self):
         self.queue = [log for log in self.queue if log['status'] != 'sent']

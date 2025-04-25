@@ -49,6 +49,12 @@ class LaneWorker(QThread):
         
         # Initialize in the thread's run method to avoid cross-thread issues
         self._cap = None
+        
+        # Cooldown
+        self.cooldown_active = False
+        self.cooldown_timer  = None
+        self.frame_buffer_clear_count = 0
+        self.required_clear_frames = 10
     
     def run(self):
         self._initialize_resources()
@@ -166,6 +172,20 @@ class LaneWorker(QThread):
             return
             
         try:
+            if self.cooldown_active:
+                self.detection_signal.emit(
+                    self.lane_type,
+                    frame,
+                    "Clearing buffer...",
+                    0.0,
+                    False
+                )
+                
+                self.frame_buffer_clear_count += 1
+                if self.frame_buffer_clear_count >= self.required_clear_frames:
+                    if self.cooldown_timer is not None and not self.cooldown_timer.isActive():
+                        self.cooldown_active = False
+                return
             # Detection
             display_frame, plate_img = self.detector.detect(frame)
             
@@ -214,11 +234,30 @@ class LaneWorker(QThread):
         self.mutex.unlock()
     
     def resume_processing(self):
+        # Start cooldown timer
+        self.cooldown_active = True
+        # Clear existing cooldown timer
+        if self.cooldown_timer is not None and self.cooldown_timer.isActive():
+            self.cooldown_timer.stop()
+            
+        # New timer
+        self.cooldown_timer = QTimer()
+        self.cooldown_timer.setSingleShot(True)
+        self.cooldown_timer.timeout.connect(self._end_cooldown)
+        self.cooldown_timer.start(8000) #seconds of cooldown before allowing detection
         self.mutex.lock()
         self._paused = False
+        self.condition.wakeAll()
+        self.mutex.unlock()
+        
+    def _end_cooldown(self):
+        self.cooldown_active = False
+        self.frame_buffer_clear_count = 0
+        
+        #resume detection
+        self.mutex.lock()
         if self.state != LaneState.ERROR:
             self.state = LaneState.DETECTING
-        self.condition.wakeAll()
         self.mutex.unlock()
     
     def restart_camera(self):

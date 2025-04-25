@@ -1,6 +1,7 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, 
                             QPushButton, QLabel, QSpacerItem, QSizePolicy)
 from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QPixmap, QPalette, QBrush
 
 class LoginScreen(QWidget):
     login_success = pyqtSignal()
@@ -12,83 +13,143 @@ class LoginScreen(QWidget):
         self.setup_styles()
 
     def setup_ui(self):
+        # Set up main layout
         main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(50, 20, 50, 20)
-        main_layout.setSpacing(20)
-
-        # Title
-        title = QLabel("Parking Control System")
-        title.setAlignment(Qt.AlignCenter)
-
-        # Form
-        form_layout = QVBoxLayout()
-        form_layout.setSpacing(15)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
+        # Create a container widget for the login form
+        login_container = QWidget()
+        login_container.setFixedSize(420, 380)
+        login_container.setObjectName("loginContainer")
+        
+        # Create login form layout
+        form_layout = QVBoxLayout(login_container)
+        form_layout.setContentsMargins(30, 30, 30, 30)
+        form_layout.setSpacing(20)
+        
+        # Title
+        title = QLabel("Smart Parking System")
+        title.setAlignment(Qt.AlignCenter)
+        title.setObjectName("title")
+        
+        # Login header
+        login_header = QLabel("Log in")
+        login_header.setObjectName("loginHeader")
+        
+        # Form fields
         self.username = QLineEdit()
         self.username.setPlaceholderText("Username")
+        self.username.setProperty("class", "loginInput")
+        
         self.password = QLineEdit()
         self.password.setPlaceholderText("Password")
         self.password.setEchoMode(QLineEdit.Password)
+        self.password.setProperty("class", "loginInput")
         
+        # Login button
+        login_btn = QPushButton("Log in")
+        login_btn.setObjectName("loginButton")
+        login_btn.clicked.connect(self.attempt_login)
+        
+        # Status label for error messages
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
         self.status_label.setAlignment(Qt.AlignCenter)
-
-        # Buttons
-        button_layout = QHBoxLayout()
-        login_btn = QPushButton("Login")
-        login_btn.clicked.connect(self.attempt_login)
-        button_layout.addStretch()
-        button_layout.addWidget(login_btn)
-        button_layout.addStretch()
-
+        self.status_label.setObjectName("statusLabel")
+        
         # Assemble form
         form_layout.addWidget(title)
-        form_layout.addItem(QSpacerItem(20, 40))
+        form_layout.addSpacerItem(QSpacerItem(20, 20))
+        form_layout.addWidget(login_header)
         form_layout.addWidget(self.username)
         form_layout.addWidget(self.password)
-        form_layout.addItem(QSpacerItem(20, 20))
-        form_layout.addLayout(button_layout)
+        form_layout.addWidget(login_btn)
         form_layout.addWidget(self.status_label)
-
-        # Main layout
-        main_layout.addStretch()
-        main_layout.addLayout(form_layout)
-        main_layout.addStretch()
+        form_layout.addStretch()
+        
+        # Center the login container
+        main_layout.addStretch(1)
+        center_layout = QHBoxLayout()
+        center_layout.addStretch(1)
+        center_layout.addWidget(login_container)
+        center_layout.addStretch(1)
+        main_layout.addLayout(center_layout)
+        main_layout.addStretch(1)
+        
         self.setLayout(main_layout)
+        
+        # Set background image
+        self.set_background_image("background.jpg")  # Update path as needed
+
+    def set_background_image(self, image_path):
+        try:
+            # Set background image using stylesheet
+            self.setStyleSheet(f"""
+                QWidget {{
+                    background-image: url({image_path});
+                    background-position: center;
+                    background-repeat: no-repeat;
+                    background-attachment: fixed;
+                    background-size: cover;
+                }}
+                
+                #loginContainer {{
+                    background-color: white;
+                    border-radius: 8px;
+                    box-shadow: 0px 0px 15px rgba(0, 0, 0, 0.2);
+                }}
+                
+                #title {{
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: #2c3e50;
+                }}
+                
+                #loginHeader {{
+                    font-size: 20px;
+                    font-weight: bold;
+                    color: #333;
+                }}
+                
+                .loginInput {{
+                    font-size: 16px;
+                    padding: 12px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                }}
+                
+                #loginButton {{
+                    background-color: #00b8d4;
+                    color: white;
+                    padding: 12px;
+                    border: none;
+                    border-radius: 4px;
+                    font-size: 16px;
+                    font-weight: bold;
+                }}
+                
+                #loginButton:hover {{
+                    background-color: #0095b3;
+                }}
+                
+                #statusLabel {{
+                    color: #dc3545;
+                    font-size: 14px;
+                }}
+            """)
+        except Exception as e:
+            print(f"Failed to set background image: {str(e)}")
+            # Fallback to a color background
+            self.setStyleSheet("""
+                QWidget {
+                    background-color: #0a2a3b;
+                }
+            """)
 
     def setup_styles(self):
-        self.setStyleSheet("""
-            QLabel {
-                font-size: 18px;
-                color: #333;
-            }
-            QLineEdit {
-                font-size: 16px;
-                padding: 8px;
-                border: 1px solid #ccc;
-                border-radius: 4px;
-            }
-            QPushButton {
-                background-color: #007bff;
-                color: white;
-                padding: 10px 25px;
-                border: none;
-                border-radius: 4px;
-                font-size: 16px;
-            }
-            QPushButton:hover {
-                background-color: #0056b3;
-            }
-        """)
-        title = self.findChild(QLabel)
-        if title:
-            title.setStyleSheet("""
-                font-size: 24px;
-                font-weight: bold;
-                color: #2c3e50;
-                margin-bottom: 30px;
-            """)
+        # Additional styles are now handled in set_background_image method
+        pass
 
     def attempt_login(self):
         # Replace with actual API call
@@ -101,4 +162,3 @@ class LoginScreen(QWidget):
         else:
             self.login_failed.emit("Invalid credentials")
             self.status_label.setText("Invalid username or password")
-            self.status_label.setStyleSheet("color: #dc3545;")

@@ -1109,13 +1109,55 @@ class ControlScreen(QWidget):
         filter_layout.addStretch()
         filter_layout.addWidget(apply_btn)
         
-        # Add to log widget's parent
-        log_frame = self.logs_layout.parent().parent().parent()
-        if isinstance(log_frame, QFrame):
-            log_layout = log_frame.layout()
-            # Insert filter layout after title but before log scroll area
-            log_layout.insertLayout(1, filter_layout)
-    
+        # Find the log widget's parent
+        try:
+            # Get the log frame safely by traversing up from logs_layout
+            if hasattr(self, 'logs_layout') and self.logs_layout is not None:
+                log_widget = self.logs_layout.parent()
+                if log_widget is not None:
+                    scroll_area = log_widget.parent()
+                    if scroll_area is not None:
+                        log_frame = scroll_area.parent()
+                        if isinstance(log_frame, QFrame) and log_frame.layout() is not None:
+                            log_layout = log_frame.layout()
+                            # Insert filter layout after title but before log scroll area
+                            log_layout.insertLayout(1, filter_layout)
+                            return
+        
+            # Fallback: Create a new frame for filters if we couldn't find the log frame
+            print("Warning: Could not locate log frame layout, creating alternate filter display")
+            filter_frame = QFrame()
+            filter_frame.setLayout(filter_layout)
+            filter_frame.setStyleSheet("""
+                QFrame {
+                    border: 1px solid #ddd;
+                    border-radius: 8px;
+                    background-color: #f8f9fa;
+                    padding: 5px;
+                    margin-bottom: 5px;
+                }
+            """)
+            
+            # Find main layout to add the filter frame
+            main_layout = None
+            for i in range(self.layout().count()):
+                item = self.layout().itemAt(i)
+                if item.widget() and isinstance(item.widget(), QScrollArea):
+                    scroll_widget = item.widget().widget()
+                    if scroll_widget and scroll_widget.layout():
+                        main_layout = scroll_widget.layout()
+                        break
+            
+            if main_layout:
+                # Add filter frame just before the log frame
+                for i in range(main_layout.count()):
+                    item = main_layout.itemAt(i)
+                    if item.widget() and isinstance(item.widget(), QFrame) and "Activity Log" in item.widget().findChildren(QLabel)[0].text():
+                        main_layout.insertWidget(i, filter_frame)
+                        break
+        except Exception as e:
+            print(f"Error setting up log filters: {str(e)}")
+
     def _apply_log_filters(self):
         """Apply filters to log table"""
         lane_filter = self.lane_filter.currentText().lower()

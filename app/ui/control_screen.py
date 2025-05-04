@@ -275,6 +275,16 @@ class ControlScreen(QWidget):
         occupancy_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #2c3e50;")
         occupancy_title.setAlignment(Qt.AlignCenter)
         
+        # Initialize lot name label
+        self.lot_name_label = QLabel("Loading lot information...")
+        self.lot_name_label.setStyleSheet("""
+            font-size: 16px;
+            font-weight: bold;
+            color: #34495e;
+            margin-bottom: 5px;
+        """)
+        self.lot_name_label.setAlignment(Qt.AlignCenter)
+        
         self.occupancy_label = QLabel("Loading...")
         self.occupancy_label.setStyleSheet("""
             font-size: 24px;
@@ -287,7 +297,9 @@ class ControlScreen(QWidget):
         """)
         self.occupancy_label.setAlignment(Qt.AlignCenter)
         
+        # Add widgets to layout in proper order
         occupancy_layout.addWidget(occupancy_title)
+        occupancy_layout.addWidget(self.lot_name_label)
         occupancy_layout.addWidget(self.occupancy_label)
         
         main_layout.addWidget(self.occupancy_frame)
@@ -1004,20 +1016,6 @@ class ControlScreen(QWidget):
     # Enhanced occupancy display with visual meter
     def _enhance_occupancy_display(self):
         """Create an enhanced occupancy display with visual meter"""
-        # Add lot name label
-        self.lot_name_label = QLabel("Loading lot information...")
-        self.lot_name_label.setStyleSheet("""
-            font-size: 16px;
-            font-weight: bold;
-            color: #34495e;
-            margin-bottom: 5px;
-        """)
-        self.lot_name_label.setAlignment(Qt.AlignCenter)
-        
-        # Add to layout
-        occupancy_layout = self.occupancy_frame.layout()
-        occupancy_layout.addWidget(self.lot_name_label)
-        
         # Create progress bar container
         self.progress_container = QFrame()
         self.progress_container.setFixedHeight(20)
@@ -1062,6 +1060,7 @@ class ControlScreen(QWidget):
             meter_layout.addWidget(label)
         
         # Add meter components to layout
+        occupancy_layout = self.occupancy_frame.layout()
         occupancy_layout.addWidget(self.progress_container)
         occupancy_layout.addLayout(meter_layout)
         

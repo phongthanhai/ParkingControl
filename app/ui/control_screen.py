@@ -198,6 +198,11 @@ class ControlScreen(QWidget):
         self.occupancy_timer.timeout.connect(self._update_occupancy)
         self.occupancy_timer.start(60000)  # Update occupancy every 60 seconds
         
+        # Setup dedicated API status check timer
+        self.api_check_timer = QTimer(self)
+        self.api_check_timer.timeout.connect(self._check_api_connection)
+        self.api_check_timer.start(5000)  # Check API status every 5 seconds
+        
         # Setup refresh button
         self.add_refresh_button()
         
@@ -1131,39 +1136,71 @@ class ControlScreen(QWidget):
             print("No filters applied, showing all logs")
 
     def _check_api_connection(self):
-        """Periodically check if API server is back online"""
-        if not self.api_available:
-            try:
-                # Use a very short timeout for connectivity checks to avoid blocking
-                api_check_timeout = (2.0, 3.0)  # 2s connect, 3s read
-                
-                # Try a standard FastAPI endpoint for health checking
+        """Regularly check if API server is online"""
+        try:
+            # Use a very short timeout for connectivity checks to avoid blocking
+            api_check_timeout = (2.0, 3.0)  # 2s connect, 3s read
+            
+            # Try the health check endpoint first
+            success, _ = self.api_client.get('health', timeout=api_check_timeout)
+            
+            # If health endpoint fails, try a standard FastAPI endpoint as fallback
+            if not success:
                 success, _ = self.api_client.get('', timeout=api_check_timeout)
-                if not success:
-                    # Try openapi schema as a fallback
-                    success, _ = self.api_client.get('openapi.json', timeout=api_check_timeout)
                 
-                if success:
-                    self.api_available = True
-                    self.api_retry_count = 0
+                # Try openapi schema as a second fallback
+                if not success:
+                    success, _ = self.api_client.get('openapi.json', timeout=api_check_timeout)
+            
+            # Update UI based on connection status
+            if success:
+                # Only if previous state was offline, show reconnection message
+                if not self.api_available:
                     print("Backend API connection restored")
+                
+                self.api_available = True
+                self.api_retry_count = 0
+                
+                # Update status indicator
+                self.api_status_indicator.setText("Connected")
+                self.api_status_indicator.setStyleSheet("""
+                    font-weight: bold;
+                    color: white;
+                    background-color: #2ecc71;
+                    padding: 5px 10px;
+                    border-radius: 4px;
+                    min-width: 100px;
+                    text-align: center;
+                """)
+            else:
+                # Failed connection
+                self.api_retry_count += 1
+                if self.api_retry_count >= self.max_api_retries or not self.api_available:
+                    self.api_available = False
                     
                     # Update status indicator
-                    self.api_status_indicator.setText("Connected")
+                    self.api_status_indicator.setText("Disconnected")
                     self.api_status_indicator.setStyleSheet("""
                         font-weight: bold;
                         color: white;
-                        background-color: #2ecc71;
+                        background-color: #e74c3c;
                         padding: 5px 10px;
                         border-radius: 4px;
                         min-width: 100px;
                         text-align: center;
                     """)
-                    return True
-            except Exception as e:
-                print(f"API connection check failed: {str(e)}")
+                    
+                    if self.api_retry_count == self.max_api_retries:
+                        print(f"Backend API marked as unavailable after {self.max_api_retries} failed attempts")
+                
+        except Exception as e:
+            print(f"API connection check failed: {str(e)}")
+            self.api_retry_count += 1
+            
+            if self.api_retry_count >= self.max_api_retries:
+                self.api_available = False
                 # Update status indicator
-                self.api_status_indicator.setText("Disconnected")
+                self.api_status_indicator.setText("Error")
                 self.api_status_indicator.setStyleSheet("""
                     font-weight: bold;
                     color: white;
@@ -1173,4 +1210,5 @@ class ControlScreen(QWidget):
                     min-width: 100px;
                     text-align: center;
                 """)
+        
         return self.api_available

@@ -45,16 +45,19 @@ class LoginScreen(QWidget):
         self.username = QLineEdit()
         self.username.setPlaceholderText("Username")
         self.username.setProperty("class", "loginInput")
+        self.username.setMinimumHeight(45)  # Increased height
         
         self.password = QLineEdit()
         self.password.setPlaceholderText("Password")
         self.password.setEchoMode(QLineEdit.Password)
         self.password.setProperty("class", "loginInput")
+        self.password.setMinimumHeight(45)  # Increased height
         
         # Login button
         login_btn = QPushButton("Log in")
         login_btn.setObjectName("loginButton")
         login_btn.clicked.connect(self.attempt_login)
+        login_btn.setMinimumHeight(45)  # Match the height of input fields
         
         # Status label for error messages
         self.status_label = QLabel()

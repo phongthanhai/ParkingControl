@@ -29,27 +29,46 @@ class LaneWidget(QWidget):
         self.reconnect_btn.setVisible(False)
         
         # Apply fixed size policies to maintain consistency
-        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setMinimumWidth(640)  # Ensure minimum width for proper layout
         
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout()
-        layout.setSpacing(10)  # Consistent spacing
+        # Main container layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
         
-        # Title
+        # Title with consistent height
+        title_container = QFrame()
+        title_container.setFixedHeight(40)
+        title_layout = QVBoxLayout(title_container)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        
         self.title_label.setAlignment(Qt.AlignCenter)
-        self.title_label.setStyleSheet("font-weight: bold; font-size: 20px; color: #2c3e50; margin-bottom: 10px;")
+        self.title_label.setStyleSheet("font-weight: bold; font-size: 20px; color: #2c3e50;")
+        title_layout.addWidget(self.title_label)
+        
+        main_layout.addWidget(title_container)
+        
+        # Center-aligned container for image
+        image_container = QFrame()
+        image_container.setFixedHeight(490)  # Height for image + margin
+        image_layout = QHBoxLayout(image_container)
+        image_layout.setContentsMargins(0, 0, 0, 0)
         
         # Image display with fixed size
         self.image_label.setFixedSize(640, 480)
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setStyleSheet("border: 2px solid #3498db; background: black; border-radius: 4px;")
+        image_layout.addWidget(self.image_label, 0, Qt.AlignCenter)
+        
+        main_layout.addWidget(image_container)
         
         # Fixed height container for plate and status
         info_container = QFrame()
-        info_container.setFixedHeight(100)  # Fixed height for consistent spacing
-        info_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        info_container.setFixedHeight(80)
         info_layout = QVBoxLayout(info_container)
         info_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -61,7 +80,6 @@ class LaneWidget(QWidget):
             background-color: #ecf0f1;
             padding: 8px;
             border-radius: 4px;
-            margin: 10px 0;
         """)
         
         # Status text
@@ -70,18 +88,18 @@ class LaneWidget(QWidget):
             font-size: 14px; 
             color: #666;
             min-height: 20px;
-            margin-bottom: 5px;
         """)
         
         info_layout.addWidget(self.plate_label)
         info_layout.addWidget(self.status_label)
         
-        # Manual input container with fixed height
-        manual_container = QFrame()
-        manual_container.setFixedHeight(50)  # Fixed height for consistent spacing
-        manual_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        manual_layout = QHBoxLayout(manual_container)
-        manual_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(info_container)
+        
+        # Input container - Fixed height regardless of visibility
+        input_container = QFrame()
+        input_container.setFixedHeight(50)
+        input_layout = QHBoxLayout(input_container)
+        input_layout.setContentsMargins(0, 0, 0, 0)
         
         # Manual input styling
         self.manual_input.setPlaceholderText("Enter plate manually")
@@ -92,6 +110,9 @@ class LaneWidget(QWidget):
             border-radius: 4px;
         """)
         
+        # Create a fixed height for the button to prevent it from changing the layout
+        self.manual_input.setFixedHeight(40)
+        
         self.submit_btn.setStyleSheet("""
             background-color: #2ecc71;
             color: white;
@@ -100,14 +121,17 @@ class LaneWidget(QWidget):
             border-radius: 4px;
             font-weight: bold;
         """)
+        self.submit_btn.setFixedHeight(40)
+        self.submit_btn.setFixedWidth(120)  # Fixed width for button
         
-        manual_layout.addWidget(self.manual_input)
-        manual_layout.addWidget(self.submit_btn)
+        input_layout.addWidget(self.manual_input, 1)  # Give most space to input
+        input_layout.addWidget(self.submit_btn, 0)  # Fixed space for button
         
-        # Reconnect button styling in a separate container
+        main_layout.addWidget(input_container)
+        
+        # Control container with fixed height
         control_container = QFrame()
-        control_container.setFixedHeight(40)  # Fixed height for consistent spacing
-        control_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        control_container.setFixedHeight(50)
         control_layout = QHBoxLayout(control_container)
         control_layout.setContentsMargins(0, 0, 0, 0)
         
@@ -120,19 +144,12 @@ class LaneWidget(QWidget):
             font-weight: bold;
         """)
         
-        control_layout.addWidget(self.reconnect_btn)
+        control_layout.addWidget(self.reconnect_btn, 0, Qt.AlignCenter)
         
-        # Add all elements to main layout
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.image_label)
-        layout.addWidget(info_container)
-        layout.addWidget(manual_container)
-        layout.addWidget(control_container)
+        main_layout.addWidget(control_container)
         
-        # Use stretch to maintain consistent spacing
-        layout.addStretch(1)
-        
-        self.setLayout(layout)
+        # Instead of modifying the visibility, we'll keep all elements in the layout
+        # but show/hide them as needed. This prevents layout shifts.
     
     def show_error(self, message):
         """Display error message in the widget"""
@@ -232,6 +249,12 @@ class ControlScreen(QWidget):
         # Create lane widgets layout with equal spacing
         lanes_layout = QHBoxLayout()
         lanes_layout.setSpacing(20)
+        lanes_layout.setContentsMargins(10, 10, 10, 10)  # Even padding around lanes
+        
+        # Create a container for both lanes to ensure equal sizing
+        lanes_container = QFrame()
+        lanes_container.setStyleSheet("background: transparent;")
+        lanes_container.setLayout(lanes_layout)
         
         # Create lane widgets only for configured cameras
         if CAMERA_SOURCES.get('entry') is not None:
@@ -243,7 +266,7 @@ class ControlScreen(QWidget):
                 lambda: self._restart_worker('entry')
             )
             self.lane_widgets['entry'] = entry_widget
-            lanes_layout.addWidget(entry_widget)
+            lanes_layout.addWidget(entry_widget, 1)  # Equal stretch factor
             
         if CAMERA_SOURCES.get('exit') is not None:
             exit_widget = LaneWidget("Exit Lane")
@@ -254,9 +277,10 @@ class ControlScreen(QWidget):
                 lambda: self._restart_worker('exit')
             )
             self.lane_widgets['exit'] = exit_widget
-            lanes_layout.addWidget(exit_widget)
+            lanes_layout.addWidget(exit_widget, 1)  # Equal stretch factor
         
-        main_layout.addLayout(lanes_layout)
+        # Add the lane container to the main layout
+        main_layout.addWidget(lanes_container)
         
         # Add occupancy indicator
         self.occupancy_frame = QFrame()
@@ -336,19 +360,25 @@ class ControlScreen(QWidget):
         self.log_table.setMinimumHeight(200)
         self.log_table.setMaximumHeight(400)
         self.log_table.setAlternatingRowColors(True)
+        
+        # Apply detailed styling
+        self.log_table.horizontalHeader().setStyleSheet("""
+            QHeaderView::section {
+                background-color: #3498db;
+                color: white;
+                padding: 6px;
+                border: none;
+                border-right: 1px solid #fff;
+                font-weight: bold;
+            }
+        """)
+        
         self.log_table.setStyleSheet("""
             QTableWidget {
                 border: 1px solid #ddd;
                 gridline-color: #ddd;
                 selection-background-color: #3498db;
                 selection-color: white;
-            }
-            QHeaderView::section {
-                background-color: #3498db;
-                color: white;
-                padding: 6px;
-                border: none;
-                font-weight: bold;
             }
             QTableWidget::item {
                 padding: 4px;
@@ -487,9 +517,11 @@ class ControlScreen(QWidget):
                     widget.manual_input.setText(data['text'])
                     widget.manual_input.selectAll()  # Select all for easy editing
                 
+                # Show the manual input controls
                 widget.manual_input.setVisible(True)
                 widget.submit_btn.setVisible(True)
                 
+                # Set consistent status message styling
                 if reason == "API timeout":
                     widget.status_label.setText("API timeout - Enter plate manually")
                 elif reason == "low confidence":
@@ -1009,13 +1041,7 @@ class ControlScreen(QWidget):
         """Add filtering capabilities to log table"""
         filter_layout = QHBoxLayout()
         
-        # Date range filter
-        date_label = QLabel("Filter by date:")
-        date_label.setStyleSheet("color: #7f8c8d;")
-        
-        self.date_filter = QLineEdit()
-        self.date_filter.setPlaceholderText("YYYY-MM-DD")
-        self.date_filter.setFixedWidth(120)
+        # Date filter removed
         
         # Lane filter
         lane_label = QLabel("Lane:")
@@ -1045,8 +1071,6 @@ class ControlScreen(QWidget):
         apply_btn.clicked.connect(self._apply_log_filters)
         
         # Add to layout
-        filter_layout.addWidget(date_label)
-        filter_layout.addWidget(self.date_filter)
         filter_layout.addWidget(lane_label)
         filter_layout.addWidget(self.lane_filter)
         filter_layout.addWidget(type_label)
@@ -1063,7 +1087,6 @@ class ControlScreen(QWidget):
         
     def _apply_log_filters(self):
         """Apply filters to log table"""
-        date_filter = self.date_filter.text().strip()
         lane_filter = self.lane_filter.currentText().lower()
         type_filter = self.type_filter.currentText().lower()
         
@@ -1076,8 +1099,6 @@ class ControlScreen(QWidget):
         filter_msg = "Filters applied: "
         filters = []
         
-        if date_filter:
-            filters.append(f"Date: {date_filter}")
         if lane_filter != "all":
             filters.append(f"Lane: {lane_filter}")
         if type_filter != "all":

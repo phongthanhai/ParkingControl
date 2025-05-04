@@ -297,7 +297,7 @@ class ControlScreen(QWidget):
         """)
         self.occupancy_label.setAlignment(Qt.AlignCenter)
         
-        # Initialize progress bar container
+        # Initialize progress bar components
         self.progress_container = QFrame()
         self.progress_container.setFixedHeight(20)
         self.progress_container.setStyleSheet("""
@@ -308,26 +308,28 @@ class ControlScreen(QWidget):
             }
         """)
         
-        # Create progress bar layout
+        # Use a simple QHBoxLayout for the progress container
         progress_layout = QHBoxLayout(self.progress_container)
         progress_layout.setContentsMargins(2, 2, 2, 2)
         progress_layout.setSpacing(0)
         
-        # Progress bar indicator (initially empty)
+        # Use two frames for the indicator and background
         self.progress_indicator = QFrame()
         self.progress_indicator.setStyleSheet("""
-            QFrame {
-                background-color: #3498db;
-                border-radius: 8px;
-            }
+            background-color: #3498db;
+            border-radius: 8px;
         """)
         
-        # Add indicator to layout with 0 stretch initially
-        progress_layout.addWidget(self.progress_indicator, 0)
+        # Initially the indicator has 0 width
+        self.progress_indicator.setFixedWidth(0)
         
-        # Add spacer to fill the remaining space
-        self.progress_spacer = QSpacerItem(0, 10, QSizePolicy.Expanding, QSizePolicy.Minimum)
-        progress_layout.addSpacerItem(self.progress_spacer)
+        # Empty frame to fill the rest (transparent)
+        self.progress_background = QFrame()
+        self.progress_background.setStyleSheet("background: transparent;")
+        
+        # Add both frames to layout
+        progress_layout.addWidget(self.progress_indicator)
+        progress_layout.addWidget(self.progress_background, 1)  # Background takes all remaining space
         
         # Initialize capacity value and update time labels
         self.capacity_value = QLabel("Loading...")
@@ -922,28 +924,29 @@ class ControlScreen(QWidget):
             margin: 10px 0;
         """)
         
-        # Update the progress bar
+        # Update the progress bar color
+        self.progress_indicator.setStyleSheet(f"""
+            background-color: {color};
+            border-radius: 8px;
+        """)
+        
         try:
-            # Update color of progress indicator
-            self.progress_indicator.setStyleSheet(f"""
-                QFrame {{
-                    background-color: {color};
-                    border-radius: 8px;
-                }}
-            """)
+            # Calculate the new width for the progress indicator based on percentage
+            # Get the total width available
+            total_width = self.progress_container.width() - 4  # Subtract margins
             
-            # Get progress layout
-            progress_layout = self.progress_container.layout()
-            if progress_layout:
-                # Calculate width percentage (0-100%)
-                width_percent = min(100, max(0, int(occupancy_rate)))
-                
-                # Update stretch factors
-                progress_layout.setStretch(0, width_percent)  # Indicator
-                progress_layout.setStretch(1, 100 - width_percent)  # Spacer
-                
-                # Force layout update
-                self.progress_container.updateGeometry()
+            # Calculate the width corresponding to the occupancy percentage
+            indicator_width = int(total_width * (occupancy_rate / 100))
+            
+            # Update the fixed width of the progress indicator
+            self.progress_indicator.setFixedWidth(max(0, indicator_width))
+            
+            # Force update
+            self.progress_container.update()
+            
+            # For debugging
+            print(f"Updated progress bar: {occupancy_rate}% - width: {indicator_width}/{total_width}")
+            
         except Exception as e:
             print(f"Error updating progress bar: {str(e)}")
 

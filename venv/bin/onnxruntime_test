@@ -1,4 +1,4 @@
-#!/home/raspberrypi/Documents/ALPR/venv/bin/python3
+#!/home/raspberrypi/Documents/ParkingControl/venv/bin/python
 # -*- coding: utf-8 -*-
 import re
 import sys

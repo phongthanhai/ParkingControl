@@ -25,7 +25,7 @@ CAMERA_RESOLUTION = (640, 480)
 CAMERA_FPS = 10
 
 # Model Settings
-MODEL_PATH = os.path.expanduser("/home/raspberrypi/Documents/ALPR/detect_lp_dynamic_nms_opset18.onnx")
+MODEL_PATH = os.path.expanduser("/home/raspberrypi/Documents/ParkingControl/detect_lp_dynamic_nms_opset18.onnx")
 INPUT_SIZE = (320, 320)
 CONFIDENCE_THRESHOLD = 0.25
 

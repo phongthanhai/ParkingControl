@@ -5,7 +5,7 @@ import cv2
 from PyQt5.QtCore import pyqtSignal, QObject
 from config import PLATE_RECOGNIZER_API_KEY, PLATE_RECOGNIZER_URL, OCR_RATE_LIMIT
 import json
-from utils.auth_manager import AuthManager
+from app.utils.auth_manager import AuthManager
 
 class PlateRecognizer(QObject):
     error_signal = pyqtSignal(str)

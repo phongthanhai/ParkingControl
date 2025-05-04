@@ -9,6 +9,7 @@ import time
 import threading
 from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE_PATTERN
 from app.controllers.lane_controller import LaneWorker, LaneState
+import cv2
 
 class LaneWidget(QWidget):
     def __init__(self, title):

@@ -8,6 +8,7 @@ import threading
 from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE_PATTERN
 from app.controllers.lane_controller import LaneWorker, LaneState
 import cv2
+from app.controllers.api_client import ApiClient
 
 class LaneWidget(QWidget):
     def __init__(self, title):
@@ -154,6 +155,9 @@ class ControlScreen(QWidget):
         self.lane_workers = {}
         self.active_timers = {}
         self.worker_guard = threading.Lock()  # Protects worker creation/deletion
+        
+        # Initialize API client
+        self.api_client = ApiClient(base_url="http://127.0.0.1:8000/api/v1")
         
         self._setup_gpio()
         self._setup_ui()
@@ -554,7 +558,23 @@ class ControlScreen(QWidget):
             
         if VIETNAMESE_PLATE_PATTERN.match(plate_text):
             self._activate_gate(lane)
-            self._log_entry(lane, {"text": plate_text}, "manual")
+            
+            # Check if we have stored image data from a previous detection
+            # that required manual verification
+            worker = self.lane_workers.get(lane)
+            image_data = None
+            
+            if worker and hasattr(worker, "last_detection_data") and worker.last_detection_data:
+                image_data = worker.last_detection_data.get("image")
+            
+            # Create data with the manually entered plate text and any available image
+            plate_data = {
+                "text": plate_text,
+                "confidence": 1.0,  # Manual entry has full confidence
+                "image": image_data
+            }
+            
+            self._log_entry(lane, plate_data, "manual")
             widget.status_label.setText("Access granted - manual entry")
             widget.status_label.setStyleSheet("font-size: 14px; color: #28a745; font-weight: bold;")
         else:
@@ -563,6 +583,7 @@ class ControlScreen(QWidget):
 
     def _log_entry(self, lane, data, entry_type):
         try:
+            # Create log data for internal tracking
             log_data = {
                 "lane": lane,
                 "plate": data.get('text', 'N/A'),
@@ -571,10 +592,52 @@ class ControlScreen(QWidget):
                 "type": entry_type
             }
             print(f"Log entry created: {log_data}")
+            
+            # Add entry to the log table
+            self._add_log_entry(log_data)
+            
+            # Emit signal for any listeners
             self.log_signal.emit(log_data)
             
-            # Add entry to the log table directly as well
-            self._add_log_entry(log_data)
+            # Send to API
+            try:
+                # Extract image from data if available
+                plate_image = data.get('image')
+                
+                # Prepare form data
+                form_data = {
+                    'plate_id': data.get('text', 'N/A'),
+                    'lot_id': 0,  # Default lot id
+                    'lane': lane,
+                    'confidence_score': data.get('confidence', 0.0),
+                    'type': entry_type
+                }
+                
+                # Prepare files dict if image is available
+                files = None
+                if plate_image is not None:
+                    # Convert OpenCV image to bytes
+                    _, img_encoded = cv2.imencode('.png', plate_image)
+                    img_bytes = img_encoded.tobytes()
+                    files = {
+                        'image': ('plate.png', img_bytes, 'image/png')
+                    }
+                
+                # Send to API
+                success, response = self.api_client.post_with_files(
+                    'services/guard-control/',
+                    data=form_data,
+                    files=files
+                )
+                
+                if success:
+                    print(f"API log successful: {response}")
+                else:
+                    print(f"API log failed: {response}")
+                    
+            except Exception as e:
+                print(f"API logging error: {str(e)}")
+                
         except Exception as e:
             print(f"Logging error: {str(e)}")
 

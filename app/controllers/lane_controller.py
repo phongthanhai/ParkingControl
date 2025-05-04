@@ -55,6 +55,9 @@ class LaneWorker(QThread):
         self.cooldown_timer  = None
         self.frame_buffer_clear_count = 0
         self.required_clear_frames = 10
+        
+        # Store last detection data for manual verification
+        self.last_detection_data = None
     
     def run(self):
         self._initialize_resources()
@@ -167,66 +170,6 @@ class LaneWorker(QThread):
             QTimer.singleShot(2000, self._init_camera)
             return None
     
-        # def _process_frame(self, frame):
-        #     if self.detector is None:
-        #         return
-                
-        #     try:
-        #         if self.cooldown_active:
-        #             self.detection_signal.emit(
-        #                 self.lane_type,
-        #                 frame,
-        #                 "Clearing buffer...",
-        #                 0.0,
-        #                 False
-        #             )
-                    
-        #             self.frame_buffer_clear_count += 1
-        #             if self.frame_buffer_clear_count >= self.required_clear_frames:
-        #                 if self.cooldown_timer is not None and not self.cooldown_timer.isActive():
-        #                     self.cooldown_active = False
-        #             return
-        #         # Detection
-        #         display_frame, plate_img = self.detector.detect(frame)
-                
-        #         # OCR processing with rate limiting
-        #         plate_text, confidence = None, 0.0
-        #         api_timeout = False
-        #         if plate_img is not None and (time.time() - self.last_api_call) > OCR_RATE_LIMIT:
-        #             result = self.recognizer.process(plate_img)
-        #             if result is not None:
-        #                 plate_text, confidence = result
-        #                 self.last_api_call = time.time()
-                
-        #         # Ensure we have valid data types for signal
-        #         plate_text = plate_text if plate_text is not None else "Scanning..."
-        #         confidence = float(confidence) if confidence is not None else 0.0
-                
-        #         # Validation
-        #         is_valid = False
-        #         if plate_text and plate_text != "Scanning...":
-        #             is_valid = VIETNAMESE_PLATE_PATTERN.match(plate_text) is not None
-                
-        #         # Emit detection signal with safe values
-        #         self.detection_signal.emit(
-        #             self.lane_type,
-        #             display_frame,
-        #             plate_text,
-        #             confidence,
-        #             is_valid
-        #         )
-                
-        #         # State management
-        #         if is_valid and confidence >= 0.7:
-        #             self._pause_processing()
-        #             self.status_signal.emit(
-        #                 self.lane_type,
-        #                 "success",
-        #                 {"text": plate_text, "confidence": confidence}
-        #             )
-                    
-        #     except Exception as e:
-        #         self.error_signal.emit(self.lane_type, f"Processing Error: {str(e)}")
     def _process_frame(self, frame):
         if self.detector is None:
             return
@@ -287,13 +230,21 @@ class LaneWorker(QThread):
             
             # State management for manual entry cases
             if plate_img is not None:
+                # Store the last detection data for potential manual entry
+                self.last_detection_data = {
+                    "text": plate_text if plate_text != "Scanning..." else "",
+                    "confidence": confidence,
+                    "image": plate_img,
+                    "is_valid": is_valid
+                }
+                
                 # Case 1: API timeout
                 if api_timeout:
                     self._pause_processing()
                     self.status_signal.emit(
                         self.lane_type,
                         "requires_manual",
-                        {"reason": "API timeout", "image": plate_img}
+                        {"reason": "API timeout", "image": plate_img, "text": plate_text if plate_text != "Scanning..." else ""}
                     )
                 # Case 2: Successfully detected plate but confidence too low
                 elif plate_text and plate_text != "Scanning..." and confidence < 0.9:
@@ -301,7 +252,7 @@ class LaneWorker(QThread):
                     self.status_signal.emit(
                         self.lane_type,
                         "requires_manual",
-                        {"reason": "low confidence", "text": plate_text, "confidence": confidence}
+                        {"reason": "low confidence", "text": plate_text, "confidence": confidence, "image": plate_img}
                     )
                 # Case 3: Successfully detected plate but doesn't match regex
                 elif plate_text and plate_text != "Scanning..." and not is_valid:
@@ -309,7 +260,7 @@ class LaneWorker(QThread):
                     self.status_signal.emit(
                         self.lane_type,
                         "requires_manual",
-                        {"reason": "invalid format", "text": plate_text, "confidence": confidence}
+                        {"reason": "invalid format", "text": plate_text, "confidence": confidence, "image": plate_img}
                     )
                 # Case 4: Success case - high confidence valid plate
                 elif is_valid and confidence >= 0.9:
@@ -317,7 +268,7 @@ class LaneWorker(QThread):
                     self.status_signal.emit(
                         self.lane_type,
                         "success",
-                        {"text": plate_text, "confidence": confidence}
+                        {"text": plate_text, "confidence": confidence, "image": plate_img}
                     )
                 
         except Exception as e:
@@ -341,11 +292,15 @@ class LaneWorker(QThread):
         self.cooldown_timer.setSingleShot(True)
         self.cooldown_timer.timeout.connect(self._end_cooldown)
         self.cooldown_timer.start(8000) #seconds of cooldown before allowing detection
+        
+        # Clear last detection data
+        self.last_detection_data = None
+        
         self.mutex.lock()
         self._paused = False
         self.condition.wakeAll()
         self.mutex.unlock()
-        
+    
     def _end_cooldown(self):
         self.cooldown_active = False
         self.frame_buffer_clear_count = 0

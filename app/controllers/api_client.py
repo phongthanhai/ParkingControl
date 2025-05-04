@@ -251,3 +251,36 @@ class ApiClient:
                     
         except Exception as e:
             return False, f"An error occurred: {str(e)}"
+
+    def post_with_files(self, endpoint, data=None, files=None):
+        """
+        Send a POST request with multipart/form-data including file uploads.
+        
+        Args:
+            endpoint (str): API endpoint
+            data (dict, optional): Form data
+            files (dict, optional): Files to upload
+            
+        Returns:
+            tuple: (success, data or error_message)
+        """
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        
+        # Get authentication headers
+        headers = self.auth_manager.auth_header
+        
+        try:
+            response = requests.post(url, data=data, files=files, headers=headers)
+            
+            if response.status_code in [200, 201]:
+                return True, response.json()
+            else:
+                try:
+                    error_data = response.json()
+                    if 'detail' in error_data:
+                        return False, error_data['detail']
+                except:
+                    return False, f"HTTP Error: {response.status_code}"
+                    
+        except Exception as e:
+            return False, f"An error occurred: {str(e)}"

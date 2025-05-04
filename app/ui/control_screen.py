@@ -356,7 +356,21 @@ class ControlScreen(QWidget):
         self.log_table = QTableWidget()
         self.log_table.setColumnCount(5)
         self.log_table.setHorizontalHeaderLabels(["Date", "Time", "Lane", "License Plate", "Type"])
-        self.log_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        
+        # Set specific section sizes for each column
+        self.log_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Interactive)  # Date
+        self.log_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Interactive)  # Time
+        self.log_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Interactive)  # Lane
+        self.log_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)      # License Plate (stretch)
+        self.log_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Interactive)  # Type
+        
+        # Set initial widths for columns
+        self.log_table.setColumnWidth(0, 100)  # Date
+        self.log_table.setColumnWidth(1, 80)   # Time
+        self.log_table.setColumnWidth(2, 80)   # Lane
+        # Column 3 (License Plate) will stretch
+        self.log_table.setColumnWidth(4, 80)   # Type
+        
         self.log_table.setMinimumHeight(200)
         self.log_table.setMaximumHeight(400)
         self.log_table.setAlternatingRowColors(True)
@@ -366,12 +380,18 @@ class ControlScreen(QWidget):
             QHeaderView::section {
                 background-color: #3498db;
                 color: white;
-                padding: 6px;
+                padding: 10px 6px;  /* Increased vertical padding */
                 border: none;
                 border-right: 1px solid #fff;
                 font-weight: bold;
+                font-size: 14px;  /* Explicitly set font size */
+                min-height: 30px; /* Ensure minimum height for header */
+                margin: 0px;
             }
         """)
+        
+        # Also set header height explicitly
+        self.log_table.horizontalHeader().setMinimumHeight(35)
         
         self.log_table.setStyleSheet("""
             QTableWidget {

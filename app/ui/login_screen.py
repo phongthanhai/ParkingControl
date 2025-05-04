@@ -2,6 +2,8 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
                             QPushButton, QLabel, QSpacerItem, QSizePolicy)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QPixmap, QPalette, QBrush
+from app.controllers.api_client import ApiClient
+from app.utils.auth_manager import AuthManager
 
 class LoginScreen(QWidget):
     login_success = pyqtSignal()  # Signal for screen navigation

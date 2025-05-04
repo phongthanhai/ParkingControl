@@ -51,7 +51,7 @@ class ApiClient:
     Client for handling API requests to the backend server.
     Manages all API interactions and authentication.
     """
-    def __init__(self, base_url="http://127.0.0.1:8000/api/v1"):
+    def __init__(self, base_url="http://192.168.1.18:8000/api/v1"):
         self.base_url = base_url
         self.auth_manager = AuthManager()
 

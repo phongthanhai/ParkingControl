@@ -686,7 +686,7 @@ class ControlScreen(QWidget):
                 # Prepare form data
                 form_data = {
                     'plate_id': data.get('text', 'N/A'),
-                    'lot_id': CONFIG.get('lot_id', '0'),  # Use configured lot ID
+                    'lot_id': LOT_ID,  # Use configured lot ID
                     'lane': lane,
                     'type': entry_type, 
                     'timestamp': formatted_timestamp  # Use formatted timestamp
@@ -827,8 +827,6 @@ class ControlScreen(QWidget):
     def _update_occupancy(self):
         """Update the occupancy display with data from API"""
         try:
-            from config import LOT_ID
-            
             # Set loading state while waiting for API
             self.occupancy_label.setText("Loading occupancy data...")
             self.occupancy_label.setStyleSheet("""
@@ -963,13 +961,11 @@ class ControlScreen(QWidget):
         """Fetch logs for the current lot from the API"""
         try:
             # Get lot_id from config
-            lot_id = CONFIG.get('lot_id')
-            if not lot_id:
-                return
-                
+            from config import LOT_ID
+            
             # Fetch logs with pagination
             success, response = self.api_client.get('services/logs/', 
-                                                  params={'skip': 0, 'limit': 100, 'lot_id': lot_id})
+                                                  params={'skip': 0, 'limit': 100, 'lot_id': LOT_ID})
             
             if success and response:
                 # Clear existing log entries
@@ -1164,17 +1160,15 @@ class ControlScreen(QWidget):
         type_filter = self.type_filter.currentText().lower()
         
         # Get lot_id from config
-        lot_id = CONFIG.get('lot_id')
-        if not lot_id:
-            return
-            
+        from config import LOT_ID
+        
         # Prepare filter parameters
-        params = {'skip': 0, 'limit': 100, 'lot_id': lot_id}
+        params = {'skip': 0, 'limit': 100, 'lot_id': LOT_ID}
         if lane_filter != "all":
             params['lane'] = lane_filter
         if type_filter != "all":
             params['type'] = type_filter
-            
+        
         # Fetch filtered logs
         success, response = self.api_client.get('services/logs/', params=params)
         

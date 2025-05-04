@@ -350,6 +350,8 @@ class ControlScreen(QWidget):
         """)
         
         log_layout = QVBoxLayout(log_frame)
+        log_layout.setContentsMargins(10, 10, 10, 10)
+        log_layout.setSpacing(5)
         
         log_title = QLabel("Activity Log")
         log_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #2c3e50;")
@@ -363,7 +365,8 @@ class ControlScreen(QWidget):
         log_widget = QWidget()
         self.logs_layout = QVBoxLayout(log_widget)
         self.logs_layout.setAlignment(Qt.AlignTop)
-        self.logs_layout.setSpacing(2)
+        self.logs_layout.setSpacing(0)
+        self.logs_layout.setContentsMargins(0, 0, 0, 0)
         
         log_scroll.setWidget(log_widget)
         
@@ -371,6 +374,7 @@ class ControlScreen(QWidget):
         header_widget = QWidget()
         header_layout = QHBoxLayout(header_widget)
         header_layout.setContentsMargins(5, 5, 5, 5)
+        header_layout.setSpacing(0)
         
         date_header = QLabel("Date/Time")
         lane_header = QLabel("Lane")
@@ -378,7 +382,7 @@ class ControlScreen(QWidget):
         type_header = QLabel("Type")
         
         # Style headers
-        header_style = "font-weight: bold; color: white; background-color: #3498db; padding: 5px;"
+        header_style = "font-weight: bold; color: white; background-color: #3498db; padding: 8px;"
         header_widget.setStyleSheet(header_style)
         
         # Add headers to layout
@@ -392,6 +396,12 @@ class ControlScreen(QWidget):
         lane_header.setFixedWidth(80)
         plate_header.setFixedWidth(100)
         type_header.setFixedWidth(80)
+        
+        # Align text in headers
+        date_header.setAlignment(Qt.AlignCenter)
+        lane_header.setAlignment(Qt.AlignCenter)
+        plate_header.setAlignment(Qt.AlignCenter)
+        type_header.setAlignment(Qt.AlignCenter)
         
         log_layout.addWidget(log_title)
         log_layout.addWidget(header_widget)
@@ -782,6 +792,7 @@ class ControlScreen(QWidget):
             log_widget = QWidget()
             log_layout = QHBoxLayout(log_widget)
             log_layout.setContentsMargins(5, 5, 5, 5)
+            log_layout.setSpacing(0)  # No spacing between elements
             
             # Create labels for each piece of information
             date_label = QLabel(f"{date_str} {time_str}")
@@ -789,11 +800,19 @@ class ControlScreen(QWidget):
             plate_label = QLabel(plate)
             type_label = QLabel(entry_type.capitalize())
             
+            # Center align all text
+            date_label.setAlignment(Qt.AlignCenter)
+            lane_label.setAlignment(Qt.AlignCenter)
+            plate_label.setAlignment(Qt.AlignCenter)
+            type_label.setAlignment(Qt.AlignCenter)
+            
             # Style based on entry/exit
             if lane.lower() == 'entry':
-                lane_label.setStyleSheet("color: green; font-weight: bold;")
+                lane_color = "#27ae60"  # Green
             else:
-                lane_label.setStyleSheet("color: red; font-weight: bold;")
+                lane_color = "#e74c3c"  # Red
+                
+            lane_label.setStyleSheet(f"color: {lane_color}; font-weight: bold;")
             
             # Add labels to layout
             log_layout.addWidget(date_label)
@@ -807,9 +826,16 @@ class ControlScreen(QWidget):
             plate_label.setFixedWidth(100)
             type_label.setFixedWidth(80)
             
-            # Add alternating row colors
-            if self.logs_layout.count() % 2 == 0:
+            # Add alternating row colors with full-width background
+            row_index = self.logs_layout.count()
+            if row_index % 2 == 0:
                 log_widget.setStyleSheet("background-color: #f5f5f5;")
+            else:
+                log_widget.setStyleSheet("background-color: white;")
+                
+            # Add consistent padding to all table cells
+            for label in [date_label, lane_label, plate_label, type_label]:
+                label.setStyleSheet(label.styleSheet() + "; padding: 8px; border-bottom: 1px solid #ddd;")
             
             # Add widget to layout
             self.logs_layout.addWidget(log_widget)

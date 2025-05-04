@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, 
                             QPushButton, QLabel, QSpacerItem, QSizePolicy)
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QPixmap, QPalette, QBrush
 from app.controllers.api_client import ApiClient
 from app.utils.auth_manager import AuthManager
@@ -159,6 +159,13 @@ class LoginScreen(QWidget):
         # Show loading state
         self.status_label.setText("Logging in...")
         self.status_label.setStyleSheet("color: #007bff") # Blue color for loading
+        self.update_ui_state(is_loading=True)
+        
+        # Create a timer to handle potential timeouts visually
+        timeout_timer = QTimer(self)
+        timeout_timer.setSingleShot(True)
+        timeout_timer.timeout.connect(self.handle_login_timeout)
+        timeout_timer.start(8000)  # 8 second visual timeout
         
         username = self.username.text()
         password = self.password.text()
@@ -167,13 +174,21 @@ class LoginScreen(QWidget):
         if not username or not password:
             self.status_label.setText("Username and password are required")
             self.status_label.setStyleSheet("color: #dc3545") # Red color for error
+            self.update_ui_state(is_loading=False)
+            timeout_timer.stop()
             return
         
         # Import LOT_ID from config
         from config import LOT_ID
         
+        # Use a more aggressive timeout for login to avoid UI freezing
+        login_timeout = (5, 10)  # 5s connect, 10s read
+        
         # Use the ApiClient to handle login
-        success, message, user_data = self.api_client.login(username, password)
+        success, message, user_data = self.api_client.login(username, password, timeout=login_timeout)
+        
+        # Stop the visual timeout timer
+        timeout_timer.stop()
         
         if success:
             # Debug log the assigned lots
@@ -186,6 +201,7 @@ class LoginScreen(QWidget):
                 self.status_label.setStyleSheet("color: #dc3545") # Red color for error
                 self.api_client.auth_manager.clear()  # Clear auth since user can't use this lot
                 self.login_failed.emit(f"Not assigned to Lot #{LOT_ID}")
+                self.update_ui_state(is_loading=False)
                 return
             
             # Login successful, emit signal for navigation
@@ -195,3 +211,19 @@ class LoginScreen(QWidget):
             self.status_label.setText(message)
             self.status_label.setStyleSheet("color: #dc3545") # Red color for error
             self.login_failed.emit(message)
+            self.update_ui_state(is_loading=False)
+    
+    def handle_login_timeout(self):
+        """Visual indication that login is taking longer than expected"""
+        self.status_label.setText("Login is taking longer than expected...")
+        self.status_label.setStyleSheet("color: #f39c12")  # Orange color for warning
+    
+    def update_ui_state(self, is_loading=False):
+        """Update UI elements based on loading state"""
+        login_button = self.findChild(QPushButton, "loginButton")
+        if login_button:
+            login_button.setEnabled(not is_loading)
+            if is_loading:
+                login_button.setText("Logging in...")
+            else:
+                login_button.setText("Log in")

@@ -663,11 +663,15 @@ class ControlScreen(QWidget):
                         'image': ('plate.png', img_bytes, 'image/png')
                     }
                 
+                # Use a reasonable timeout for log submissions since they include image data
+                log_timeout = (5.0, 15.0)  # 5s connect, 15s read
+                
                 # Send to API
                 success, response = self.api_client.post_with_files(
                     'services/guard-control/',
                     data=form_data,
-                    files=files
+                    files=files,
+                    timeout=log_timeout
                 )
                 
                 if success:
@@ -686,8 +690,13 @@ class ControlScreen(QWidget):
                         text-align: center;
                     """)
                 else:
-                    print(f"API log failed: {response}")
-                    if "Connection" in str(response):
+                    error_msg = str(response) if response else "Unknown error"
+                    print(f"API log failed: {error_msg}")
+                    
+                    if "timeout" in error_msg.lower():
+                        print("API log timed out - may retry later")
+                        
+                    if "Connection" in error_msg or "timeout" in error_msg.lower():
                         self.api_retry_count += 1
                         if self.api_retry_count >= self.max_api_retries:
                             self.api_available = False
@@ -705,8 +714,10 @@ class ControlScreen(QWidget):
                             """)
                     
             except Exception as e:
-                print(f"API logging error: {str(e)}")
-                if "Connection" in str(e) or "HTTPConnectionPool" in str(e):
+                error_msg = str(e)
+                print(f"API logging error: {error_msg}")
+                
+                if "Connection" in error_msg or "HTTPConnectionPool" in error_msg or "timeout" in error_msg.lower():
                     self.api_retry_count += 1
                     if self.api_retry_count >= self.max_api_retries:
                         self.api_available = False
@@ -774,8 +785,12 @@ class ControlScreen(QWidget):
                 margin: 10px 0;
             """)
             
-            # Call the API with the configured lot ID
-            success, data = self.api_client.get(f'services/lot-occupancy/{LOT_ID}')
+            # Call the API with the configured lot ID, using shorter timeout
+            # since this is a background operation that shouldn't block the UI
+            success, data = self.api_client.get(
+                f'services/lot-occupancy/{LOT_ID}',
+                timeout=(3.0, 5.0)  # 3s connect, 5s read
+            )
             
             if success and data:
                 # Extract data from response
@@ -800,8 +815,14 @@ class ControlScreen(QWidget):
                 
                 print(f"Occupancy updated: {occupancy_rate}% ({occupied}/{capacity})")
             else:
-                print(f"Failed to get occupancy data: {data}")
-                self.occupancy_label.setText("Occupancy data unavailable")
+                error_msg = str(data) if data else "Unknown error"
+                print(f"Failed to get occupancy data: {error_msg}")
+                
+                if "timeout" in error_msg.lower():
+                    self.occupancy_label.setText("Occupancy data timed out")
+                else:
+                    self.occupancy_label.setText("Occupancy data unavailable")
+                    
                 self.lot_name_label.setText(f"Lot ID: {LOT_ID} (Data unavailable)")
                 self.occupancy_label.setStyleSheet("""
                     font-size: 24px;
@@ -891,16 +912,28 @@ class ControlScreen(QWidget):
             self.log_table.setRowCount(0)
             
             # In production, implement real API call here:
-            # params = {'limit': limit}
-            # if start_date:
-            #     params['start_date'] = start_date
-            # if end_date:
-            #     params['end_date'] = end_date
-            # response = requests.get("http://your-api/logs", params=params)
-            # log_data = response.json()
+            params = {'limit': limit}
+            if start_date:
+                params['start_date'] = start_date
+            if end_date:
+                params['end_date'] = end_date
+                
+            # Use shorter timeout for log fetching
+            fetch_timeout = (3.0, 8.0)  # 3s connect, 8s read
+                
+            # Call the API to get logs
+            success, log_data = self.api_client.get(
+                "services/logs", 
+                params=params,
+                timeout=fetch_timeout
+            )
             
-            # For now, display an empty table until real data arrives
-            print("Fetching logs from API...")
+            if success and log_data:
+                # Process and display the logs
+                print(f"Successfully fetched {len(log_data)} logs")
+                # TODO: Display the logs in the table
+            else:
+                print(f"Failed to fetch logs: {log_data}")
             
         except Exception as e:
             print(f"Error fetching logs: {str(e)}")
@@ -1144,11 +1177,14 @@ class ControlScreen(QWidget):
         """Periodically check if API server is back online"""
         if not self.api_available:
             try:
+                # Use a very short timeout for connectivity checks to avoid blocking
+                api_check_timeout = (2.0, 3.0)  # 2s connect, 3s read
+                
                 # Try a standard FastAPI endpoint for health checking
-                success, _ = self.api_client.get('')  # Root endpoint
+                success, _ = self.api_client.get('', timeout=api_check_timeout)
                 if not success:
                     # Try openapi schema as a fallback
-                    success, _ = self.api_client.get('openapi.json')
+                    success, _ = self.api_client.get('openapi.json', timeout=api_check_timeout)
                 
                 if success:
                     self.api_available = True

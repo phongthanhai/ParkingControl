@@ -82,14 +82,31 @@ class LaneWorker(QThread):
             if self._camera_index is None:
                 raise ValueError(f"No camera configured for {self.lane_type}")
             
+            # Set initial timeout for camera initialization
+            init_start_time = time.time()
+            init_timeout = 5.0  # 5 seconds max for initialization
+            
             with self.camera_lock:
                 if self._cap is not None and self._cap.isOpened():
                     self._cap.release()
                 
                 self._cap = cv2.VideoCapture(self._camera_index)
                 
+                # Check if camera opened successfully with timeout
+                attempts = 0
+                max_attempts = 3
+                while not self._cap.isOpened() and attempts < max_attempts:
+                    # Check for timeout
+                    if time.time() - init_start_time > init_timeout:
+                        raise RuntimeError(f"Camera {self._camera_index} initialization timed out")
+                        
+                    # Wait a bit and retry
+                    time.sleep(0.5)
+                    attempts += 1
+                    self._cap = cv2.VideoCapture(self._camera_index)
+                
                 if not self._cap.isOpened():
-                    raise RuntimeError(f"Camera {self._camera_index} not available")
+                    raise RuntimeError(f"Camera {self._camera_index} not available after {max_attempts} attempts")
                 
                 # Camera configuration
                 self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
@@ -98,8 +115,19 @@ class LaneWorker(QThread):
                 self._cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
                 
                 # Warm-up period - read a few frames to stabilize
+                # Add timeout to warm-up as well
+                warmup_start = time.time()
+                warmup_timeout = 3.0  # 3 seconds max for warm-up
+                
                 for _ in range(5):
-                    self._cap.read()
+                    # Check for timeout during warm-up
+                    if time.time() - warmup_start > warmup_timeout:
+                        print(f"Camera {self._camera_index} warm-up timed out, continuing anyway")
+                        break
+                        
+                    ret, _ = self._cap.read()
+                    if not ret:
+                        print(f"Warning: Failed to read frame during camera warm-up")
                     time.sleep(0.1)
                 
                 self.state = LaneState.DETECTING

@@ -13,12 +13,25 @@ class PlateRecognizer(QObject):
     def __init__(self):
         super().__init__()
         self.last_call = 0
+        # Default timeout values
+        self.connect_timeout = 3.0
+        self.read_timeout = 5.0
 
-    def process(self, image):
-        """Returns (plate text, confidence score) tuple or None"""
+    def process(self, image, timeout=None):
+        """
+        Returns (plate text, confidence score) tuple or None
+        
+        Args:
+            image: OpenCV image containing the license plate
+            timeout (float or tuple): Connection and read timeout in seconds
+        """
         try:
             if time.time() - self.last_call < OCR_RATE_LIMIT:
                 return None
+            
+            # Use provided timeout or default values
+            if timeout is None:
+                timeout = (self.connect_timeout, self.read_timeout)
                 
             _, img_encoded = cv2.imencode('.jpg', image)
             img_bytes = BytesIO(img_encoded.tobytes())
@@ -27,7 +40,7 @@ class PlateRecognizer(QObject):
                 PLATE_RECOGNIZER_URL,
                 files={'upload': img_bytes},
                 headers={'Authorization': f'Token {PLATE_RECOGNIZER_API_KEY}'},
-                timeout=5
+                timeout=timeout
             )
             
             if response.status_code == 429:
@@ -40,6 +53,11 @@ class PlateRecognizer(QObject):
                     self.last_call = time.time()
                     plate_data = results['results'][0]
                     return (plate_data['plate'], plate_data['score'])
+                    
+        except requests.exceptions.ConnectTimeout:
+            self.error_signal.emit("Connection timeout to plate recognition API")
+        except requests.exceptions.ReadTimeout:
+            self.error_signal.emit("Read timeout from plate recognition API")
         except requests.exceptions.RequestException as e:
             self.error_signal.emit(f"Connection error: {str(e)}")
         except Exception as e:
@@ -58,20 +76,28 @@ class ApiClient:
         self.user_id = None
         self.user_role = None
         self.assigned_lots = []
+        # Default timeout values (in seconds)
+        self.connect_timeout = 5.0
+        self.read_timeout = 10.0
 
-    def login(self, username, password):
+    def login(self, username, password, timeout=None):
         """
         Authenticate user and store the token.
         
         Args:
             username (str): User's username
             password (str): User's password
+            timeout (float or tuple, optional): Connection and read timeout in seconds
             
         Returns:
             tuple: (success, message, data) - success is a boolean, message is a string, data contains user info
         """
         login_url = f"{self.base_url}/login/access-token"
         print(f"Attempting login at URL: {login_url}")
+        
+        # Use provided timeout or default values
+        if timeout is None:
+            timeout = (self.connect_timeout, self.read_timeout)
         
         # Prepare data in the format expected by OAuth2 form
         form_data = {
@@ -89,8 +115,8 @@ class ApiClient:
         }
         
         try:
-            # Send POST request
-            response = requests.post(login_url, data=form_data, headers=headers)
+            # Send POST request with timeout
+            response = requests.post(login_url, data=form_data, headers=headers, timeout=timeout)
             
             # Check response status
             if response.status_code == 200:
@@ -116,6 +142,10 @@ class ApiClient:
                 except:
                     return False, f"HTTP Error: {response.status_code}", None
                 
+        except requests.exceptions.ConnectTimeout:
+            return False, "Connection timeout. The server is not responding.", None
+        except requests.exceptions.ReadTimeout:
+            return False, "Read timeout. The server took too long to respond.", None
         except requests.exceptions.ConnectionError:
             return False, "Could not connect to the server. Please check if the server is running.", None
         except Exception as e:
@@ -139,24 +169,29 @@ class ApiClient:
             # If conversion fails, fall back to direct comparison
             return lot_id in self.assigned_lots
 
-    def get(self, endpoint, params=None):
+    def get(self, endpoint, params=None, timeout=None):
         """
         Send a GET request to the API.
         
         Args:
             endpoint (str): API endpoint
             params (dict, optional): Query parameters
+            timeout (float or tuple, optional): Connection and read timeout in seconds
             
         Returns:
             tuple: (success, data or error_message)
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         
+        # Use provided timeout or default values
+        if timeout is None:
+            timeout = (self.connect_timeout, self.read_timeout)
+        
         # Get authentication headers
         headers = self.auth_manager.auth_header
         
         try:
-            response = requests.get(url, params=params, headers=headers)
+            response = requests.get(url, params=params, headers=headers, timeout=timeout)
             
             if response.status_code == 200:
                 return True, response.json()
@@ -168,10 +203,14 @@ class ApiClient:
                 except:
                     return False, f"HTTP Error: {response.status_code}"
                     
+        except requests.exceptions.ConnectTimeout:
+            return False, "Connection timeout. The server is not responding."
+        except requests.exceptions.ReadTimeout:
+            return False, "Read timeout. The server took too long to respond."
         except Exception as e:
             return False, f"An error occurred: {str(e)}"
 
-    def post(self, endpoint, data=None, json_data=None):
+    def post(self, endpoint, data=None, json_data=None, timeout=None):
         """
         Send a POST request to the API.
         
@@ -179,11 +218,16 @@ class ApiClient:
             endpoint (str): API endpoint
             data (dict, optional): Form data
             json_data (dict, optional): JSON data
+            timeout (float or tuple, optional): Connection and read timeout in seconds
             
         Returns:
             tuple: (success, data or error_message)
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        
+        # Use provided timeout or default values
+        if timeout is None:
+            timeout = (self.connect_timeout, self.read_timeout)
         
         # Get authentication headers
         headers = self.auth_manager.auth_header
@@ -191,9 +235,9 @@ class ApiClient:
         try:
             if json_data:
                 headers['Content-Type'] = 'application/json'
-                response = requests.post(url, json=json_data, headers=headers)
+                response = requests.post(url, json=json_data, headers=headers, timeout=timeout)
             else:
-                response = requests.post(url, data=data, headers=headers)
+                response = requests.post(url, data=data, headers=headers, timeout=timeout)
             
             if response.status_code in [200, 201]:
                 return True, response.json()
@@ -205,10 +249,14 @@ class ApiClient:
                 except:
                     return False, f"HTTP Error: {response.status_code}"
                     
+        except requests.exceptions.ConnectTimeout:
+            return False, "Connection timeout. The server is not responding."
+        except requests.exceptions.ReadTimeout:
+            return False, "Read timeout. The server took too long to respond."
         except Exception as e:
             return False, f"An error occurred: {str(e)}"
 
-    def put(self, endpoint, data=None, json_data=None):
+    def put(self, endpoint, data=None, json_data=None, timeout=None):
         """
         Send a PUT request to the API.
         
@@ -216,11 +264,16 @@ class ApiClient:
             endpoint (str): API endpoint
             data (dict, optional): Form data
             json_data (dict, optional): JSON data
+            timeout (float or tuple, optional): Connection and read timeout in seconds
             
         Returns:
             tuple: (success, data or error_message)
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        
+        # Use provided timeout or default values
+        if timeout is None:
+            timeout = (self.connect_timeout, self.read_timeout)
         
         # Get authentication headers
         headers = self.auth_manager.auth_header
@@ -228,9 +281,9 @@ class ApiClient:
         try:
             if json_data:
                 headers['Content-Type'] = 'application/json'
-                response = requests.put(url, json=json_data, headers=headers)
+                response = requests.put(url, json=json_data, headers=headers, timeout=timeout)
             else:
-                response = requests.put(url, data=data, headers=headers)
+                response = requests.put(url, data=data, headers=headers, timeout=timeout)
             
             if response.status_code in [200, 201, 204]:
                 if response.content:
@@ -244,26 +297,35 @@ class ApiClient:
                 except:
                     return False, f"HTTP Error: {response.status_code}"
                     
+        except requests.exceptions.ConnectTimeout:
+            return False, "Connection timeout. The server is not responding."
+        except requests.exceptions.ReadTimeout:
+            return False, "Read timeout. The server took too long to respond."
         except Exception as e:
             return False, f"An error occurred: {str(e)}"
 
-    def delete(self, endpoint):
+    def delete(self, endpoint, timeout=None):
         """
         Send a DELETE request to the API.
         
         Args:
             endpoint (str): API endpoint
+            timeout (float or tuple, optional): Connection and read timeout in seconds
             
         Returns:
             tuple: (success, data or error_message)
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         
+        # Use provided timeout or default values
+        if timeout is None:
+            timeout = (self.connect_timeout, self.read_timeout)
+        
         # Get authentication headers
         headers = self.auth_manager.auth_header
         
         try:
-            response = requests.delete(url, headers=headers)
+            response = requests.delete(url, headers=headers, timeout=timeout)
             
             if response.status_code in [200, 204]:
                 if response.content:
@@ -277,10 +339,14 @@ class ApiClient:
                 except:
                     return False, f"HTTP Error: {response.status_code}"
                     
+        except requests.exceptions.ConnectTimeout:
+            return False, "Connection timeout. The server is not responding."
+        except requests.exceptions.ReadTimeout:
+            return False, "Read timeout. The server took too long to respond."
         except Exception as e:
             return False, f"An error occurred: {str(e)}"
 
-    def post_with_files(self, endpoint, data=None, files=None):
+    def post_with_files(self, endpoint, data=None, files=None, timeout=None):
         """
         Send a POST request with multipart/form-data including file uploads.
         
@@ -288,17 +354,23 @@ class ApiClient:
             endpoint (str): API endpoint
             data (dict, optional): Form data
             files (dict, optional): Files to upload
+            timeout (float or tuple, optional): Connection and read timeout in seconds
             
         Returns:
             tuple: (success, data or error_message)
         """
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         
+        # Use provided timeout or default values
+        if timeout is None:
+            # Use longer timeout for file uploads
+            timeout = (self.connect_timeout, self.read_timeout * 2)
+        
         # Get authentication headers
         headers = self.auth_manager.auth_header
         
         try:
-            response = requests.post(url, data=data, files=files, headers=headers)
+            response = requests.post(url, data=data, files=files, headers=headers, timeout=timeout)
             
             if response.status_code in [200, 201]:
                 return True, response.json()
@@ -310,5 +382,9 @@ class ApiClient:
                 except:
                     return False, f"HTTP Error: {response.status_code}"
                     
+        except requests.exceptions.ConnectTimeout:
+            return False, "Connection timeout. The server is not responding."
+        except requests.exceptions.ReadTimeout:
+            return False, "Read timeout. The server took too long to respond."
         except Exception as e:
             return False, f"An error occurred: {str(e)}"

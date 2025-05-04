@@ -298,32 +298,6 @@ class ControlScreen(QWidget):
         """)
         self.occupancy_label.setAlignment(Qt.AlignCenter)
         
-        # Initialize progress bar components
-        self.progress_container = QFrame()
-        self.progress_container.setFixedHeight(20)
-        self.progress_container.setStyleSheet("""
-            QFrame {
-                background-color: #ecf0f1;
-                border-radius: 10px;
-                border: 1px solid #bdc3c7;
-            }
-        """)
-        
-        # Create a simplified progress indicator
-        self.progress_indicator = QFrame(self.progress_container)
-        self.progress_indicator.setFixedHeight(16)  # Slightly smaller than container
-        self.progress_indicator.move(2, 2)  # Small margins
-        self.progress_indicator.setStyleSheet("""
-            background-color: #3498db;
-            border-radius: 7px;
-        """)
-        
-        # Add widgets to layout in proper order
-        occupancy_layout.addWidget(occupancy_title)
-        occupancy_layout.addWidget(self.lot_name_label)
-        occupancy_layout.addWidget(self.occupancy_label)
-        occupancy_layout.addWidget(self.progress_container)
-        
         # Initialize capacity value and update time labels
         self.capacity_value = QLabel("Loading...")
         self.capacity_value.setStyleSheet("font-weight: bold; color: #2c3e50;")
@@ -385,23 +359,6 @@ class ControlScreen(QWidget):
         log_layout.addWidget(self.log_table)
         
         main_layout.addWidget(log_frame)
-        
-        # Set up keyboard shortcut info
-        shortcut_frame = QFrame()
-        shortcut_frame.setStyleSheet("""
-            QFrame {
-                background-color: #f5f5f5;
-                border-radius: 4px;
-                padding: 10px;
-            }
-        """)
-        
-        shortcut_layout = QHBoxLayout(shortcut_frame)
-        shortcut_label = QLabel("Hotkeys: 1-Open Entry | 2-Close Entry | 3-Open Exit | 4-Close Exit")
-        shortcut_label.setStyleSheet("color: #7f8c8d; font-size: 14px;")
-        shortcut_layout.addWidget(shortcut_label)
-        
-        main_layout.addWidget(shortcut_frame)
         
         # Set the main container as the scroll area widget
         scroll_area.setWidget(main_container)
@@ -896,9 +853,6 @@ class ControlScreen(QWidget):
             
     def _update_occupancy_visual(self, occupancy_rate, occupied, available):
         """Update the visual representation of occupancy"""
-        # Import necessary animation classes
-        from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
-        
         # Set color based on occupancy rate
         if occupancy_rate < 60:
             color = "#27ae60"  # Green
@@ -919,53 +873,7 @@ class ControlScreen(QWidget):
             margin: 10px 0;
         """)
         
-        # Make sure we have numeric values
-        try:
-            if isinstance(occupancy_rate, str):
-                occupancy_rate = float(occupancy_rate.replace('%', ''))
-            occupancy_rate = max(0, min(100, occupancy_rate))
-        except Exception as e:
-            print(f"Error converting occupancy rate: {e}")
-            occupancy_rate = 0
-            
-        # Set progress indicator color
-        self.progress_indicator.setStyleSheet(f"""
-            background-color: {color};
-            border-radius: 7px;
-        """)
-        
-        # Get container width
-        container_width = self.progress_container.width()
-        if container_width <= 0:
-            container_width = self.progress_container.sizeHint().width()
-        
-        # Calculate indicator width - adjusted to align with percentage markers
-        usable_width = container_width
-        indicator_width = int(usable_width * (occupancy_rate / 100.0))
-        
-        # Ensure minimum visible width if any occupancy
-        if occupancy_rate > 0 and indicator_width < 5:
-            indicator_width = 5
-        
-        # Store current width for animation
-        current_width = self.progress_indicator.width()
-        
-        # Create the animation
-        self.progress_anim = QPropertyAnimation(self.progress_indicator, b"geometry")
-        self.progress_anim.setDuration(500)  # Animation duration in ms
-        self.progress_anim.setEasingCurve(QEasingCurve.OutCubic)  # Smooth animation curve
-        
-        # Get current position
-        current_y = self.progress_indicator.y()
-        
-        # Set start and end states
-        self.progress_anim.setStartValue(QRect(2, current_y, current_width, 16))
-        self.progress_anim.setEndValue(QRect(2, current_y, indicator_width, 16))
-        
-        # Start the animation
-        self.progress_anim.start()
-        
-        print(f"Updated progress bar: {occupancy_rate}% - width: {indicator_width}/{container_width}")
+        # Progress bar animation removed
 
     def fetch_logs(self, start_date=None, end_date=None, limit=50):
         """
@@ -1076,28 +984,7 @@ class ControlScreen(QWidget):
         # Get the occupancy layout
         occupancy_layout = self.occupancy_frame.layout()
         
-        # Add percentage indicators below the bar
-        meter_layout = QHBoxLayout()
-        meter_layout.setContentsMargins(2, 0, 2, 0)  # Tight margins to align with progress bar
-        meter_layout.setSpacing(0)
-        
-        # Add percentage markers aligned with progress bar
-        markers = [0, 25, 50, 75, 100]
-        for i, percent in enumerate(markers):
-            label = QLabel(f"{percent}%")
-            label.setAlignment(Qt.AlignCenter)
-            label.setStyleSheet("color: #7f8c8d; font-size: 12px;")
-            
-            # Position correctly - first and last align to edges, others centered
-            if i == 0:  # first
-                label.setAlignment(Qt.AlignLeft)
-            elif i == len(markers) - 1:  # last
-                label.setAlignment(Qt.AlignRight)
-            
-            meter_layout.addWidget(label, 1)  # Equal stretch for all markers
-        
-        # Add percentage scale to layout
-        occupancy_layout.addLayout(meter_layout)
+        # Percentage indicators removed
         
         # Add capacity info
         capacity_layout = QHBoxLayout()

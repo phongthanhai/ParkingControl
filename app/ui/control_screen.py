@@ -10,7 +10,7 @@ from app.controllers.lane_controller import LaneWorker, LaneState
 import cv2
 from app.controllers.api_client import ApiClient
 from PyQt5.QtWidgets import QApplication
-import datetime
+from datetime import datetime
 
 class LaneWidget(QWidget):
     def __init__(self, title):
@@ -894,7 +894,7 @@ class ControlScreen(QWidget):
                 self._update_occupancy_visual(occupancy_rate, occupied, available)
                 
                 # Update timestamp
-                self.update_time.setText(datetime.datetime.now().strftime("%H:%M:%S"))
+                self.update_time.setText(datetime.now().strftime("%H:%M:%S"))
                 
                 print(f"Occupancy updated: {occupancy_rate}% ({occupied}/{capacity})")
             else:

@@ -82,7 +82,7 @@ class LoginScreen(QWidget):
         self.setAutoFillBackground(True)
         
         # Set background image
-        self.set_background_image("background.jpg")  # Update path as needed
+        self.set_background_image("/home/raspberrypi/Documents/ParkingControl/app/resources/parking.jpg")  # Update path as needed
 
     def set_background_image(self, image_path):
         try:

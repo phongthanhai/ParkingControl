@@ -9,6 +9,7 @@ from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE
 from app.controllers.lane_controller import LaneWorker, LaneState
 import cv2
 from app.controllers.api_client import ApiClient
+from PyQt5.QtWidgets import QApplication
 
 class LaneWidget(QWidget):
     def __init__(self, title):
@@ -931,15 +932,49 @@ class ControlScreen(QWidget):
         """)
         
         try:
-            # Calculate the new width for the progress indicator based on percentage
+            # Convert occupancy_rate to a float if it's a string
+            if isinstance(occupancy_rate, str):
+                occupancy_rate = float(occupancy_rate.replace('%', ''))
+                
+            # Ensure occupancy_rate is within 0-100 range
+            occupancy_rate = max(0, min(100, occupancy_rate))
+            
+            # Force layout update to ensure correct width calculations
+            self.progress_container.updateGeometry()
+            
+            # Wait for layout to be updated
+            QApplication.processEvents()
+            
             # Get the total width available
             total_width = self.progress_container.width() - 4  # Subtract margins
             
-            # Calculate the width corresponding to the occupancy percentage
-            indicator_width = int(total_width * (occupancy_rate / 100))
+            # Ensure total_width is positive
+            if total_width <= 0:
+                print(f"Warning: Progress container width is {total_width}, using default width")
+                total_width = 200  # Use a default width if container width is not available
             
+            # Calculate the width corresponding to the occupancy percentage
+            indicator_width = int(total_width * (occupancy_rate / 100.0))
+            
+            # Ensure min width of 1 if occupancy is > 0
+            if occupancy_rate > 0 and indicator_width == 0:
+                indicator_width = 1
+                
             # Update the fixed width of the progress indicator
-            self.progress_indicator.setFixedWidth(max(0, indicator_width))
+            self.progress_indicator.setFixedWidth(indicator_width)
+            
+            # Remove and re-add the widgets to refresh layout
+            progress_layout = self.progress_container.layout()
+            if progress_layout:
+                # Clear layout first
+                while progress_layout.count():
+                    item = progress_layout.takeAt(0)
+                    if item.widget():
+                        item.widget().setParent(None)
+                
+                # Add indicator and background again
+                progress_layout.addWidget(self.progress_indicator)
+                progress_layout.addWidget(self.progress_background, 1)
             
             # Force update
             self.progress_container.update()
@@ -949,6 +984,8 @@ class ControlScreen(QWidget):
             
         except Exception as e:
             print(f"Error updating progress bar: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def fetch_logs(self, start_date=None, end_date=None, limit=50):
         """

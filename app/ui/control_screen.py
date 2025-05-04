@@ -1,8 +1,4 @@
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                            QFrame, QLineEdit, QPushButton, QMessageBox,
-                            QTableWidget, QTableWidgetItem, QHeaderView, 
-                            QScrollArea, QSizePolicy, QComboBox)
-from PyQt5.QtGui import QPixmap, QImage, QFont, QColor, QPalette
+from PyQt5.QtGui import QPixmap, QImage, QFont, QColor, QPalette, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSpacerItem, QWidget, QComboBox, QMessageBox
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Qt, Q_ARG
 import RPi.GPIO as GPIO
 import time
@@ -22,19 +18,36 @@ class LaneWidget(QWidget):
         self.manual_input = QLineEdit()
         self.submit_btn = QPushButton("Submit")
         self.reconnect_btn = QPushButton("Reconnect Camera")
+        
+        # Make manual input fields always present but hidden initially
+        self.manual_input.setVisible(False)
+        self.submit_btn.setVisible(False)
         self.reconnect_btn.setVisible(False)
+        
+        # Apply fixed size policies to maintain consistency
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        
         self._setup_ui()
 
     def _setup_ui(self):
         layout = QVBoxLayout()
+        layout.setSpacing(10)  # Consistent spacing
+        
         # Title
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setStyleSheet("font-weight: bold; font-size: 20px; color: #2c3e50; margin-bottom: 10px;")
         
-        # Image display
+        # Image display with fixed size
         self.image_label.setFixedSize(640, 480)
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setStyleSheet("border: 2px solid #3498db; background: black; border-radius: 4px;")
+        
+        # Fixed height container for plate and status
+        info_container = QFrame()
+        info_container.setFixedHeight(100)  # Fixed height for consistent spacing
+        info_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        info_layout = QVBoxLayout(info_container)
+        info_layout.setContentsMargins(0, 0, 0, 0)
         
         # Plate text
         self.plate_label.setAlignment(Qt.AlignCenter)
@@ -56,7 +69,17 @@ class LaneWidget(QWidget):
             margin-bottom: 5px;
         """)
         
-        # Manual input
+        info_layout.addWidget(self.plate_label)
+        info_layout.addWidget(self.status_label)
+        
+        # Manual input container with fixed height
+        manual_container = QFrame()
+        manual_container.setFixedHeight(50)  # Fixed height for consistent spacing
+        manual_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        manual_layout = QHBoxLayout(manual_container)
+        manual_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Manual input styling
         self.manual_input.setPlaceholderText("Enter plate manually")
         self.manual_input.setStyleSheet("""
             padding: 8px;
@@ -64,7 +87,6 @@ class LaneWidget(QWidget):
             border: 1px solid #ddd;
             border-radius: 4px;
         """)
-        self.manual_input.setVisible(False)
         
         self.submit_btn.setStyleSheet("""
             background-color: #2ecc71;
@@ -74,9 +96,17 @@ class LaneWidget(QWidget):
             border-radius: 4px;
             font-weight: bold;
         """)
-        self.submit_btn.setVisible(False)
         
-        # Reconnect button styling
+        manual_layout.addWidget(self.manual_input)
+        manual_layout.addWidget(self.submit_btn)
+        
+        # Reconnect button styling in a separate container
+        control_container = QFrame()
+        control_container.setFixedHeight(40)  # Fixed height for consistent spacing
+        control_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        control_layout = QHBoxLayout(control_container)
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        
         self.reconnect_btn.setStyleSheet("""
             background-color: #3498db;
             color: white;
@@ -86,20 +116,17 @@ class LaneWidget(QWidget):
             font-weight: bold;
         """)
         
-        input_layout = QHBoxLayout()
-        input_layout.addWidget(self.manual_input)
-        input_layout.addWidget(self.submit_btn)
-        
-        # Control layout
-        control_layout = QHBoxLayout()
         control_layout.addWidget(self.reconnect_btn)
         
+        # Add all elements to main layout
         layout.addWidget(self.title_label)
         layout.addWidget(self.image_label)
-        layout.addWidget(self.plate_label)
-        layout.addWidget(self.status_label)
-        layout.addLayout(input_layout)
-        layout.addLayout(control_layout)
+        layout.addWidget(info_container)
+        layout.addWidget(manual_container)
+        layout.addWidget(control_container)
+        
+        # Use stretch to maintain consistent spacing
+        layout.addStretch(1)
         
         self.setLayout(layout)
     
@@ -147,9 +174,6 @@ class ControlScreen(QWidget):
         
         # Initial data load
         QTimer.singleShot(1000, self.refresh_data)
-        
-        # Optional: Setup auto-refresh timer (every 5 minutes)
-        self.setup_refresh_timer(300000)    
 
     def _setup_gpio(self):
         try:
@@ -173,7 +197,7 @@ class ControlScreen(QWidget):
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(20)
         
-        # Create lane widgets layout
+        # Create lane widgets layout with equal spacing
         lanes_layout = QHBoxLayout()
         lanes_layout.setSpacing(20)
         
@@ -327,17 +351,11 @@ class ControlScreen(QWidget):
         self._update_occupancy()
         
         # Initialize the log table
-        self._update_log_table()
-
-        # Add these lines at the end of your _setup_ui method
+        self._clear_log_table()
 
         # Enhance UI components
         self._enhance_occupancy_display()
         self._enhance_log_table()
-
-        # Initialize the log table with sample data
-        self.fetch_logs()
-
 
     def _setup_camera_workers(self):
         with self.worker_guard:
@@ -411,11 +429,6 @@ class ControlScreen(QWidget):
                 display_text = f"{text} ({confidence:.2f})"
             widget.plate_label.setText(display_text)
             
-            # Show manual input if needed
-            if text.startswith("Invalid"):
-                widget.manual_input.setVisible(True)
-                widget.submit_btn.setVisible(True)
-                
         except Exception as e:
             self._show_error(lane, f"UI Update Error: {str(e)}")
 
@@ -584,81 +597,31 @@ class ControlScreen(QWidget):
         except Exception as e:
             print(f"Error adding log entry: {str(e)}")
 
-    def _update_log_table(self):
-        """Fetch and display log data from API"""
-        # This function would be called when new data is available
-        # For now, we'll populate with sample data
-        try:
-            # Sample data - in production, this would come from your API
-            sample_logs = [
-                {
-                    "timestamp": time.time() - 3600,  # 1 hour ago
-                    "lane": "entry",
-                    "plate": "30A-12345",
-                    "type": "auto"
-                },
-                {
-                    "timestamp": time.time() - 1800,  # 30 minutes ago
-                    "lane": "exit",
-                    "plate": "59D-67890",
-                    "type": "manual"
-                }
-            ]
-            
-            # Clear existing entries
-            self.log_table.setRowCount(0)
-            
-            # Add sample entries
-            for log in sample_logs:
-                self._add_log_entry(log)
-                
-            print("Log table updated with sample data")
-            
-        except Exception as e:
-            print(f"Error updating log table: {str(e)}")
-
-    # Add these functions to your existing ControlScreen class in the 605-line file
+    def _clear_log_table(self):
+        """Clear log table"""
+        self.log_table.setRowCount(0)
 
     def _update_occupancy(self):
         """Update the occupancy display with data from API"""
         try:
-            # In production, replace this with actual API call
+            # Call your actual API here
             # For example: response = requests.get("http://your-api/occupancy")
-            # occupancy_data = response.json()
             
-            # Simulate API response for now
-            import random
-            occupancy_data = {
-                "current": random.randint(30, 95),
-                "total": 100,
-                "percentage": random.randint(30, 95)
-            }
-            
-            # Update the UI
-            percentage = occupancy_data.get('percentage', 0)
-            current = occupancy_data.get('current', 0)
-            total = occupancy_data.get('total', 100)
-            
-            # Set color based on occupancy level
-            if percentage < 60:
-                color = "#27ae60"  # Green
-            elif percentage < 85:
-                color = "#f1c40f"  # Yellow
-            else:
-                color = "#e74c3c"  # Red
-                
-            self.occupancy_label.setText(f"{current}/{total} spaces ({percentage}%)")
-            self.occupancy_label.setStyleSheet(f"""
+            # Set loading state while waiting for API
+            self.occupancy_label.setText("Loading occupancy data...")
+            self.occupancy_label.setStyleSheet("""
                 font-size: 24px;
                 font-weight: bold;
                 color: white;
-                background-color: {color};
+                background-color: #7f8c8d;
                 padding: 10px;
                 border-radius: 4px;
                 margin: 10px 0;
             """)
             
-            print(f"Occupancy updated: {percentage}%")
+            # In production, you would update once API returns data
+            # This is just a placeholder until real data is available
+            self.occupancy_label.setText("Occupancy data unavailable")
             
         except Exception as e:
             print(f"Error updating occupancy: {str(e)}")
@@ -683,8 +646,10 @@ class ControlScreen(QWidget):
             limit: Maximum number of logs to fetch
         """
         try:
-            # In production, replace with actual API call
-            # Example:
+            # Clear existing rows
+            self.log_table.setRowCount(0)
+            
+            # In production, implement real API call here:
             # params = {'limit': limit}
             # if start_date:
             #     params['start_date'] = start_date
@@ -693,56 +658,11 @@ class ControlScreen(QWidget):
             # response = requests.get("http://your-api/logs", params=params)
             # log_data = response.json()
             
-            # Simulate API response with sample data
-            import time
-            import random
-            
-            # Sample plate numbers
-            plates = ["30A-12345", "29B-67890", "51C-98765", "59D-54321", "43E-13579"]
-            lane_types = ["entry", "exit"]
-            action_types = ["auto", "manual"]
-            
-            # Generate random logs
-            log_data = []
-            for i in range(limit):
-                timestamp = time.time() - random.randint(0, 86400)  # Random time in last 24 hours
-                log_data.append({
-                    "timestamp": timestamp,
-                    "lane": random.choice(lane_types),
-                    "plate": random.choice(plates),
-                    "type": random.choice(action_types)
-                })
-                
-            # Sort by timestamp (newest first)
-            log_data.sort(key=lambda x: x["timestamp"], reverse=True)
-            
-            # Update the log table
-            self._populate_log_table(log_data)
-            
-            print(f"Fetched {len(log_data)} logs")
-            return log_data
+            # For now, display an empty table until real data arrives
+            print("Fetching logs from API...")
             
         except Exception as e:
             print(f"Error fetching logs: {str(e)}")
-            return []
-
-    def _populate_log_table(self, log_data):
-        """
-        Populate the log table with data from API
-        
-        Args:
-            log_data: List of log entries
-        """
-        try:
-            # Clear existing rows
-            self.log_table.setRowCount(0)
-            
-            # Add each log entry to the table
-            for log in log_data:
-                self._add_log_entry(log)
-                
-        except Exception as e:
-            print(f"Error populating log table: {str(e)}")
 
     def refresh_data(self):
         """Refresh both occupancy and log data from API"""
@@ -750,7 +670,7 @@ class ControlScreen(QWidget):
         self.fetch_logs()
         
         # Show success message temporarily
-        status_msg = QLabel("Data refreshed successfully")
+        status_msg = QLabel("Data refreshed")
         status_msg.setStyleSheet("""
             background-color: #2ecc71;
             color: white;
@@ -767,17 +687,6 @@ class ControlScreen(QWidget):
             
             # Remove after 3 seconds
             QTimer.singleShot(3000, lambda: status_msg.deleteLater())
-
-    def setup_refresh_timer(self, interval=60000):
-        """Setup automatic refresh timer
-        
-        Args:
-            interval: Refresh interval in milliseconds (default: 60 seconds)
-        """
-        self.refresh_timer = QTimer(self)
-        self.refresh_timer.timeout.connect(self.refresh_data)
-        self.refresh_timer.start(interval)
-        print(f"Auto-refresh timer started: {interval/1000} seconds")
 
     def add_refresh_button(self):
         """Add a refresh button to the UI"""

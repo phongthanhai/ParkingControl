@@ -1084,7 +1084,7 @@ class ControlScreen(QWidget):
         # Arrange capacity info with existing widgets
         capacity_layout.addWidget(capacity_label)
         capacity_layout.addWidget(self.capacity_value)
-        capacity_layout.addStretch()
+        capacity_layout.addStretch(1)
         capacity_layout.addWidget(last_updated)
         capacity_layout.addWidget(self.update_time)
         

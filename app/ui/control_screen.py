@@ -5,7 +5,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG
 import RPi.GPIO as GPIO
 import time
 import threading
-from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE_PATTERN, API_BASE_URL
+from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE_PATTERN, API_BASE_URL, LOT_ID
 from app.controllers.lane_controller import LaneWorker, LaneState
 import cv2
 from app.controllers.api_client import ApiClient
@@ -609,11 +609,20 @@ class ControlScreen(QWidget):
     def _log_entry(self, lane, data, entry_type):
         try:
             # Create log data for internal tracking
+            current_time = time.time()
+            
+            # Format timestamp like "2025-05-04 14:26:14.545501"
+            # time.strftime doesn't include microseconds, so we handle those separately
+            timestamp_base = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(current_time))
+            microseconds = int((current_time - int(current_time)) * 1000000)
+            formatted_timestamp = f"{timestamp_base}.{microseconds}"
+            
             log_data = {
                 "lane": lane,
                 "plate": data.get('text', 'N/A'),
                 "confidence": data.get('confidence', 0.0),
-                "timestamp": time.time(),
+                "timestamp": current_time,
+                "formatted_time": formatted_timestamp,
                 "type": entry_type
             }
             print(f"Log entry created: {log_data}")
@@ -637,10 +646,11 @@ class ControlScreen(QWidget):
                 # Prepare form data
                 form_data = {
                     'plate_id': data.get('text', 'N/A'),
-                    'lot_id': 4,  # Default lot id
+                    'lot_id': LOT_ID,  # Use configured lot ID
                     'lane': lane,
                     'confidence_score': data.get('confidence', 0.0),
-                    'type': entry_type
+                    'type': entry_type, 
+                    'timestamp': formatted_timestamp  # Use formatted timestamp
                 }
                 
                 # Prepare files dict if image is available
@@ -719,9 +729,15 @@ class ControlScreen(QWidget):
     def _add_log_entry(self, data):
         """Add a new entry to the log table"""
         try:
-            timestamp = data.get('timestamp', time.time())
-            date_str = time.strftime("%Y-%m-%d", time.localtime(timestamp))
-            time_str = time.strftime("%H:%M:%S", time.localtime(timestamp))
+            if 'formatted_time' in data:
+                # Use pre-formatted timestamp if available
+                formatted_time = data['formatted_time']
+                date_str, time_str = formatted_time.split(' ')[0], formatted_time.split(' ')[1].split('.')[0]
+            else:
+                # Calculate from timestamp
+                timestamp = data.get('timestamp', time.time())
+                date_str = time.strftime("%Y-%m-%d", time.localtime(timestamp))
+                time_str = time.strftime("%H:%M:%S", time.localtime(timestamp))
             
             row_position = self.log_table.rowCount()
             self.log_table.insertRow(row_position)
@@ -995,10 +1011,10 @@ class ControlScreen(QWidget):
         """Periodically check if API server is back online"""
         if not self.api_available:
             try:
-                # Try the health-check endpoint first
-                success, _ = self.api_client.get('health-check')
+                # Try a standard FastAPI endpoint for health checking
+                success, _ = self.api_client.get('')  # Root endpoint
                 if not success:
-                    # If that fails, try a standard endpoint that should exist
+                    # Try openapi schema as a fallback
                     success, _ = self.api_client.get('openapi.json')
                 
                 if success:

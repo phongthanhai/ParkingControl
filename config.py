@@ -39,3 +39,6 @@ API_BASE_URL = "http://192.168.1.18:8000/api/v1"  # Base URL for backend API on 
 
 # UI Settings
 UI_REFRESH_RATE = 100  # ms
+
+# Lot ID for this raspberry pi
+LOT_ID = 4

@@ -54,6 +54,10 @@ class ApiClient:
     def __init__(self, base_url="http://192.168.1.18:8000/api/v1"):
         self.base_url = base_url
         self.auth_manager = AuthManager()
+        # Store user information
+        self.user_id = None
+        self.user_role = None
+        self.assigned_lots = []
 
     def login(self, username, password):
         """
@@ -64,9 +68,10 @@ class ApiClient:
             password (str): User's password
             
         Returns:
-            tuple: (success, message) - success is a boolean, message is a string
+            tuple: (success, message, data) - success is a boolean, message is a string, data contains user info
         """
         login_url = f"{self.base_url}/login/access-token"
+        print(f"Attempting login at URL: {login_url}")
         
         # Prepare data in the format expected by OAuth2 form
         form_data = {
@@ -96,20 +101,43 @@ class ApiClient:
                 self.auth_manager.access_token = data['access_token']
                 self.auth_manager.token_type = data['token_type']
                 
-                return True, "Login successful"
+                # Store user information
+                self.user_id = data.get('user_id')
+                self.user_role = data.get('user_role')
+                self.assigned_lots = data.get('assigned_lots', [])
+                
+                return True, "Login successful", data
             else:
                 # Handle error responses
                 try:
                     error_data = response.json()
                     if 'detail' in error_data:
-                        return False, error_data['detail']
+                        return False, error_data['detail'], None
                 except:
-                    return False, f"HTTP Error: {response.status_code}"
+                    return False, f"HTTP Error: {response.status_code}", None
                 
         except requests.exceptions.ConnectionError:
-            return False, "Could not connect to the server. Please check if the server is running."
+            return False, "Could not connect to the server. Please check if the server is running.", None
         except Exception as e:
-            return False, f"An error occurred: {str(e)}"
+            return False, f"An error occurred: {str(e)}", None
+
+    def is_lot_assigned(self, lot_id):
+        """
+        Check if the given lot_id is assigned to the authenticated user
+        
+        Args:
+            lot_id (int): Lot ID to check
+            
+        Returns:
+            bool: True if the lot is assigned to the user, False otherwise
+        """
+        try:
+            # Ensure both are integers for comparison
+            lot_id_int = int(lot_id)
+            return lot_id_int in [int(l) for l in self.assigned_lots]
+        except (ValueError, TypeError):
+            # If conversion fails, fall back to direct comparison
+            return lot_id in self.assigned_lots
 
     def get(self, endpoint, params=None):
         """

@@ -169,10 +169,25 @@ class LoginScreen(QWidget):
             self.status_label.setStyleSheet("color: #dc3545") # Red color for error
             return
         
+        # Import LOT_ID from config
+        from config import LOT_ID
+        
         # Use the ApiClient to handle login
-        success, message = self.api_client.login(username, password)
+        success, message, user_data = self.api_client.login(username, password)
         
         if success:
+            # Debug log the assigned lots
+            print(f"User assigned lots: {self.api_client.assigned_lots}")
+            print(f"Configured lot ID: {LOT_ID}")
+            
+            # Check if the user has access to this parking lot
+            if not self.api_client.is_lot_assigned(LOT_ID):
+                self.status_label.setText(f"You are not assigned to Lot #{LOT_ID}")
+                self.status_label.setStyleSheet("color: #dc3545") # Red color for error
+                self.api_client.auth_manager.clear()  # Clear auth since user can't use this lot
+                self.login_failed.emit(f"Not assigned to Lot #{LOT_ID}")
+                return
+            
             # Login successful, emit signal for navigation
             self.login_success.emit()
         else:

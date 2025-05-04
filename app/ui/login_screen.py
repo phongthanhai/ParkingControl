@@ -2,15 +2,19 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
                             QPushButton, QLabel, QSpacerItem, QSizePolicy)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QPixmap, QPalette, QBrush
+from controllers.api_client import ApiClient
+from utils.auth_manager import AuthManager
 
 class LoginScreen(QWidget):
-    login_success = pyqtSignal()
+    login_success = pyqtSignal()  # Signal for screen navigation
     login_failed = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
         self.setup_ui()
         self.setup_styles()
+        self.api_client = ApiClient()
+        self.auth_manager = AuthManager()
 
     def setup_ui(self):
         # Set up main layout
@@ -152,13 +156,27 @@ class LoginScreen(QWidget):
         pass
 
     def attempt_login(self):
-        # Replace with actual API call
+        # Show loading state
+        self.status_label.setText("Logging in...")
+        self.status_label.setStyleSheet("color: #007bff") # Blue color for loading
+        
         username = self.username.text()
         password = self.password.text()
         
-        # Mock authentication
-        if username == "admin" and password == "password":
+        # Validate input
+        if not username or not password:
+            self.status_label.setText("Username and password are required")
+            self.status_label.setStyleSheet("color: #dc3545") # Red color for error
+            return
+        
+        # Use the ApiClient to handle login
+        success, message = self.api_client.login(username, password)
+        
+        if success:
+            # Login successful, emit signal for navigation
             self.login_success.emit()
         else:
-            self.login_failed.emit("Invalid credentials")
-            self.status_label.setText("Invalid username or password")
+            # Login failed, display error message
+            self.status_label.setText(message)
+            self.status_label.setStyleSheet("color: #dc3545") # Red color for error
+            self.login_failed.emit(message)

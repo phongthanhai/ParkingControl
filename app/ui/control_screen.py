@@ -4,7 +4,6 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                             QScrollArea, QSizePolicy, QComboBox)
 from PyQt5.QtGui import QPixmap, QImage, QFont, QColor, QPalette
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Qt, Q_ARG
-import cv2
 import RPi.GPIO as GPIO
 import time
 import threading

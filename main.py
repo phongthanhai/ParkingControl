@@ -7,7 +7,7 @@ class ParkingSystem(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Parking Control System")
-        self.resize(1200, 700)  # Set initial window size
+        self.resize(1920, 1080)  # Set initial window size
         self.setup_ui()
 
     def setup_ui(self):

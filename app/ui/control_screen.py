@@ -385,7 +385,7 @@ class ControlScreen(QWidget):
                 border-right: 1px solid #fff;
                 font-weight: bold;
                 font-size: 14px;  /* Explicitly set font size */
-                min-height: 30px; /* Ensure minimum height for header */
+                min-height: 42px; /* Ensure minimum height for header */
                 margin: 0px;
             }
         """)

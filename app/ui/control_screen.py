@@ -637,7 +637,7 @@ class ControlScreen(QWidget):
                 # Prepare form data
                 form_data = {
                     'plate_id': data.get('text', 'N/A'),
-                    'lot_id': 0,  # Default lot id
+                    'lot_id': 4,  # Default lot id
                     'lane': lane,
                     'confidence_score': data.get('confidence', 0.0),
                     'type': entry_type

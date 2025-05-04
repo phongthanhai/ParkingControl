@@ -309,28 +309,17 @@ class ControlScreen(QWidget):
             }
         """)
         
-        # Use a simple QHBoxLayout for the progress container
-        progress_layout = QHBoxLayout(self.progress_container)
-        progress_layout.setContentsMargins(2, 2, 2, 2)
-        progress_layout.setSpacing(0)
-        
-        # Use two frames for the indicator and background
-        self.progress_indicator = QFrame()
+        # Create a simplified progress indicator
+        self.progress_indicator = QFrame(self.progress_container)
+        self.progress_indicator.setFixedHeight(16)  # Slightly smaller than container
+        self.progress_indicator.move(2, 2)  # Small margins
         self.progress_indicator.setStyleSheet("""
             background-color: #3498db;
-            border-radius: 8px;
+            border-radius: 7px;
         """)
         
-        # Initially the indicator has 0 width
-        self.progress_indicator.setFixedWidth(0)
-        
-        # Empty frame to fill the rest (transparent)
-        self.progress_background = QFrame()
-        self.progress_background.setStyleSheet("background: transparent;")
-        
-        # Add both frames to layout
-        progress_layout.addWidget(self.progress_indicator)
-        progress_layout.addWidget(self.progress_background, 1)  # Background takes all remaining space
+        # Add the progress container to the layout
+        occupancy_layout.addWidget(self.progress_container)
         
         # Initialize capacity value and update time labels
         self.capacity_value = QLabel("Loading...")
@@ -343,7 +332,6 @@ class ControlScreen(QWidget):
         occupancy_layout.addWidget(occupancy_title)
         occupancy_layout.addWidget(self.lot_name_label)
         occupancy_layout.addWidget(self.occupancy_label)
-        occupancy_layout.addWidget(self.progress_container)
         
         main_layout.addWidget(self.occupancy_frame)
         
@@ -925,67 +913,42 @@ class ControlScreen(QWidget):
             margin: 10px 0;
         """)
         
-        # Update the progress bar color
-        self.progress_indicator.setStyleSheet(f"""
-            background-color: {color};
-            border-radius: 8px;
-        """)
-        
+        # Make sure we have numeric values
         try:
-            # Convert occupancy_rate to a float if it's a string
             if isinstance(occupancy_rate, str):
                 occupancy_rate = float(occupancy_rate.replace('%', ''))
-                
-            # Ensure occupancy_rate is within 0-100 range
             occupancy_rate = max(0, min(100, occupancy_rate))
-            
-            # Force layout update to ensure correct width calculations
-            self.progress_container.updateGeometry()
-            
-            # Wait for layout to be updated
-            QApplication.processEvents()
-            
-            # Get the total width available
-            total_width = self.progress_container.width() - 4  # Subtract margins
-            
-            # Ensure total_width is positive
-            if total_width <= 0:
-                print(f"Warning: Progress container width is {total_width}, using default width")
-                total_width = 200  # Use a default width if container width is not available
-            
-            # Calculate the width corresponding to the occupancy percentage
-            indicator_width = int(total_width * (occupancy_rate / 100.0))
-            
-            # Ensure min width of 1 if occupancy is > 0
-            if occupancy_rate > 0 and indicator_width == 0:
-                indicator_width = 1
-                
-            # Update the fixed width of the progress indicator
-            self.progress_indicator.setFixedWidth(indicator_width)
-            
-            # Remove and re-add the widgets to refresh layout
-            progress_layout = self.progress_container.layout()
-            if progress_layout:
-                # Clear layout first
-                while progress_layout.count():
-                    item = progress_layout.takeAt(0)
-                    if item.widget():
-                        item.widget().setParent(None)
-                
-                # Add indicator and background again
-                progress_layout.addWidget(self.progress_indicator)
-                progress_layout.addWidget(self.progress_background, 1)
-            
-            # Force update
-            self.progress_container.update()
-            
-            # For debugging
-            print(f"Updated progress bar: {occupancy_rate}% - width: {indicator_width}/{total_width}")
-            
         except Exception as e:
-            print(f"Error updating progress bar: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            print(f"Error converting occupancy rate: {e}")
+            occupancy_rate = 0
+            
+        # Set progress indicator color
+        self.progress_indicator.setStyleSheet(f"""
+            background-color: {color};
+            border-radius: 7px;
+        """)
+        
+        # Get container width
+        container_width = self.progress_container.width()
+        if container_width <= 0:
+            container_width = self.progress_container.sizeHint().width()
+        
+        # Calculate indicator width
+        usable_width = container_width - 4  # Account for margins
+        indicator_width = int(usable_width * (occupancy_rate / 100.0))
+        
+        # Ensure minimum visible width if any occupancy
+        if occupancy_rate > 0 and indicator_width < 5:
+            indicator_width = 5
+            
+        # Update indicator width and redraw
+        self.progress_indicator.setFixedWidth(indicator_width)
+        
+        # Force update
+        self.progress_indicator.update()
+        self.progress_container.update()
+        
+        print(f"Updated progress bar: {occupancy_rate}% - width: {indicator_width}/{container_width}")
 
     def fetch_logs(self, start_date=None, end_date=None, limit=50):
         """

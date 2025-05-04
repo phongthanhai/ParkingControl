@@ -5,7 +5,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG
 import RPi.GPIO as GPIO
 import time
 import threading
-from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE_PATTERN
+from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE_PATTERN, API_BASE_URL
 from app.controllers.lane_controller import LaneWorker, LaneState
 import cv2
 from app.controllers.api_client import ApiClient
@@ -157,7 +157,12 @@ class ControlScreen(QWidget):
         self.worker_guard = threading.Lock()  # Protects worker creation/deletion
         
         # Initialize API client
-        self.api_client = ApiClient(base_url="http://127.0.0.1:8000/api/v1")
+        self.api_client = ApiClient(base_url=API_BASE_URL)
+        
+        # API connectivity status
+        self.api_available = True
+        self.api_retry_count = 0
+        self.max_api_retries = 3
         
         self._setup_gpio()
         self._setup_ui()
@@ -202,6 +207,26 @@ class ControlScreen(QWidget):
         main_layout = QVBoxLayout(main_container)
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(20)
+        
+        # API Status indicator at the top
+        api_status_layout = QHBoxLayout()
+        api_status_label = QLabel("API Status:")
+        self.api_status_indicator = QLabel("Connected")
+        self.api_status_indicator.setStyleSheet("""
+            font-weight: bold;
+            color: white;
+            background-color: #2ecc71;
+            padding: 5px 10px;
+            border-radius: 4px;
+            min-width: 100px;
+            text-align: center;
+        """)
+        
+        api_status_layout.addWidget(api_status_label)
+        api_status_layout.addWidget(self.api_status_indicator)
+        api_status_layout.addStretch()
+        
+        main_layout.addLayout(api_status_layout)
         
         # Create lane widgets layout with equal spacing
         lanes_layout = QHBoxLayout()
@@ -599,6 +624,11 @@ class ControlScreen(QWidget):
             # Emit signal for any listeners
             self.log_signal.emit(log_data)
             
+            # Skip API logging if we've determined it's not available
+            if not self.api_available and self.api_retry_count >= self.max_api_retries:
+                print("Skipping API log due to previous connection failures")
+                return
+            
             # Send to API
             try:
                 # Extract image from data if available
@@ -632,11 +662,56 @@ class ControlScreen(QWidget):
                 
                 if success:
                     print(f"API log successful: {response}")
+                    self.api_available = True
+                    self.api_retry_count = 0
+                    # Update status indicator
+                    self.api_status_indicator.setText("Connected")
+                    self.api_status_indicator.setStyleSheet("""
+                        font-weight: bold;
+                        color: white;
+                        background-color: #2ecc71;
+                        padding: 5px 10px;
+                        border-radius: 4px;
+                        min-width: 100px;
+                        text-align: center;
+                    """)
                 else:
                     print(f"API log failed: {response}")
+                    if "Connection" in str(response):
+                        self.api_retry_count += 1
+                        if self.api_retry_count >= self.max_api_retries:
+                            self.api_available = False
+                            print(f"Backend API marked as unavailable after {self.max_api_retries} failed attempts")
+                            # Update status indicator
+                            self.api_status_indicator.setText("Disconnected")
+                            self.api_status_indicator.setStyleSheet("""
+                                font-weight: bold;
+                                color: white;
+                                background-color: #e74c3c;
+                                padding: 5px 10px;
+                                border-radius: 4px;
+                                min-width: 100px;
+                                text-align: center;
+                            """)
                     
             except Exception as e:
                 print(f"API logging error: {str(e)}")
+                if "Connection" in str(e) or "HTTPConnectionPool" in str(e):
+                    self.api_retry_count += 1
+                    if self.api_retry_count >= self.max_api_retries:
+                        self.api_available = False
+                        print(f"Backend API marked as unavailable after {self.max_api_retries} failed attempts")
+                        # Update status indicator
+                        self.api_status_indicator.setText("Disconnected")
+                        self.api_status_indicator.setStyleSheet("""
+                            font-weight: bold;
+                            color: white;
+                            background-color: #e74c3c;
+                            padding: 5px 10px;
+                            border-radius: 4px;
+                            min-width: 100px;
+                            text-align: center;
+                        """)
                 
         except Exception as e:
             print(f"Logging error: {str(e)}")
@@ -731,6 +806,10 @@ class ControlScreen(QWidget):
 
     def refresh_data(self):
         """Refresh both occupancy and log data from API"""
+        # Check API connectivity
+        if not self.api_available:
+            self._check_api_connection()
+            
         self._update_occupancy()
         self.fetch_logs()
         
@@ -911,3 +990,45 @@ class ControlScreen(QWidget):
             print(filter_msg)
         else:
             print("No filters applied, showing all logs")
+
+    def _check_api_connection(self):
+        """Periodically check if API server is back online"""
+        if not self.api_available:
+            try:
+                # Try the health-check endpoint first
+                success, _ = self.api_client.get('health-check')
+                if not success:
+                    # If that fails, try a standard endpoint that should exist
+                    success, _ = self.api_client.get('openapi.json')
+                
+                if success:
+                    self.api_available = True
+                    self.api_retry_count = 0
+                    print("Backend API connection restored")
+                    
+                    # Update status indicator
+                    self.api_status_indicator.setText("Connected")
+                    self.api_status_indicator.setStyleSheet("""
+                        font-weight: bold;
+                        color: white;
+                        background-color: #2ecc71;
+                        padding: 5px 10px;
+                        border-radius: 4px;
+                        min-width: 100px;
+                        text-align: center;
+                    """)
+                    return True
+            except Exception as e:
+                print(f"API connection check failed: {str(e)}")
+                # Update status indicator
+                self.api_status_indicator.setText("Disconnected")
+                self.api_status_indicator.setStyleSheet("""
+                    font-weight: bold;
+                    color: white;
+                    background-color: #e74c3c;
+                    padding: 5px 10px;
+                    border-radius: 4px;
+                    min-width: 100px;
+                    text-align: center;
+                """)
+        return self.api_available

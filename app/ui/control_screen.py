@@ -178,7 +178,7 @@ class ControlScreen(QWidget):
         # Setup timer for occupancy updates
         self.occupancy_timer = QTimer(self)
         self.occupancy_timer.timeout.connect(self._update_occupancy)
-        self.occupancy_timer.start(30000)  # Update occupancy every 30 seconds
+        self.occupancy_timer.start(60000)  # Update occupancy every 60 seconds
         
         # Setup refresh button
         self.add_refresh_button()
@@ -384,7 +384,7 @@ class ControlScreen(QWidget):
         # Initialize the log table
         self._clear_log_table()
 
-        # Enhance UI components
+        # Enhanced UI components
         self._enhance_occupancy_display()
         self._enhance_log_table()
 
@@ -760,8 +760,7 @@ class ControlScreen(QWidget):
     def _update_occupancy(self):
         """Update the occupancy display with data from API"""
         try:
-            # Call your actual API here
-            # For example: response = requests.get("http://your-api/occupancy")
+            from config import LOT_ID
             
             # Set loading state while waiting for API
             self.occupancy_label.setText("Loading occupancy data...")
@@ -775,13 +774,49 @@ class ControlScreen(QWidget):
                 margin: 10px 0;
             """)
             
-            # In production, you would update once API returns data
-            # This is just a placeholder until real data is available
-            self.occupancy_label.setText("Occupancy data unavailable")
+            # Call the API with the configured lot ID
+            success, data = self.api_client.get(f'services/lot-occupancy/{LOT_ID}')
+            
+            if success and data:
+                # Extract data from response
+                lot_name = data.get('lot_name', 'Unknown')
+                capacity = data.get('capacity', 0)
+                occupied = data.get('occupied', 0)
+                available = data.get('available', 0)
+                occupancy_rate = data.get('occupancy_rate', 0)
+                
+                # Update lot name
+                self.lot_name_label.setText(f"{lot_name} (ID: {LOT_ID})")
+                
+                # Update labels with the data
+                self.capacity_value.setText(f"{capacity} vehicles")
+                
+                # Update visual indicator based on occupancy rate
+                self._update_occupancy_visual(occupancy_rate, occupied, available)
+                
+                # Update timestamp
+                import datetime
+                self.update_time.setText(datetime.datetime.now().strftime("%H:%M:%S"))
+                
+                print(f"Occupancy updated: {occupancy_rate}% ({occupied}/{capacity})")
+            else:
+                print(f"Failed to get occupancy data: {data}")
+                self.occupancy_label.setText("Occupancy data unavailable")
+                self.lot_name_label.setText(f"Lot ID: {LOT_ID} (Data unavailable)")
+                self.occupancy_label.setStyleSheet("""
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: white;
+                    background-color: #7f8c8d;
+                    padding: 10px;
+                    border-radius: 4px;
+                    margin: 10px 0;
+                """)
             
         except Exception as e:
             print(f"Error updating occupancy: {str(e)}")
             self.occupancy_label.setText("Occupancy data unavailable")
+            self.lot_name_label.setText(f"Lot ID: {LOT_ID} (Error loading data)")
             self.occupancy_label.setStyleSheet("""
                 font-size: 24px;
                 font-weight: bold;
@@ -791,6 +826,56 @@ class ControlScreen(QWidget):
                 border-radius: 4px;
                 margin: 10px 0;
             """)
+            
+    def _update_occupancy_visual(self, occupancy_rate, occupied, available):
+        """Update the visual representation of occupancy"""
+        # Set color based on occupancy rate
+        if occupancy_rate < 60:
+            color = "#27ae60"  # Green
+        elif occupancy_rate < 85:
+            color = "#f1c40f"  # Yellow
+        else:
+            color = "#e74c3c"  # Red
+            
+        # Update the occupancy label
+        self.occupancy_label.setText(f"{occupancy_rate}% ({occupied} used / {available} free)")
+        self.occupancy_label.setStyleSheet(f"""
+            font-size: 24px;
+            font-weight: bold;
+            color: white;
+            background-color: {color};
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        """)
+        
+        # Update the progress bar
+        # Adjust the layout of the progress indicator to match the occupancy rate
+        progress_layout = self.progress_container.layout()
+        
+        # Calculate the width percentage (0-100%)
+        width_percent = min(100, max(0, occupancy_rate))
+        
+        # Remove existing widgets and spacers
+        progress_layout.removeWidget(self.progress_indicator)
+        progress_layout.removeItem(self.progress_spacer)
+        
+        # Update color based on occupancy rate
+        self.progress_indicator.setStyleSheet(f"""
+            QFrame {{
+                background-color: {color};
+                border-radius: 8px;
+            }}
+        """)
+        
+        # Calculate the relative sizes for the indicator and spacer
+        indicator_ratio = width_percent
+        spacer_ratio = 100 - width_percent
+        
+        # Add back widgets with updated stretch factors
+        progress_layout.addWidget(self.progress_indicator, indicator_ratio)
+        self.progress_spacer = QSpacerItem(0, 10, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        progress_layout.addItem(self.progress_spacer, spacer_ratio)
 
     def fetch_logs(self, start_date=None, end_date=None, limit=50):
         """
@@ -886,17 +971,65 @@ class ControlScreen(QWidget):
     # Enhanced occupancy display with visual meter
     def _enhance_occupancy_display(self):
         """Create an enhanced occupancy display with visual meter"""
-        meter_layout = QHBoxLayout()
+        # Add lot name label
+        self.lot_name_label = QLabel("Loading lot information...")
+        self.lot_name_label.setStyleSheet("""
+            font-size: 16px;
+            font-weight: bold;
+            color: #34495e;
+            margin-bottom: 5px;
+        """)
+        self.lot_name_label.setAlignment(Qt.AlignCenter)
         
-        # Add percentage indicators
+        # Add to layout
+        occupancy_layout = self.occupancy_frame.layout()
+        occupancy_layout.addWidget(self.lot_name_label)
+        
+        # Create progress bar container
+        self.progress_container = QFrame()
+        self.progress_container.setFixedHeight(20)
+        self.progress_container.setStyleSheet("""
+            QFrame {
+                background-color: #ecf0f1;
+                border-radius: 10px;
+                border: 1px solid #bdc3c7;
+            }
+        """)
+        
+        # Create progress bar layout
+        progress_layout = QHBoxLayout(self.progress_container)
+        progress_layout.setContentsMargins(2, 2, 2, 2)
+        progress_layout.setSpacing(0)
+        
+        # Progress bar indicator (initially empty)
+        self.progress_indicator = QFrame()
+        self.progress_indicator.setStyleSheet("""
+            QFrame {
+                background-color: #3498db;
+                border-radius: 8px;
+            }
+        """)
+        
+        # Add spacer that will be resized to show progress
+        self.progress_spacer = QSpacerItem(0, 10, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        
+        # Add the indicator and spacer to the layout
+        progress_layout.addWidget(self.progress_indicator)
+        progress_layout.addItem(self.progress_spacer)
+        
+        # Add percentage indicators below the bar
+        meter_layout = QHBoxLayout()
+        meter_layout.setSpacing(0)
+        
+        # Add percentage markers
         for percent in [0, 25, 50, 75, 100]:
             label = QLabel(f"{percent}%")
             label.setAlignment(Qt.AlignCenter)
             label.setStyleSheet("color: #7f8c8d; font-size: 12px;")
             meter_layout.addWidget(label)
         
-        # Add meter to layout
-        occupancy_layout = self.occupancy_frame.layout()
+        # Add meter components to layout
+        occupancy_layout.addWidget(self.progress_container)
         occupancy_layout.addLayout(meter_layout)
         
         # Add capacity info
@@ -904,7 +1037,7 @@ class ControlScreen(QWidget):
         capacity_label = QLabel("Total capacity:")
         capacity_label.setStyleSheet("color: #7f8c8d;")
         
-        self.capacity_value = QLabel("100 vehicles")
+        self.capacity_value = QLabel("Loading...")
         self.capacity_value.setStyleSheet("font-weight: bold; color: #2c3e50;")
         
         capacity_layout.addWidget(capacity_label)
@@ -914,7 +1047,7 @@ class ControlScreen(QWidget):
         last_updated = QLabel("Last updated:")
         last_updated.setStyleSheet("color: #7f8c8d;")
         
-        self.update_time = QLabel("Just now")
+        self.update_time = QLabel("--:--:--")
         self.update_time.setStyleSheet("font-weight: bold; color: #2c3e50;")
         
         capacity_layout.addWidget(last_updated)

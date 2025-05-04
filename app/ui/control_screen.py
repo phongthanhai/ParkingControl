@@ -297,6 +297,38 @@ class ControlScreen(QWidget):
         """)
         self.occupancy_label.setAlignment(Qt.AlignCenter)
         
+        # Initialize progress bar container
+        self.progress_container = QFrame()
+        self.progress_container.setFixedHeight(20)
+        self.progress_container.setStyleSheet("""
+            QFrame {
+                background-color: #ecf0f1;
+                border-radius: 10px;
+                border: 1px solid #bdc3c7;
+            }
+        """)
+        
+        # Create progress bar layout
+        progress_layout = QHBoxLayout(self.progress_container)
+        progress_layout.setContentsMargins(2, 2, 2, 2)
+        progress_layout.setSpacing(0)
+        
+        # Progress bar indicator (initially empty)
+        self.progress_indicator = QFrame()
+        self.progress_indicator.setStyleSheet("""
+            QFrame {
+                background-color: #3498db;
+                border-radius: 8px;
+            }
+        """)
+        
+        # Add indicator to layout with 0 stretch initially
+        progress_layout.addWidget(self.progress_indicator, 0)
+        
+        # Add spacer to fill the remaining space
+        self.progress_spacer = QSpacerItem(0, 10, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        progress_layout.addSpacerItem(self.progress_spacer)
+        
         # Initialize capacity value and update time labels
         self.capacity_value = QLabel("Loading...")
         self.capacity_value.setStyleSheet("font-weight: bold; color: #2c3e50;")
@@ -308,6 +340,7 @@ class ControlScreen(QWidget):
         occupancy_layout.addWidget(occupancy_title)
         occupancy_layout.addWidget(self.lot_name_label)
         occupancy_layout.addWidget(self.occupancy_label)
+        occupancy_layout.addWidget(self.progress_container)
         
         main_layout.addWidget(self.occupancy_frame)
         
@@ -890,32 +923,29 @@ class ControlScreen(QWidget):
         """)
         
         # Update the progress bar
-        # Adjust the layout of the progress indicator to match the occupancy rate
-        progress_layout = self.progress_container.layout()
-        
-        # Calculate the width percentage (0-100%)
-        width_percent = min(100, max(0, int(occupancy_rate)))
-        
-        # Remove existing widgets and spacers
-        progress_layout.removeWidget(self.progress_indicator)
-        progress_layout.removeItem(self.progress_spacer)
-        
-        # Update color based on occupancy rate
-        self.progress_indicator.setStyleSheet(f"""
-            QFrame {{
-                background-color: {color};
-                border-radius: 8px;
-            }}
-        """)
-        
-        # Calculate the relative sizes for the indicator and spacer
-        indicator_ratio = int(width_percent)  # Convert to integer
-        spacer_ratio = int(100 - width_percent)  # Convert to integer
-        
-        # Add back widgets with updated stretch factors
-        progress_layout.addWidget(self.progress_indicator, indicator_ratio)
-        self.progress_spacer = QSpacerItem(0, 10, QSizePolicy.Expanding, QSizePolicy.Minimum)
-        progress_layout.addItem(self.progress_spacer, spacer_ratio)
+        try:
+            # Update color of progress indicator
+            self.progress_indicator.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {color};
+                    border-radius: 8px;
+                }}
+            """)
+            
+            # Get progress layout
+            progress_layout = self.progress_container.layout()
+            if progress_layout:
+                # Calculate width percentage (0-100%)
+                width_percent = min(100, max(0, int(occupancy_rate)))
+                
+                # Update stretch factors
+                progress_layout.setStretch(0, width_percent)  # Indicator
+                progress_layout.setStretch(1, 100 - width_percent)  # Spacer
+                
+                # Force layout update
+                self.progress_container.updateGeometry()
+        except Exception as e:
+            print(f"Error updating progress bar: {str(e)}")
 
     def fetch_logs(self, start_date=None, end_date=None, limit=50):
         """
@@ -1023,37 +1053,8 @@ class ControlScreen(QWidget):
     # Enhanced occupancy display with visual meter
     def _enhance_occupancy_display(self):
         """Create an enhanced occupancy display with visual meter"""
-        # Create progress bar container
-        self.progress_container = QFrame()
-        self.progress_container.setFixedHeight(20)
-        self.progress_container.setStyleSheet("""
-            QFrame {
-                background-color: #ecf0f1;
-                border-radius: 10px;
-                border: 1px solid #bdc3c7;
-            }
-        """)
-        
-        # Create progress bar layout
-        progress_layout = QHBoxLayout(self.progress_container)
-        progress_layout.setContentsMargins(2, 2, 2, 2)
-        progress_layout.setSpacing(0)
-        
-        # Progress bar indicator (initially empty)
-        self.progress_indicator = QFrame()
-        self.progress_indicator.setStyleSheet("""
-            QFrame {
-                background-color: #3498db;
-                border-radius: 8px;
-            }
-        """)
-        
-        # Add spacer that will be resized to show progress
-        self.progress_spacer = QSpacerItem(0, 10, QSizePolicy.Expanding, QSizePolicy.Minimum)
-        
-        # Add the indicator and spacer to the layout
-        progress_layout.addWidget(self.progress_indicator)
-        progress_layout.addItem(self.progress_spacer)
+        # Get the occupancy layout
+        occupancy_layout = self.occupancy_frame.layout()
         
         # Add percentage indicators below the bar
         meter_layout = QHBoxLayout()
@@ -1066,9 +1067,7 @@ class ControlScreen(QWidget):
             label.setStyleSheet("color: #7f8c8d; font-size: 12px;")
             meter_layout.addWidget(label)
         
-        # Add meter components to layout
-        occupancy_layout = self.occupancy_frame.layout()
-        occupancy_layout.addWidget(self.progress_container)
+        # Add percentage scale to layout
         occupancy_layout.addLayout(meter_layout)
         
         # Add capacity info
@@ -1079,13 +1078,14 @@ class ControlScreen(QWidget):
         last_updated = QLabel("Last updated:")
         last_updated.setStyleSheet("color: #7f8c8d;")
         
-        # Arrange the layout with existing widgets
+        # Arrange capacity info with existing widgets
         capacity_layout.addWidget(capacity_label)
-        capacity_layout.addWidget(self.capacity_value)  # Use existing widget
+        capacity_layout.addWidget(self.capacity_value)
         capacity_layout.addStretch()
         capacity_layout.addWidget(last_updated)
-        capacity_layout.addWidget(self.update_time)  # Use existing widget
+        capacity_layout.addWidget(self.update_time)
         
+        # Add capacity info to layout
         occupancy_layout.addLayout(capacity_layout)
 
     # Enhanced log table with filtering

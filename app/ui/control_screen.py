@@ -10,6 +10,7 @@ from app.controllers.lane_controller import LaneWorker, LaneState
 import cv2
 from app.controllers.api_client import ApiClient
 from PyQt5.QtWidgets import QApplication
+import datetime
 
 class LaneWidget(QWidget):
     def __init__(self, title):
@@ -234,19 +235,14 @@ class ControlScreen(QWidget):
         # API Status indicator at the top
         api_status_layout = QHBoxLayout()
         api_status_label = QLabel("API Status:")
-        self.api_status_indicator = QLabel("Connected")
-        self.api_status_indicator.setStyleSheet("""
-            font-weight: bold;
-            color: white;
-            background-color: #2ecc71;
-            padding: 5px 10px;
-            border-radius: 4px;
-            min-width: 100px;
-            text-align: center;
-        """)
+        self.api_status_label = QLabel("API: Connected")
+        self.api_status_indicator = QWidget()
+        self.api_status_indicator.setFixedSize(15, 15)
+        self.api_status_indicator.setStyleSheet("background-color: green; border-radius: 7px;")
         
         api_status_layout.addWidget(api_status_label)
         api_status_layout.addWidget(self.api_status_indicator)
+        api_status_layout.addWidget(self.api_status_label)
         api_status_layout.addStretch()
         
         main_layout.addLayout(api_status_layout)
@@ -341,7 +337,7 @@ class ControlScreen(QWidget):
         
         main_layout.addWidget(self.occupancy_frame)
         
-        # Add log table
+        # Add log area
         log_frame = QFrame()
         log_frame.setFrameShape(QFrame.StyledPanel)
         log_frame.setStyleSheet("""
@@ -358,60 +354,48 @@ class ControlScreen(QWidget):
         log_title = QLabel("Activity Log")
         log_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #2c3e50;")
         
-        self.log_table = QTableWidget()
-        self.log_table.setColumnCount(5)
-        self.log_table.setHorizontalHeaderLabels(["Date", "Time", "Lane", "License Plate", "Type"])
+        # Create a scrollable area for log entries
+        log_scroll = QScrollArea()
+        log_scroll.setWidgetResizable(True)
+        log_scroll.setFrameShape(QFrame.NoFrame)
+        log_scroll.setMinimumHeight(300)
         
-        # Set specific section sizes for each column
-        self.log_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Interactive)  # Date
-        self.log_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Interactive)  # Time
-        self.log_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Interactive)  # Lane
-        self.log_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)      # License Plate (stretch)
-        self.log_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Interactive)  # Type
+        log_widget = QWidget()
+        self.logs_layout = QVBoxLayout(log_widget)
+        self.logs_layout.setAlignment(Qt.AlignTop)
+        self.logs_layout.setSpacing(2)
         
-        # Set initial widths for columns
-        self.log_table.setColumnWidth(0, 100)  # Date
-        self.log_table.setColumnWidth(1, 80)   # Time
-        self.log_table.setColumnWidth(2, 80)   # Lane
-        # Column 3 (License Plate) will stretch
-        self.log_table.setColumnWidth(4, 80)   # Type
+        log_scroll.setWidget(log_widget)
         
-        self.log_table.setMinimumHeight(200)
-        self.log_table.setMaximumHeight(400)
-        self.log_table.setAlternatingRowColors(True)
+        # Add header row
+        header_widget = QWidget()
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(5, 5, 5, 5)
         
-        # Apply detailed styling
-        self.log_table.horizontalHeader().setStyleSheet("""
-            QHeaderView::section {
-                background-color: #3498db;
-                color: white;
-                padding: 10px 6px;  /* Increased vertical padding */
-                border: none;
-                border-right: 1px solid #fff;
-                font-weight: bold;
-                font-size: 14px;  /* Explicitly set font size */
-                min-height: 42px; /* Ensure minimum height for header */
-                margin: 0px;
-            }
-        """)
+        date_header = QLabel("Date/Time")
+        lane_header = QLabel("Lane")
+        plate_header = QLabel("License Plate")
+        type_header = QLabel("Type")
         
-        # Also set header height explicitly
-        self.log_table.horizontalHeader().setMinimumHeight(35)
+        # Style headers
+        header_style = "font-weight: bold; color: white; background-color: #3498db; padding: 5px;"
+        header_widget.setStyleSheet(header_style)
         
-        self.log_table.setStyleSheet("""
-            QTableWidget {
-                border: 1px solid #ddd;
-                gridline-color: #ddd;
-                selection-background-color: #3498db;
-                selection-color: white;
-            }
-            QTableWidget::item {
-                padding: 4px;
-            }
-        """)
+        # Add headers to layout
+        header_layout.addWidget(date_header)
+        header_layout.addWidget(lane_header)
+        header_layout.addWidget(plate_header)
+        header_layout.addWidget(type_header)
+        
+        # Set fixed width for consistent layout
+        date_header.setFixedWidth(200)
+        lane_header.setFixedWidth(80)
+        plate_header.setFixedWidth(100)
+        type_header.setFixedWidth(80)
         
         log_layout.addWidget(log_title)
-        log_layout.addWidget(self.log_table)
+        log_layout.addWidget(header_widget)
+        log_layout.addWidget(log_scroll)
         
         main_layout.addWidget(log_frame)
         
@@ -668,15 +652,11 @@ class ControlScreen(QWidget):
 
     def _log_entry(self, lane, data, entry_type):
         try:
-            # Create log data for internal tracking
+            # Current timestamp with ms precision
             current_time = time.time()
+            formatted_timestamp = datetime.fromtimestamp(current_time).strftime('%Y-%m-%d %H:%M:%S.%f')
             
-            # Format timestamp like "2025-05-04 14:26:14.545501"
-            # time.strftime doesn't include microseconds, so we handle those separately
-            timestamp_base = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(current_time))
-            microseconds = int((current_time - int(current_time)) * 1000000)
-            formatted_timestamp = f"{timestamp_base}.{microseconds}"
-            
+            # Create log entry
             log_data = {
                 "lane": lane,
                 "plate": data.get('text', 'N/A'),
@@ -700,27 +680,26 @@ class ControlScreen(QWidget):
             
             # Send to API
             try:
-                # Extract image from data if available
-                plate_image = data.get('image')
+                # Extract image from data if available - use the full frame image
+                frame_image = data.get('image')
                 
                 # Prepare form data
                 form_data = {
                     'plate_id': data.get('text', 'N/A'),
-                    'lot_id': LOT_ID,  # Use configured lot ID
+                    'lot_id': CONFIG.get('lot_id', '0'),  # Use configured lot ID
                     'lane': lane,
-                    'confidence_score': data.get('confidence', 0.0),
                     'type': entry_type, 
                     'timestamp': formatted_timestamp  # Use formatted timestamp
                 }
                 
                 # Prepare files dict if image is available
                 files = None
-                if plate_image is not None:
+                if frame_image is not None:
                     # Convert OpenCV image to bytes
-                    _, img_encoded = cv2.imencode('.png', plate_image)
+                    _, img_encoded = cv2.imencode('.png', frame_image)
                     img_bytes = img_encoded.tobytes()
                     files = {
-                        'image': ('plate.png', img_bytes, 'image/png')
+                        'image': ('frame.png', img_bytes, 'image/png')
                     }
                 
                 # Use a reasonable timeout for log submissions since they include image data
@@ -739,16 +718,8 @@ class ControlScreen(QWidget):
                     self.api_available = True
                     self.api_retry_count = 0
                     # Update status indicator
-                    self.api_status_indicator.setText("Connected")
-                    self.api_status_indicator.setStyleSheet("""
-                        font-weight: bold;
-                        color: white;
-                        background-color: #2ecc71;
-                        padding: 5px 10px;
-                        border-radius: 4px;
-                        min-width: 100px;
-                        text-align: center;
-                    """)
+                    self.api_status_indicator.setStyleSheet("background-color: green;")
+                    self.api_status_label.setText("API: Connected")
                 else:
                     error_msg = str(response) if response else "Unknown error"
                     print(f"API log failed: {error_msg}")
@@ -762,16 +733,8 @@ class ControlScreen(QWidget):
                             self.api_available = False
                             print(f"Backend API marked as unavailable after {self.max_api_retries} failed attempts")
                             # Update status indicator
-                            self.api_status_indicator.setText("Disconnected")
-                            self.api_status_indicator.setStyleSheet("""
-                                font-weight: bold;
-                                color: white;
-                                background-color: #e74c3c;
-                                padding: 5px 10px;
-                                border-radius: 4px;
-                                min-width: 100px;
-                                text-align: center;
-                            """)
+                            self.api_status_indicator.setStyleSheet("background-color: red;")
+                            self.api_status_label.setText("API: Disconnected")
                     
             except Exception as e:
                 error_msg = str(e)
@@ -783,50 +746,83 @@ class ControlScreen(QWidget):
                         self.api_available = False
                         print(f"Backend API marked as unavailable after {self.max_api_retries} failed attempts")
                         # Update status indicator
-                        self.api_status_indicator.setText("Disconnected")
-                        self.api_status_indicator.setStyleSheet("""
-                            font-weight: bold;
-                            color: white;
-                            background-color: #e74c3c;
-                            padding: 5px 10px;
-                            border-radius: 4px;
-                            min-width: 100px;
-                            text-align: center;
-                        """)
+                        self.api_status_indicator.setStyleSheet("background-color: red;")
+                        self.api_status_label.setText("API: Disconnected")
                 
         except Exception as e:
             print(f"Logging error: {str(e)}")
 
     def _add_log_entry(self, data):
-        """Add a new entry to the log table"""
+        """Add a new entry to the log area"""
         try:
-            if 'formatted_time' in data:
+            if 'date' in data and 'time' in data:
+                # API format
+                date_str = data['date']
+                time_str = data['time'].split('.')[0]
+                lane = data.get('lane', 'N/A')
+                plate = data.get('license_plate', 'N/A')
+                entry_type = data.get('type', 'N/A')
+            elif 'formatted_time' in data:
                 # Use pre-formatted timestamp if available
                 formatted_time = data['formatted_time']
                 date_str, time_str = formatted_time.split(' ')[0], formatted_time.split(' ')[1].split('.')[0]
+                lane = data.get('lane', 'N/A')
+                plate = data.get('plate', 'N/A')
+                entry_type = data.get('type', 'N/A')
             else:
                 # Calculate from timestamp
                 timestamp = data.get('timestamp', time.time())
                 date_str = time.strftime("%Y-%m-%d", time.localtime(timestamp))
                 time_str = time.strftime("%H:%M:%S", time.localtime(timestamp))
+                lane = data.get('lane', 'N/A')
+                plate = data.get('plate', 'N/A')
+                entry_type = data.get('type', 'N/A')
             
-            row_position = self.log_table.rowCount()
-            self.log_table.insertRow(row_position)
+            # Create log entry widget
+            log_widget = QWidget()
+            log_layout = QHBoxLayout(log_widget)
+            log_layout.setContentsMargins(5, 5, 5, 5)
             
-            self.log_table.setItem(row_position, 0, QTableWidgetItem(date_str))
-            self.log_table.setItem(row_position, 1, QTableWidgetItem(time_str))
-            self.log_table.setItem(row_position, 2, QTableWidgetItem(data.get('lane', 'N/A').title()))
-            self.log_table.setItem(row_position, 3, QTableWidgetItem(data.get('plate', 'N/A')))
-            self.log_table.setItem(row_position, 4, QTableWidgetItem(data.get('type', 'N/A').title()))
+            # Create labels for each piece of information
+            date_label = QLabel(f"{date_str} {time_str}")
+            lane_label = QLabel(lane.capitalize())
+            plate_label = QLabel(plate)
+            type_label = QLabel(entry_type.capitalize())
             
-            # Auto-scroll to the newest entry
-            self.log_table.scrollToBottom()
+            # Style based on entry/exit
+            if lane.lower() == 'entry':
+                lane_label.setStyleSheet("color: green; font-weight: bold;")
+            else:
+                lane_label.setStyleSheet("color: red; font-weight: bold;")
+            
+            # Add labels to layout
+            log_layout.addWidget(date_label)
+            log_layout.addWidget(lane_label)
+            log_layout.addWidget(plate_label)
+            log_layout.addWidget(type_label)
+            
+            # Set fixed width for consistent layout
+            date_label.setFixedWidth(200)
+            lane_label.setFixedWidth(80)
+            plate_label.setFixedWidth(100)
+            type_label.setFixedWidth(80)
+            
+            # Add alternating row colors
+            if self.logs_layout.count() % 2 == 0:
+                log_widget.setStyleSheet("background-color: #f5f5f5;")
+            
+            # Add widget to layout
+            self.logs_layout.addWidget(log_widget)
+            
         except Exception as e:
             print(f"Error adding log entry: {str(e)}")
 
     def _clear_log_table(self):
         """Clear log table"""
-        self.log_table.setRowCount(0)
+        while self.logs_layout.count():
+            item = self.logs_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
     def _update_occupancy(self):
         """Update the occupancy display with data from API"""
@@ -870,7 +866,6 @@ class ControlScreen(QWidget):
                 self._update_occupancy_visual(occupancy_rate, occupied, available)
                 
                 # Update timestamp
-                import datetime
                 self.update_time.setText(datetime.datetime.now().strftime("%H:%M:%S"))
                 
                 print(f"Occupancy updated: {occupancy_rate}% ({occupied}/{capacity})")
@@ -932,54 +927,67 @@ class ControlScreen(QWidget):
         
         # Progress bar animation removed
 
-    def fetch_logs(self, start_date=None, end_date=None, limit=50):
-        """
-        Fetch logs from API with optional date filtering
-        
-        Args:
-            start_date: Optional start date (YYYY-MM-DD)
-            end_date: Optional end date (YYYY-MM-DD)
-            limit: Maximum number of logs to fetch
-        """
+    def _check_api_connection(self):
+        """Regularly check if API server is online"""
         try:
-            # Clear existing rows
-            self.log_table.setRowCount(0)
+            # Use a very short timeout for connectivity checks to avoid blocking
+            api_check_timeout = (2.0, 3.0)  # 2s connect, 3s read
             
-            # In production, implement real API call here:
-            params = {'limit': limit}
-            if start_date:
-                params['start_date'] = start_date
-            if end_date:
-                params['end_date'] = end_date
+            # Use the dedicated health check endpoint
+            success, _ = self.api_client.get('services/health', timeout=api_check_timeout, auth_required=False)
+            
+            # Update UI based on API status
+            if success and not self.api_available:
+                self.api_available = True
+                self.api_retry_count = 0
+                self.api_status_indicator.setStyleSheet("background-color: green;")
+                self.api_status_label.setText("API: Connected")
+                # Try to update occupancy after regaining connectivity
+                self._update_occupancy()
+            elif not success and self.api_available:
+                self.api_retry_count += 1
+                if self.api_retry_count >= self.max_api_retries:
+                    self.api_available = False
+                    self.api_status_indicator.setStyleSheet("background-color: red;")
+                    self.api_status_label.setText("API: Disconnected")
                 
-            # Use shorter timeout for log fetching
-            fetch_timeout = (3.0, 8.0)  # 3s connect, 8s read
+        except Exception as e:
+            self.api_retry_count += 1
+            if self.api_retry_count >= self.max_api_retries:
+                self.api_available = False
+                self.api_status_indicator.setStyleSheet("background-color: red;")
+                self.api_status_label.setText("API: Disconnected")
+                print(f"API connection check error: {str(e)}")
+
+    def _fetch_logs(self):
+        """Fetch logs for the current lot from the API"""
+        try:
+            # Get lot_id from config
+            lot_id = CONFIG.get('lot_id')
+            if not lot_id:
+                return
                 
-            # Call the API to get logs
-            success, log_data = self.api_client.get(
-                "services/logs", 
-                params=params,
-                timeout=fetch_timeout
-            )
+            # Fetch logs with pagination
+            success, response = self.api_client.get('services/logs/', 
+                                                  params={'skip': 0, 'limit': 100, 'lot_id': lot_id})
             
-            if success and log_data:
-                # Process and display the logs
-                print(f"Successfully fetched {len(log_data)} logs")
-                # TODO: Display the logs in the table
-            else:
-                print(f"Failed to fetch logs: {log_data}")
-            
+            if success and response:
+                # Clear existing log entries
+                self._clear_log_table()
+                
+                # Add log entries to the log area
+                for log_entry in response:
+                    self._add_log_entry(log_entry)
         except Exception as e:
             print(f"Error fetching logs: {str(e)}")
 
     def refresh_data(self):
-        """Refresh both occupancy and log data from API"""
-        # Check API connectivity
-        if not self.api_available:
-            self._check_api_connection()
-            
+        """Refresh all dynamic data from the API"""
+        # Update occupancy information
         self._update_occupancy()
-        self.fetch_logs()
+        
+        # Fetch today's logs for the lot
+        self._fetch_logs()
         
         # Show success message temporarily
         status_msg = QLabel("Data refreshed")
@@ -1066,8 +1074,6 @@ class ControlScreen(QWidget):
         """Add filtering capabilities to log table"""
         filter_layout = QHBoxLayout()
         
-        # Date filter removed
-        
         # Lane filter
         lane_label = QLabel("Lane:")
         lane_label.setStyleSheet("color: #7f8c8d;")
@@ -1103,112 +1109,53 @@ class ControlScreen(QWidget):
         filter_layout.addStretch()
         filter_layout.addWidget(apply_btn)
         
-        # Add to frame
-        log_frame = self.log_table.parent()
+        # Add to log widget's parent
+        log_frame = self.logs_layout.parent().parent().parent()
         if isinstance(log_frame, QFrame):
             log_layout = log_frame.layout()
-            # Insert filter layout after title but before table
+            # Insert filter layout after title but before log scroll area
             log_layout.insertLayout(1, filter_layout)
-        
+    
     def _apply_log_filters(self):
         """Apply filters to log table"""
         lane_filter = self.lane_filter.currentText().lower()
         type_filter = self.type_filter.currentText().lower()
         
-        # Fetch filtered logs
-        # In production, send these filters to your API
-        # For now, just refresh and simulate filtering
-        self.fetch_logs()
-        
-        # Show applied filters
-        filter_msg = "Filters applied: "
-        filters = []
-        
+        # Get lot_id from config
+        lot_id = CONFIG.get('lot_id')
+        if not lot_id:
+            return
+            
+        # Prepare filter parameters
+        params = {'skip': 0, 'limit': 100, 'lot_id': lot_id}
         if lane_filter != "all":
-            filters.append(f"Lane: {lane_filter}")
+            params['lane'] = lane_filter
         if type_filter != "all":
-            filters.append(f"Type: {type_filter}")
+            params['type'] = type_filter
+            
+        # Fetch filtered logs
+        success, response = self.api_client.get('services/logs/', params=params)
         
-        if filters:
-            filter_msg += ", ".join(filters)
-            print(filter_msg)
-        else:
-            print("No filters applied, showing all logs")
-
-    def _check_api_connection(self):
-        """Regularly check if API server is online"""
-        try:
-            # Use a very short timeout for connectivity checks to avoid blocking
-            api_check_timeout = (2.0, 3.0)  # 2s connect, 3s read
+        if success and response:
+            # Clear existing log entries
+            self._clear_log_table()
             
-            # Try the health check endpoint first
-            success, _ = self.api_client.get('health', timeout=api_check_timeout)
+            # Add log entries to the log area
+            for log_entry in response:
+                self._add_log_entry(log_entry)
             
-            # If health endpoint fails, try a standard FastAPI endpoint as fallback
-            if not success:
-                success, _ = self.api_client.get('', timeout=api_check_timeout)
-                
-                # Try openapi schema as a second fallback
-                if not success:
-                    success, _ = self.api_client.get('openapi.json', timeout=api_check_timeout)
+            # Show applied filters
+            filter_msg = "Filters applied: "
+            filters = []
             
-            # Update UI based on connection status
-            if success:
-                # Only if previous state was offline, show reconnection message
-                if not self.api_available:
-                    print("Backend API connection restored")
-                
-                self.api_available = True
-                self.api_retry_count = 0
-                
-                # Update status indicator
-                self.api_status_indicator.setText("Connected")
-                self.api_status_indicator.setStyleSheet("""
-                    font-weight: bold;
-                    color: white;
-                    background-color: #2ecc71;
-                    padding: 5px 10px;
-                    border-radius: 4px;
-                    min-width: 100px;
-                    text-align: center;
-                """)
+            if lane_filter != "all":
+                filters.append(f"Lane: {lane_filter}")
+            if type_filter != "all":
+                filters.append(f"Type: {type_filter}")
+            
+            if filters:
+                print(filter_msg + ", ".join(filters))
             else:
-                # Failed connection
-                self.api_retry_count += 1
-                if self.api_retry_count >= self.max_api_retries or not self.api_available:
-                    self.api_available = False
-                    
-                    # Update status indicator
-                    self.api_status_indicator.setText("Disconnected")
-                    self.api_status_indicator.setStyleSheet("""
-                        font-weight: bold;
-                        color: white;
-                        background-color: #e74c3c;
-                        padding: 5px 10px;
-                        border-radius: 4px;
-                        min-width: 100px;
-                        text-align: center;
-                    """)
-                    
-                    if self.api_retry_count == self.max_api_retries:
-                        print(f"Backend API marked as unavailable after {self.max_api_retries} failed attempts")
-                
-        except Exception as e:
-            print(f"API connection check failed: {str(e)}")
-            self.api_retry_count += 1
-            
-            if self.api_retry_count >= self.max_api_retries:
-                self.api_available = False
-                # Update status indicator
-                self.api_status_indicator.setText("Error")
-                self.api_status_indicator.setStyleSheet("""
-                    font-weight: bold;
-                    color: white;
-                    background-color: #e74c3c;
-                    padding: 5px 10px;
-                    border-radius: 4px;
-                    min-width: 100px;
-                    text-align: center;
-                """)
-        
-        return self.api_available
+                print("No filters applied, showing all logs")
+        else:
+            print(f"Failed to fetch filtered logs")

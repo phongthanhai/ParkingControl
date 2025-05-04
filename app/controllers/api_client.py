@@ -169,7 +169,7 @@ class ApiClient:
             # If conversion fails, fall back to direct comparison
             return lot_id in self.assigned_lots
 
-    def get(self, endpoint, params=None, timeout=None):
+    def get(self, endpoint, params=None, timeout=None, auth_required=True):
         """
         Send a GET request to the API.
         
@@ -177,6 +177,7 @@ class ApiClient:
             endpoint (str): API endpoint
             params (dict, optional): Query parameters
             timeout (float or tuple, optional): Connection and read timeout in seconds
+            auth_required (bool, optional): Whether authentication is required for this endpoint
             
         Returns:
             tuple: (success, data or error_message)
@@ -187,8 +188,8 @@ class ApiClient:
         if timeout is None:
             timeout = (self.connect_timeout, self.read_timeout)
         
-        # Get authentication headers
-        headers = self.auth_manager.auth_header
+        # Get authentication headers if required
+        headers = self.auth_manager.auth_header if auth_required else {}
         
         try:
             response = requests.get(url, params=params, headers=headers, timeout=timeout)

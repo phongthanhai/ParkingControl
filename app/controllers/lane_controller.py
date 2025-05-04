@@ -262,7 +262,7 @@ class LaneWorker(QThread):
                 self.last_detection_data = {
                     "text": plate_text if plate_text != "Scanning..." else "",
                     "confidence": confidence,
-                    "image": frame,  # Store the full frame instead of just the plate
+                    "image": display_frame,  # Store the display frame with the rectangle drawn
                     "plate_img": plate_img,  # Store the cropped plate image separately
                     "is_valid": is_valid
                 }
@@ -273,7 +273,7 @@ class LaneWorker(QThread):
                     self.status_signal.emit(
                         self.lane_type,
                         "requires_manual",
-                        {"reason": "API timeout", "image": frame, "text": plate_text if plate_text != "Scanning..." else ""}
+                        {"reason": "API timeout", "image": display_frame, "text": plate_text if plate_text != "Scanning..." else ""}
                     )
                 # Case 2: Successfully detected plate but confidence too low
                 elif plate_text and plate_text != "Scanning..." and confidence < 0.9:
@@ -281,7 +281,7 @@ class LaneWorker(QThread):
                     self.status_signal.emit(
                         self.lane_type,
                         "requires_manual",
-                        {"reason": "low confidence", "text": plate_text, "confidence": confidence, "image": frame}
+                        {"reason": "low confidence", "text": plate_text, "confidence": confidence, "image": display_frame}
                     )
                 # Case 3: Successfully detected plate but doesn't match regex
                 elif plate_text and plate_text != "Scanning..." and not is_valid:
@@ -289,7 +289,7 @@ class LaneWorker(QThread):
                     self.status_signal.emit(
                         self.lane_type,
                         "requires_manual",
-                        {"reason": "invalid format", "text": plate_text, "confidence": confidence, "image": frame}
+                        {"reason": "invalid format", "text": plate_text, "confidence": confidence, "image": display_frame}
                     )
                 # Case 4: Success case - high confidence valid plate
                 elif is_valid and confidence >= 0.9:
@@ -297,7 +297,7 @@ class LaneWorker(QThread):
                     self.status_signal.emit(
                         self.lane_type,
                         "success",
-                        {"text": plate_text, "confidence": confidence, "image": frame}
+                        {"text": plate_text, "confidence": confidence, "image": display_frame}
                     )
                 
         except Exception as e:

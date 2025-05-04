@@ -1,7 +1,7 @@
 # Fix imports for PyQt5 on Raspberry Pi
 from PyQt5.QtGui import QPixmap, QImage, QFont, QColor, QPalette
 from PyQt5.QtWidgets import QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSpacerItem, QWidget, QComboBox, QMessageBox
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG, QPropertyAnimation, QEasingCurve, QRect
 import RPi.GPIO as GPIO
 import time
 import threading
@@ -318,7 +318,10 @@ class ControlScreen(QWidget):
             border-radius: 7px;
         """)
         
-        # Add the progress container to the layout
+        # Add widgets to layout in proper order
+        occupancy_layout.addWidget(occupancy_title)
+        occupancy_layout.addWidget(self.lot_name_label)
+        occupancy_layout.addWidget(self.occupancy_label)
         occupancy_layout.addWidget(self.progress_container)
         
         # Initialize capacity value and update time labels
@@ -893,6 +896,9 @@ class ControlScreen(QWidget):
             
     def _update_occupancy_visual(self, occupancy_rate, occupied, available):
         """Update the visual representation of occupancy"""
+        # Import necessary animation classes
+        from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
+        
         # Set color based on occupancy rate
         if occupancy_rate < 60:
             color = "#27ae60"  # Green
@@ -933,20 +939,31 @@ class ControlScreen(QWidget):
         if container_width <= 0:
             container_width = self.progress_container.sizeHint().width()
         
-        # Calculate indicator width
-        usable_width = container_width - 4  # Account for margins
+        # Calculate indicator width - adjusted to align with percentage markers
+        usable_width = container_width
         indicator_width = int(usable_width * (occupancy_rate / 100.0))
         
         # Ensure minimum visible width if any occupancy
         if occupancy_rate > 0 and indicator_width < 5:
             indicator_width = 5
-            
-        # Update indicator width and redraw
-        self.progress_indicator.setFixedWidth(indicator_width)
         
-        # Force update
-        self.progress_indicator.update()
-        self.progress_container.update()
+        # Store current width for animation
+        current_width = self.progress_indicator.width()
+        
+        # Create the animation
+        self.progress_anim = QPropertyAnimation(self.progress_indicator, b"geometry")
+        self.progress_anim.setDuration(500)  # Animation duration in ms
+        self.progress_anim.setEasingCurve(QEasingCurve.OutCubic)  # Smooth animation curve
+        
+        # Get current position
+        current_y = self.progress_indicator.y()
+        
+        # Set start and end states
+        self.progress_anim.setStartValue(QRect(2, current_y, current_width, 16))
+        self.progress_anim.setEndValue(QRect(2, current_y, indicator_width, 16))
+        
+        # Start the animation
+        self.progress_anim.start()
         
         print(f"Updated progress bar: {occupancy_rate}% - width: {indicator_width}/{container_width}")
 
@@ -1061,14 +1078,23 @@ class ControlScreen(QWidget):
         
         # Add percentage indicators below the bar
         meter_layout = QHBoxLayout()
+        meter_layout.setContentsMargins(2, 0, 2, 0)  # Tight margins to align with progress bar
         meter_layout.setSpacing(0)
         
-        # Add percentage markers
-        for percent in [0, 25, 50, 75, 100]:
+        # Add percentage markers aligned with progress bar
+        markers = [0, 25, 50, 75, 100]
+        for i, percent in enumerate(markers):
             label = QLabel(f"{percent}%")
             label.setAlignment(Qt.AlignCenter)
             label.setStyleSheet("color: #7f8c8d; font-size: 12px;")
-            meter_layout.addWidget(label)
+            
+            # Position correctly - first and last align to edges, others centered
+            if i == 0:  # first
+                label.setAlignment(Qt.AlignLeft)
+            elif i == len(markers) - 1:  # last
+                label.setAlignment(Qt.AlignRight)
+            
+            meter_layout.addWidget(label, 1)  # Equal stretch for all markers
         
         # Add percentage scale to layout
         occupancy_layout.addLayout(meter_layout)

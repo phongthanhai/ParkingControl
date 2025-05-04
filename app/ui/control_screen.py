@@ -297,6 +297,13 @@ class ControlScreen(QWidget):
         """)
         self.occupancy_label.setAlignment(Qt.AlignCenter)
         
+        # Initialize capacity value and update time labels
+        self.capacity_value = QLabel("Loading...")
+        self.capacity_value.setStyleSheet("font-weight: bold; color: #2c3e50;")
+        
+        self.update_time = QLabel("--:--:--")
+        self.update_time.setStyleSheet("font-weight: bold; color: #2c3e50;")
+        
         # Add widgets to layout in proper order
         occupancy_layout.addWidget(occupancy_title)
         occupancy_layout.addWidget(self.lot_name_label)
@@ -887,7 +894,7 @@ class ControlScreen(QWidget):
         progress_layout = self.progress_container.layout()
         
         # Calculate the width percentage (0-100%)
-        width_percent = min(100, max(0, occupancy_rate))
+        width_percent = min(100, max(0, int(occupancy_rate)))
         
         # Remove existing widgets and spacers
         progress_layout.removeWidget(self.progress_indicator)
@@ -902,8 +909,8 @@ class ControlScreen(QWidget):
         """)
         
         # Calculate the relative sizes for the indicator and spacer
-        indicator_ratio = width_percent
-        spacer_ratio = 100 - width_percent
+        indicator_ratio = int(width_percent)  # Convert to integer
+        spacer_ratio = int(100 - width_percent)  # Convert to integer
         
         # Add back widgets with updated stretch factors
         progress_layout.addWidget(self.progress_indicator, indicator_ratio)
@@ -1069,21 +1076,15 @@ class ControlScreen(QWidget):
         capacity_label = QLabel("Total capacity:")
         capacity_label.setStyleSheet("color: #7f8c8d;")
         
-        self.capacity_value = QLabel("Loading...")
-        self.capacity_value.setStyleSheet("font-weight: bold; color: #2c3e50;")
-        
-        capacity_layout.addWidget(capacity_label)
-        capacity_layout.addWidget(self.capacity_value)
-        capacity_layout.addStretch()
-        
         last_updated = QLabel("Last updated:")
         last_updated.setStyleSheet("color: #7f8c8d;")
         
-        self.update_time = QLabel("--:--:--")
-        self.update_time.setStyleSheet("font-weight: bold; color: #2c3e50;")
-        
+        # Arrange the layout with existing widgets
+        capacity_layout.addWidget(capacity_label)
+        capacity_layout.addWidget(self.capacity_value)  # Use existing widget
+        capacity_layout.addStretch()
         capacity_layout.addWidget(last_updated)
-        capacity_layout.addWidget(self.update_time)
+        capacity_layout.addWidget(self.update_time)  # Use existing widget
         
         occupancy_layout.addLayout(capacity_layout)
 

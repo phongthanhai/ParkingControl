@@ -22,11 +22,13 @@ class LaneWidget(QWidget):
         self.status_label = QLabel("")
         self.manual_input = QLineEdit()
         self.submit_btn = QPushButton("Submit")
+        self.skip_btn = QPushButton("Skip")
         self.reconnect_btn = QPushButton("Reconnect Camera")
         
         # Make manual input fields always present but hidden initially
         self.manual_input.setVisible(False)
         self.submit_btn.setVisible(False)
+        self.skip_btn.setVisible(False)
         self.reconnect_btn.setVisible(False)
         
         # Apply fixed size policies to maintain consistency
@@ -125,8 +127,21 @@ class LaneWidget(QWidget):
         self.submit_btn.setFixedHeight(40)
         self.submit_btn.setFixedWidth(120)  # Fixed width for button
         
+        # Skip button styling
+        self.skip_btn.setStyleSheet("""
+            background-color: #f39c12;
+            color: white;
+            padding: 8px 15px;
+            border: none;
+            border-radius: 4px;
+            font-weight: bold;
+        """)
+        self.skip_btn.setFixedHeight(40)
+        self.skip_btn.setFixedWidth(120)  # Fixed width for button
+        
         input_layout.addWidget(self.manual_input, 1)  # Give most space to input
         input_layout.addWidget(self.submit_btn, 0)  # Fixed space for button
+        input_layout.addWidget(self.skip_btn, 0)  # Fixed space for skip button
         
         main_layout.addWidget(input_container)
         
@@ -263,6 +278,9 @@ class ControlScreen(QWidget):
             entry_widget.submit_btn.clicked.connect(
                 lambda: self._handle_manual_submit('entry')
             )
+            entry_widget.skip_btn.clicked.connect(
+                lambda: self._handle_manual_skip('entry')
+            )
             entry_widget.reconnect_btn.clicked.connect(
                 lambda: self._restart_worker('entry')
             )
@@ -273,6 +291,9 @@ class ControlScreen(QWidget):
             exit_widget = LaneWidget("Exit Lane")
             exit_widget.submit_btn.clicked.connect(
                 lambda: self._handle_manual_submit('exit')
+            )
+            exit_widget.skip_btn.clicked.connect(
+                lambda: self._handle_manual_skip('exit')
             )
             exit_widget.reconnect_btn.clicked.connect(
                 lambda: self._restart_worker('exit')
@@ -548,6 +569,7 @@ class ControlScreen(QWidget):
                 # Show the manual input controls
                 widget.manual_input.setVisible(True)
                 widget.submit_btn.setVisible(True)
+                widget.skip_btn.setVisible(True)
                 
                 # Set consistent status message styling
                 if reason == "API timeout":
@@ -597,6 +619,7 @@ class ControlScreen(QWidget):
                 widget.manual_input.clear()
                 widget.manual_input.setVisible(False)
                 widget.submit_btn.setVisible(False)
+                widget.skip_btn.setVisible(False)
                 widget.plate_label.setText("Scanning...")
                 widget.status_label.setText("")
                 print(f"{lane} lane UI reset - resuming detection")
@@ -668,6 +691,28 @@ class ControlScreen(QWidget):
         else:
             widget.status_label.setText("Invalid format - Vietnamese plates only")
             widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
+
+    def _handle_manual_skip(self, lane):
+        """Handle skip button press for manual entry"""
+        widget = self.lane_widgets.get(lane)
+        if not widget:
+            return
+        
+        # Display skip status briefly
+        widget.status_label.setText("Vehicle skipped")
+        widget.status_label.setStyleSheet("font-size: 14px; color: #f39c12; font-weight: bold;")
+        
+        # Reset UI
+        widget.manual_input.clear()
+        widget.manual_input.setVisible(False)
+        widget.submit_btn.setVisible(False)
+        widget.skip_btn.setVisible(False)
+        
+        # Resume worker thread (this already includes cooldown period)
+        with self.worker_guard:
+            if lane in self.lane_workers and self.lane_workers[lane].isRunning():
+                print(f"Skipping vehicle in {lane} lane")
+                self.lane_workers[lane].resume_processing()
 
     def _log_entry(self, lane, data, entry_type):
         try:

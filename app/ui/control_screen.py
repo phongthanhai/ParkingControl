@@ -1413,13 +1413,20 @@ class ControlScreen(QWidget):
                 self.func = func
                 self.args = args
                 self.kwargs = kwargs
+                self._running = True
                 
             def run(self):
                 try:
-                    result = self.func(*self.args, **self.kwargs)
-                    self.finished.emit(self.op_id, True, result)
+                    if self._running:
+                        result = self.func(*self.args, **self.kwargs)
+                        if self._running:  # Check again in case we were terminated
+                            self.finished.emit(self.op_id, True, result)
                 except Exception as e:
-                    self.finished.emit(self.op_id, False, str(e))
+                    if self._running:
+                        self.finished.emit(self.op_id, False, str(e))
+                    
+            def stop(self):
+                self._running = False
         
         # Create and start worker
         worker = ApiWorker(operation_id, api_func, args, kwargs)
@@ -1429,6 +1436,18 @@ class ControlScreen(QWidget):
         # Store reference to prevent garbage collection
         if not hasattr(self, '_api_workers'):
             self._api_workers = {}
+        
+        # Clean up any previous thread with the same operation type
+        for old_id in list(self._api_workers.keys()):
+            if old_id.startswith(operation_type) and self._api_workers[old_id].isRunning():
+                try:
+                    self._api_workers[old_id].stop()
+                    self._api_workers[old_id].terminate()
+                    self._api_workers[old_id].wait(100)  # Short wait
+                    del self._api_workers[old_id]
+                except:
+                    pass
+        
         self._api_workers[operation_id] = worker
         
         # Start the worker
@@ -1450,12 +1469,13 @@ class ControlScreen(QWidget):
                 # The result contains a tuple of (success, data)
                 api_success, api_data = result
                 
-                if api_success and api_data:
+                if api_success:
                     # Update the cache with the latest data
                     new_blacklist = set()
-                    for vehicle in api_data:
-                        if vehicle.get('is_blacklisted', False):
-                            new_blacklist.add(vehicle.get('plate_id').upper())
+                    if api_data:  # Check if data is not empty
+                        for vehicle in api_data:
+                            if vehicle.get('is_blacklisted', False):
+                                new_blacklist.add(vehicle.get('plate_id').upper())
                     
                     # Replace the cache atomically
                     self.blacklisted_plates = new_blacklist
@@ -1472,13 +1492,16 @@ class ControlScreen(QWidget):
                 # The result contains a tuple of (success, data)
                 api_success, api_data = result
                 
-                if api_success and api_data:
+                if api_success:
                     # Clear existing log entries
                     self._clear_log_table()
                     
-                    # Add log entries to the log area
-                    for log_entry in api_data:
-                        self._add_log_entry(log_entry)
+                    # Add log entries to the log area if there are any
+                    if api_data:
+                        for log_entry in api_data:
+                            self._add_log_entry(log_entry)
+                    else:
+                        print("No log data available")
                 else:
                     print(f"Failed to fetch logs: {api_data}")
             else:
@@ -1529,3 +1552,25 @@ class ControlScreen(QWidget):
                     border-radius: 4px;
                     margin: 10px 0;
                 """)
+
+    def _update_occupancy_visual(self, occupancy_rate, occupied, available):
+        """Update the visual representation of occupancy"""
+        # Set color based on occupancy rate
+        if occupancy_rate < 60:
+            color = "#27ae60"  # Green
+        elif occupancy_rate < 85:
+            color = "#f1c40f"  # Yellow
+        else:
+            color = "#e74c3c"  # Red
+        
+        # Update the occupancy label
+        self.occupancy_label.setText(f"{occupancy_rate}% ({occupied} used / {available} free)")
+        self.occupancy_label.setStyleSheet(f"""
+            font-size: 24px;
+            font-weight: bold;
+            color: white;
+            background-color: {color};
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        """)

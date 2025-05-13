@@ -766,6 +766,18 @@ class ControlScreen(QWidget):
             widget.status_label.setStyleSheet("font-size: 14px; color: #ffc107; font-weight: bold;")
             return
         
+        # Create data with the manually entered plate text (needed for both paths)
+        worker = self.lane_workers.get(lane)
+        image_data = None
+        if worker and hasattr(worker, "last_detection_data") and worker.last_detection_data:
+            image_data = worker.last_detection_data.get("image")
+        
+        plate_data = {
+            "text": plate_text,
+            "confidence": 1.0,  # Manual entry has full confidence
+            "image": image_data
+        }
+        
         if self._is_blacklisted(plate_text):
             # Handle blacklisted vehicle - auto-skip after showing message
             widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
@@ -780,8 +792,8 @@ class ControlScreen(QWidget):
             widget.plate_label.setText(f"BLACKLISTED: {plate_text}")
             widget.plate_label.setStyleSheet("color: white; background-color: #dc3545; font-weight: bold;")
             
-            # Log the denial
-            self._log_entry(lane, data, "denied-blacklist")
+            # Log the denial - USE plate_data here, NOT data
+            self._log_entry(lane, plate_data, "denied-blacklist")
             
             # Set timer to auto-skip after showing message (5 seconds)
             if lane in self.active_timers and self.active_timers[lane].isActive():
@@ -797,20 +809,7 @@ class ControlScreen(QWidget):
             # Normal flow for non-blacklisted vehicles
             self._activate_gate(lane)
             
-            # Check if we have stored image data from a previous detection
-            worker = self.lane_workers.get(lane)
-            image_data = None
-            
-            if worker and hasattr(worker, "last_detection_data") and worker.last_detection_data:
-                image_data = worker.last_detection_data.get("image")
-            
-            # Create data with the manually entered plate text and any available image
-            plate_data = {
-                "text": plate_text,
-                "confidence": 1.0,  # Manual entry has full confidence
-                "image": image_data
-            }
-            
+            # Log the entry - plate_data is already created above
             self._log_entry(lane, plate_data, "manual")
             widget.status_label.setText("Access granted - manual entry")
             widget.status_label.setStyleSheet("font-size: 14px; color: #28a745; font-weight: bold;")

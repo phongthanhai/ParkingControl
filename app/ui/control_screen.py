@@ -198,6 +198,8 @@ class ControlScreen(QWidget):
         self.api_retry_count = 0
         self.max_api_retries = 3
         
+        self.local_blacklist_logs = []
+        
         self._setup_gpio()
         self._setup_ui()
         
@@ -568,28 +570,32 @@ class ControlScreen(QWidget):
                 # Check if plate is blacklisted before granting access
                 plate_text = data.get('text', '')
                 if self._is_blacklisted(plate_text):
-                    # Handle blacklisted vehicle - show only Skip button
+                    # Handle blacklisted vehicle - auto-skip after showing message
                     widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
                     widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
                     
-                    # Configure UI to only show Skip button
+                    # Hide all input controls, no skip button needed
                     widget.manual_input.setVisible(False)
                     widget.submit_btn.setVisible(False)
-                    widget.skip_btn.setVisible(True)
+                    widget.skip_btn.setVisible(False)
                     
-                    # Change the Skip button styling to be more prominent
-                    widget.skip_btn.setText("Skip Blacklisted Vehicle")
-                    widget.skip_btn.setStyleSheet("""
-                        background-color: #dc3545;
-                        color: white;
-                        padding: 8px 15px;
-                        border: none;
-                        border-radius: 4px;
-                        font-weight: bold;
-                    """)
+                    # Change the plate text color to indicate blacklist status
+                    widget.plate_label.setText(f"BLACKLISTED: {plate_text}")
+                    widget.plate_label.setStyleSheet("color: white; background-color: #dc3545; font-weight: bold;")
                     
                     # Log the denial
                     self._log_entry(lane, data, "denied-blacklist")
+                    
+                    # Set timer to auto-skip after showing message (5 seconds)
+                    if lane in self.active_timers and self.active_timers[lane].isActive():
+                        self.active_timers[lane].stop()
+                    
+                    denial_timer = QTimer(self)
+                    denial_timer.timeout.connect(lambda: self._reset_lane(lane))
+                    denial_timer.setSingleShot(True)
+                    denial_timer.start(5000)  # 5 seconds
+                    self.active_timers[lane] = denial_timer
+                    print(f"Blacklisted vehicle in {lane} lane, will skip automatically")
                 else:
                     # Proceed with regular access flow
                     self._activate_gate(lane)
@@ -771,66 +777,65 @@ class ControlScreen(QWidget):
             widget.status_label.setStyleSheet("font-size: 14px; color: #ffc107; font-weight: bold;")
             return
         
-        if VIETNAMESE_PLATE_PATTERN.match(plate_text):
-            # Check if plate is blacklisted
-            if self._is_blacklisted(plate_text):
-                # Configure UI to only show Skip button
-                widget.manual_input.setVisible(False)
-                widget.submit_btn.setVisible(False)
-                widget.skip_btn.setVisible(True)
-                
-                # Change skip button appearance
-                widget.skip_btn.setText("Skip Blacklisted Vehicle")
-                widget.skip_btn.setStyleSheet("""
-                    background-color: #dc3545;
-                    color: white;
-                    padding: 8px 15px;
-                    border: none;
-                    border-radius: 4px;
-                    font-weight: bold;
-                """)
-                
-                widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
-                widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
-                
-                # Create data with the manually entered plate text
-                worker = self.lane_workers.get(lane)
-                image_data = None
-                if worker and hasattr(worker, "last_detection_data") and worker.last_detection_data:
-                    image_data = worker.last_detection_data.get("image")
-                
-                plate_data = {
-                    "text": plate_text,
-                    "confidence": 1.0,
-                    "image": image_data
-                }
-                
-                # Log the denial
-                self._log_entry(lane, plate_data, "denied-blacklist")
-            else:
-                # Normal flow for non-blacklisted vehicles
-                self._activate_gate(lane)
-                
-                # Check if we have stored image data from a previous detection
-                worker = self.lane_workers.get(lane)
-                image_data = None
-                
-                if worker and hasattr(worker, "last_detection_data") and worker.last_detection_data:
-                    image_data = worker.last_detection_data.get("image")
-                
-                # Create data with the manually entered plate text and any available image
-                plate_data = {
-                    "text": plate_text,
-                    "confidence": 1.0,  # Manual entry has full confidence
-                    "image": image_data
-                }
-                
-                self._log_entry(lane, plate_data, "manual")
-                widget.status_label.setText("Access granted - manual entry")
-                widget.status_label.setStyleSheet("font-size: 14px; color: #28a745; font-weight: bold;")
-        else:
-            widget.status_label.setText("Invalid format - Vietnamese plates only")
+        if self._is_blacklisted(plate_text):
+            # Configure UI to show blacklist message but no skip button
+            widget.manual_input.setVisible(False)
+            widget.submit_btn.setVisible(False)
+            widget.skip_btn.setVisible(False)
+            
+            # Update the display
+            widget.plate_label.setText(f"BLACKLISTED: {plate_text}")
+            widget.plate_label.setStyleSheet("color: white; background-color: #dc3545; font-weight: bold;")
+            
+            widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
             widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
+            
+            # Create data with the manually entered plate text
+            worker = self.lane_workers.get(lane)
+            image_data = None
+            if worker and hasattr(worker, "last_detection_data") and worker.last_detection_data:
+                image_data = worker.last_detection_data.get("image")
+            
+            plate_data = {
+                "text": plate_text,
+                "confidence": 1.0,
+                "image": image_data
+            }
+            
+            # Log the denial
+            self._log_entry(lane, plate_data, "denied-blacklist")
+            
+            # Set timer to auto-skip after showing message (5 seconds)
+            if lane in self.active_timers and self.active_timers[lane].isActive():
+                self.active_timers[lane].stop()
+            
+            denial_timer = QTimer(self)
+            denial_timer.timeout.connect(lambda: self._reset_lane(lane))
+            denial_timer.setSingleShot(True)
+            denial_timer.start(5000)  # 5 seconds
+            self.active_timers[lane] = denial_timer
+            print(f"Blacklisted vehicle in {lane} lane (manual entry), will skip automatically")
+        else:
+            # Normal flow for non-blacklisted vehicles
+            self._activate_gate(lane)
+            
+            # Check if we have stored image data from a previous detection
+            worker = self.lane_workers.get(lane)
+            image_data = None
+            
+            if worker and hasattr(worker, "last_detection_data") and worker.last_detection_data:
+                image_data = worker.last_detection_data.get("image")
+            
+            # Create data with the manually entered plate text and any available image
+            plate_data = {
+                "text": plate_text,
+                "confidence": 1.0,  # Manual entry has full confidence
+                "image": image_data
+            }
+            
+            self._log_entry(lane, plate_data, "manual")
+            widget.status_label.setText("Access granted - manual entry")
+            widget.status_label.setStyleSheet("font-size: 14px; color: #28a745; font-weight: bold;")
 
     def _handle_manual_skip(self, lane):
         """Handle skip button press for manual entry"""
@@ -871,11 +876,20 @@ class ControlScreen(QWidget):
             }
             print(f"Log entry created: {log_data}")
             
+            # Store denied-blacklist entries locally
+            if entry_type == "denied-blacklist":
+                # Store a copy of the log data
+                self.local_blacklist_logs.append(log_data.copy())
+            
             # Add entry to the log table
             self._add_log_entry(log_data)
             
             # Emit signal for any listeners
             self.log_signal.emit(log_data)
+            
+            # Skip API logging for blacklist entries since there's no endpoint
+            if entry_type == "denied-blacklist":
+                return
             
             # Skip API logging if we've determined it's not available
             if not self.api_available and self.api_retry_count >= self.max_api_retries:
@@ -1124,7 +1138,7 @@ class ControlScreen(QWidget):
                 print(f"API connection check error: {str(e)}")
 
     def _fetch_logs(self):
-        """Fetch logs for the current lot from the API"""
+        """Fetch logs for the current lot from the API and add local blacklist entries"""
         try:
             # Get lot_id from config
             from config import LOT_ID
@@ -1139,15 +1153,20 @@ class ControlScreen(QWidget):
                 timeout=logs_timeout
             )
             
+            # Clear existing log entries
+            self._clear_log_table()
+            
+            # Add fetched log entries to the log area
             if success and response:
-                # Clear existing log entries
-                self._clear_log_table()
-                
-                # Add log entries to the log area
                 for log_entry in response:
                     self._add_log_entry(log_entry)
             else:
                 print(f"Error fetching logs: {response}")
+            
+            # Add local blacklist entries back to the log table
+            for blacklist_entry in self.local_blacklist_logs:
+                self._add_log_entry(blacklist_entry)
+            
         except Exception as e:
             print(f"Error fetching logs: {str(e)}")
 
@@ -1346,29 +1365,36 @@ class ControlScreen(QWidget):
         # Fetch filtered logs
         success, response = self.api_client.get('services/logs/', params=params)
         
+        # Clear existing log entries
+        self._clear_log_table()
+        
+        # Add filtered log entries
         if success and response:
-            # Clear existing log entries
-            self._clear_log_table()
-            
-            # Add log entries to the log area
             for log_entry in response:
                 self._add_log_entry(log_entry)
-            
-            # Show applied filters
-            filter_msg = "Filters applied: "
-            filters = []
-            
-            if lane_filter != "all":
-                filters.append(f"Lane: {lane_filter}")
-            if type_filter != "all":
-                filters.append(f"Type: {type_filter}")
-            
-            if filters:
-                print(filter_msg + ", ".join(filters))
-            else:
-                print("No filters applied, showing all logs")
+        
+        # Add blacklist entries (filtered as needed)
+        for blacklist_entry in self.local_blacklist_logs:
+            # Apply the same filters to local blacklist entries
+            if lane_filter != "all" and blacklist_entry.get("lane") != lane_filter:
+                continue
+            if type_filter != "all" and blacklist_entry.get("type") != type_filter:
+                continue
+            self._add_log_entry(blacklist_entry)
+        
+        # Show applied filters
+        filter_msg = "Filters applied: "
+        filters = []
+        
+        if lane_filter != "all":
+            filters.append(f"Lane: {lane_filter}")
+        if type_filter != "all":
+            filters.append(f"Type: {type_filter}")
+        
+        if filters:
+            print(filter_msg + ", ".join(filters))
         else:
-            print(f"Failed to fetch filtered logs")
+            print("No filters applied, showing all logs")
 
     def _update_blacklist_cache(self):
         """Fetch and update the local blacklist cache asynchronously"""

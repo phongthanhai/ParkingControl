@@ -1,7 +1,7 @@
 # Fix imports for PyQt5 on Raspberry Pi
 from PyQt5.QtGui import QPixmap, QImage, QFont, QColor, QPalette
 from PyQt5.QtWidgets import QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSpacerItem, QWidget, QComboBox, QMessageBox
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG, QPropertyAnimation, QEasingCurve, QRect
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG, QPropertyAnimation, QEasingCurve, QRect, QThread
 import RPi.GPIO as GPIO
 import time
 import threading
@@ -470,6 +470,19 @@ class ControlScreen(QWidget):
         self._enhance_occupancy_display()
         self._enhance_log_table()
 
+        # Add blacklist cache
+        self.blacklisted_plates = set()
+        self.last_blacklist_update = 0
+        self.blacklist_update_interval = 300  # Update every 5 minutes
+        
+        # Setup timer for blacklist updates
+        self.blacklist_timer = QTimer(self)
+        self.blacklist_timer.timeout.connect(self._update_blacklist_cache)
+        self.blacklist_timer.start(self.blacklist_update_interval * 1000)
+        
+        # Initial blacklist load
+        QTimer.singleShot(1000, self._update_blacklist_cache)
+
     def _setup_camera_workers(self):
         with self.worker_guard:
             for lane in ['entry', 'exit']:
@@ -552,37 +565,107 @@ class ControlScreen(QWidget):
             
         try:
             if status == "success":
-                self._activate_gate(lane)
-                self._log_entry(lane, data, "auto")
-                widget.status_label.setText("Access granted - automatic")
-                widget.status_label.setStyleSheet("font-size: 14px; color: #28a745; font-weight: bold;")
-                print(f"GPIO {GPIO_PINS[lane]} activated for {lane} lane")
+                # Check if plate is blacklisted before granting access
+                plate_text = data.get('text', '')
+                if self._is_blacklisted(plate_text):
+                    # Handle blacklisted vehicle - show only Skip button
+                    widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
+                    widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
+                    
+                    # Configure UI to only show Skip button
+                    widget.manual_input.setVisible(False)
+                    widget.submit_btn.setVisible(False)
+                    widget.skip_btn.setVisible(True)
+                    
+                    # Change the Skip button styling to be more prominent
+                    widget.skip_btn.setText("Skip Blacklisted Vehicle")
+                    widget.skip_btn.setStyleSheet("""
+                        background-color: #dc3545;
+                        color: white;
+                        padding: 8px 15px;
+                        border: none;
+                        border-radius: 4px;
+                        font-weight: bold;
+                    """)
+                    
+                    # Log the denial
+                    self._log_entry(lane, data, "denied-blacklist")
+                else:
+                    # Proceed with regular access flow
+                    self._activate_gate(lane)
+                    self._log_entry(lane, data, "auto")
+                    widget.status_label.setText("Access granted - automatic")
+                    widget.status_label.setStyleSheet("font-size: 14px; color: #28a745; font-weight: bold;")
+                    print(f"GPIO {GPIO_PINS[lane]} activated for {lane} lane")
+                
             elif status == "requires_manual":
                 reason = data.get('reason', 'unknown')
-                widget.plate_label.setText(f"Manual input required: {reason}")
                 
-                # Pre-populate with detected text if available
-                if 'text' in data:
-                    widget.manual_input.setText(data['text'])
-                    widget.manual_input.selectAll()  # Select all for easy editing
-                
-                # Show the manual input controls
-                widget.manual_input.setVisible(True)
-                widget.submit_btn.setVisible(True)
-                widget.skip_btn.setVisible(True)
-                
-                # Set consistent status message styling
-                if reason == "API timeout":
-                    widget.status_label.setText("API timeout - Enter plate manually")
-                elif reason == "low confidence":
-                    conf = data.get('confidence', 0)
-                    widget.status_label.setText(f"Low confidence ({conf:.2f}) - Verify plate")
-                elif reason == "invalid format":
-                    widget.status_label.setText("Invalid plate format - Enter correct plate")
-                else:
-                    widget.status_label.setText("Waiting for manual input")
+                # Check if detected text is blacklisted
+                detected_text = data.get('text', '')
+                if detected_text and self._is_blacklisted(detected_text):
+                    # Blacklisted vehicle detected - show only Skip button
+                    widget.plate_label.setText(f"BLACKLISTED: {detected_text}")
+                    widget.plate_label.setStyleSheet("color: white; background-color: #dc3545; font-weight: bold;")
                     
-                widget.status_label.setStyleSheet("font-size: 14px; color: #ffc107; font-weight: bold;")
+                    # Configure UI to only show Skip button
+                    widget.manual_input.setVisible(False) 
+                    widget.submit_btn.setVisible(False)
+                    widget.skip_btn.setVisible(True)
+                    
+                    # Change the Skip button styling to be more prominent
+                    widget.skip_btn.setText("Skip Blacklisted Vehicle")
+                    widget.skip_btn.setStyleSheet("""
+                        background-color: #dc3545;
+                        color: white;
+                        padding: 8px 15px;
+                        border: none;
+                        border-radius: 4px;
+                        font-weight: bold;
+                    """)
+                    
+                    widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
+                    widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
+                    
+                    # Log the denial
+                    self._log_entry(lane, data, "denied-blacklist")
+                else:
+                    # Standard manual verification needed - show all controls
+                    widget.plate_label.setText(f"Manual input required: {reason}")
+                    
+                    # Pre-populate with detected text if available
+                    if 'text' in data:
+                        widget.manual_input.setText(data['text'])
+                        widget.manual_input.selectAll()  # Select all for easy editing
+                    
+                    # Show all manual input controls
+                    widget.manual_input.setVisible(True)
+                    widget.submit_btn.setVisible(True)
+                    widget.skip_btn.setVisible(True)
+                    
+                    # Reset skip button to normal appearance
+                    widget.skip_btn.setText("Skip")
+                    widget.skip_btn.setStyleSheet("""
+                        background-color: #f39c12;
+                        color: white;
+                        padding: 8px 15px;
+                        border: none;
+                        border-radius: 4px;
+                        font-weight: bold;
+                    """)
+                    
+                    # Set consistent status message styling
+                    if reason == "API timeout":
+                        widget.status_label.setText("API timeout - Enter plate manually")
+                    elif reason == "low confidence":
+                        conf = data.get('confidence', 0)
+                        widget.status_label.setText(f"Low confidence ({conf:.2f}) - Verify plate")
+                    elif reason == "invalid format":
+                        widget.status_label.setText("Invalid plate format - Enter correct plate")
+                    else:
+                        widget.status_label.setText("Waiting for manual input")
+                        
+                    widget.status_label.setStyleSheet("font-size: 14px; color: #ffc107; font-weight: bold;")
         except Exception as e:
             print(f"Status handling error: {str(e)}")
 
@@ -620,7 +703,28 @@ class ControlScreen(QWidget):
                 widget.manual_input.setVisible(False)
                 widget.submit_btn.setVisible(False)
                 widget.skip_btn.setVisible(False)
+                
+                # Reset skip button to normal appearance
+                widget.skip_btn.setText("Skip")
+                widget.skip_btn.setStyleSheet("""
+                    background-color: #f39c12;
+                    color: white;
+                    padding: 8px 15px;
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                """)
+                
+                # Reset plate label styling
                 widget.plate_label.setText("Scanning...")
+                widget.plate_label.setStyleSheet("""
+                    font-size: 18px; 
+                    color: #2c3e50;
+                    background-color: #ecf0f1;
+                    padding: 8px;
+                    border-radius: 4px;
+                """)
+                
                 widget.status_label.setText("")
                 print(f"{lane} lane UI reset - resuming detection")
             
@@ -660,34 +764,70 @@ class ControlScreen(QWidget):
         widget = self.lane_widgets.get(lane)
         if not widget:
             return
-            
+        
         plate_text = widget.manual_input.text().strip()
         if not plate_text:
             widget.status_label.setText("Please enter a license plate number")
             widget.status_label.setStyleSheet("font-size: 14px; color: #ffc107; font-weight: bold;")
             return
-            
+        
         if VIETNAMESE_PLATE_PATTERN.match(plate_text):
-            self._activate_gate(lane)
-            
-            # Check if we have stored image data from a previous detection
-            # that required manual verification
-            worker = self.lane_workers.get(lane)
-            image_data = None
-            
-            if worker and hasattr(worker, "last_detection_data") and worker.last_detection_data:
-                image_data = worker.last_detection_data.get("image")
-            
-            # Create data with the manually entered plate text and any available image
-            plate_data = {
-                "text": plate_text,
-                "confidence": 1.0,  # Manual entry has full confidence
-                "image": image_data
-            }
-            
-            self._log_entry(lane, plate_data, "manual")
-            widget.status_label.setText("Access granted - manual entry")
-            widget.status_label.setStyleSheet("font-size: 14px; color: #28a745; font-weight: bold;")
+            # Check if plate is blacklisted
+            if self._is_blacklisted(plate_text):
+                # Configure UI to only show Skip button
+                widget.manual_input.setVisible(False)
+                widget.submit_btn.setVisible(False)
+                widget.skip_btn.setVisible(True)
+                
+                # Change skip button appearance
+                widget.skip_btn.setText("Skip Blacklisted Vehicle")
+                widget.skip_btn.setStyleSheet("""
+                    background-color: #dc3545;
+                    color: white;
+                    padding: 8px 15px;
+                    border: none;
+                    border-radius: 4px;
+                    font-weight: bold;
+                """)
+                
+                widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
+                widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
+                
+                # Create data with the manually entered plate text
+                worker = self.lane_workers.get(lane)
+                image_data = None
+                if worker and hasattr(worker, "last_detection_data") and worker.last_detection_data:
+                    image_data = worker.last_detection_data.get("image")
+                
+                plate_data = {
+                    "text": plate_text,
+                    "confidence": 1.0,
+                    "image": image_data
+                }
+                
+                # Log the denial
+                self._log_entry(lane, plate_data, "denied-blacklist")
+            else:
+                # Normal flow for non-blacklisted vehicles
+                self._activate_gate(lane)
+                
+                # Check if we have stored image data from a previous detection
+                worker = self.lane_workers.get(lane)
+                image_data = None
+                
+                if worker and hasattr(worker, "last_detection_data") and worker.last_detection_data:
+                    image_data = worker.last_detection_data.get("image")
+                
+                # Create data with the manually entered plate text and any available image
+                plate_data = {
+                    "text": plate_text,
+                    "confidence": 1.0,  # Manual entry has full confidence
+                    "image": image_data
+                }
+                
+                self._log_entry(lane, plate_data, "manual")
+                widget.status_label.setText("Access granted - manual entry")
+                widget.status_label.setStyleSheet("font-size: 14px; color: #28a745; font-weight: bold;")
         else:
             widget.status_label.setText("Invalid format - Vietnamese plates only")
             widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
@@ -900,105 +1040,56 @@ class ControlScreen(QWidget):
                 item.widget().deleteLater()
 
     def _update_occupancy(self):
-        """Update the occupancy display with data from API"""
-        try:
-            # Set loading state while waiting for API
-            self.occupancy_label.setText("Loading occupancy data...")
-            self.occupancy_label.setStyleSheet("""
-                font-size: 24px;
-                font-weight: bold;
-                color: white;
-                background-color: #7f8c8d;
-                padding: 10px;
-                border-radius: 4px;
-                margin: 10px 0;
-            """)
-            
-            # Call the API with the configured lot ID, using shorter timeout
-            # since this is a background operation that shouldn't block the UI
-            success, data = self.api_client.get(
-                f'services/lot-occupancy/{LOT_ID}',
-                timeout=(3.0, 5.0)  # 3s connect, 5s read
-            )
-            
-            if success and data:
-                # Extract data from response
-                lot_name = data.get('lot_name', 'Unknown')
-                capacity = data.get('capacity', 0)
-                occupied = data.get('occupied', 0)
-                available = data.get('available', 0)
-                occupancy_rate = data.get('occupancy_rate', 0)
-                
-                # Update lot name
-                self.lot_name_label.setText(f"{lot_name} (ID: {LOT_ID})")
-                
-                # Update labels with the data
-                self.capacity_value.setText(f"{capacity} vehicles")
-                
-                # Update visual indicator based on occupancy rate
-                self._update_occupancy_visual(occupancy_rate, occupied, available)
-                
-                # Update timestamp
-                self.update_time.setText(datetime.now().strftime("%H:%M:%S"))
-                
-                print(f"Occupancy updated: {occupancy_rate}% ({occupied}/{capacity})")
-            else:
-                error_msg = str(data) if data else "Unknown error"
-                print(f"Failed to get occupancy data: {error_msg}")
-                
-                if "timeout" in error_msg.lower():
-                    self.occupancy_label.setText("Occupancy data timed out")
-                else:
-                    self.occupancy_label.setText("Occupancy data unavailable")
-                    
-                self.lot_name_label.setText(f"Lot ID: {LOT_ID} (Data unavailable)")
-                self.occupancy_label.setStyleSheet("""
-                    font-size: 24px;
-                    font-weight: bold;
-                    color: white;
-                    background-color: #7f8c8d;
-                    padding: 10px;
-                    border-radius: 4px;
-                    margin: 10px 0;
-                """)
-            
-        except Exception as e:
-            print(f"Error updating occupancy: {str(e)}")
-            self.occupancy_label.setText("Occupancy data unavailable")
-            self.lot_name_label.setText(f"Lot ID: {LOT_ID} (Error loading data)")
-            self.occupancy_label.setStyleSheet("""
-                font-size: 24px;
-                font-weight: bold;
-                color: white;
-                background-color: #7f8c8d;
-                padding: 10px;
-                border-radius: 4px;
-                margin: 10px 0;
-            """)
-            
-    def _update_occupancy_visual(self, occupancy_rate, occupied, available):
-        """Update the visual representation of occupancy"""
-        # Set color based on occupancy rate
-        if occupancy_rate < 60:
-            color = "#27ae60"  # Green
-        elif occupancy_rate < 85:
-            color = "#f1c40f"  # Yellow
-        else:
-            color = "#e74c3c"  # Red
-            
-        # Update the occupancy label
-        self.occupancy_label.setText(f"{occupancy_rate}% ({occupied} used / {available} free)")
-        self.occupancy_label.setStyleSheet(f"""
+        """Update the occupancy display with data from API asynchronously"""
+        # Set loading state while waiting for API
+        self.occupancy_label.setText("Loading occupancy data...")
+        self.occupancy_label.setStyleSheet("""
             font-size: 24px;
             font-weight: bold;
             color: white;
-            background-color: {color};
+            background-color: #7f8c8d;
             padding: 10px;
             border-radius: 4px;
             margin: 10px 0;
         """)
         
-        # Progress bar animation removed
+        # Define the API call function
+        def fetch_occupancy():
+            from config import LOT_ID
+            return self.api_client.get(
+                f'services/lot-occupancy/{LOT_ID}',
+                timeout=(3.0, 5.0)
+            )
+        
+        # Perform the call asynchronously
+        self._perform_async_api_call("occupancy", fetch_occupancy)
+
+    def _process_occupancy_data(self, data):
+        """Process occupancy data after async fetch"""
+        try:
+            # Extract data from response
+            lot_name = data.get('lot_name', 'Unknown')
+            capacity = data.get('capacity', 0)
+            occupied = data.get('occupied', 0)
+            available = data.get('available', 0)
+            occupancy_rate = data.get('occupancy_rate', 0)
+            
+            # Update lot name
+            self.lot_name_label.setText(f"{lot_name} (ID: {LOT_ID})")
+            
+            # Update labels with the data
+            self.capacity_value.setText(f"{capacity} vehicles")
+            
+            # Update visual indicator based on occupancy rate
+            self._update_occupancy_visual(occupancy_rate, occupied, available)
+            
+            # Update timestamp
+            self.update_time.setText(datetime.now().strftime("%H:%M:%S"))
+            
+            print(f"Occupancy updated: {occupancy_rate}% ({occupied}/{capacity})")
+        except Exception as e:
+            print(f"Error processing occupancy data: {str(e)}")
+            self.occupancy_label.setText("Error processing data")
 
     def _check_api_connection(self):
         """Regularly check if API server is online"""
@@ -1038,9 +1129,15 @@ class ControlScreen(QWidget):
             # Get lot_id from config
             from config import LOT_ID
             
+            # Use reasonable timeout for log fetching
+            logs_timeout = (3.0, 7.0)  # 3s connect, 7s read
+            
             # Fetch logs with pagination
-            success, response = self.api_client.get('services/logs/', 
-                                                  params={'skip': 0, 'limit': 100, 'lot_id': LOT_ID})
+            success, response = self.api_client.get(
+                'services/logs/', 
+                params={'skip': 0, 'limit': 100, 'lot_id': LOT_ID},
+                timeout=logs_timeout
+            )
             
             if success and response:
                 # Clear existing log entries
@@ -1049,6 +1146,8 @@ class ControlScreen(QWidget):
                 # Add log entries to the log area
                 for log_entry in response:
                     self._add_log_entry(log_entry)
+            else:
+                print(f"Error fetching logs: {response}")
         except Exception as e:
             print(f"Error fetching logs: {str(e)}")
 
@@ -1270,3 +1369,144 @@ class ControlScreen(QWidget):
                 print("No filters applied, showing all logs")
         else:
             print(f"Failed to fetch filtered logs")
+
+    def _update_blacklist_cache(self):
+        """Fetch and update the local blacklist cache asynchronously"""
+        # Define the API call function to use in the thread
+        def fetch_blacklist():
+            return self.api_client.get(
+                'vehicles/blacklisted/',
+                params={'skip': 0, 'limit': 1000},
+                timeout=(3.0, 5.0)
+            )
+        
+        # Perform the call asynchronously
+        self._perform_async_api_call("blacklist", fetch_blacklist)
+
+    def _is_blacklisted(self, plate):
+        """Check if a license plate is blacklisted using local cache"""
+        # Normalize plate format for comparison
+        normalized_plate = plate.upper().strip()
+        return normalized_plate in self.blacklisted_plates
+
+    def force_refresh_blacklist(self):
+        """Force an immediate refresh of the blacklist data"""
+        self._update_blacklist_cache()
+        self.status_label.setText("Blacklist refreshed")
+        QTimer.singleShot(3000, lambda: self.status_label.setText(""))
+
+    def _perform_async_api_call(self, operation_type, api_func, *args, **kwargs):
+        """Perform API call in a non-blocking way with visual feedback"""
+        # Create operation ID
+        operation_id = f"{operation_type}_{time.time()}"
+        
+        # Show loading indicator if needed
+        self._show_loading_indicator(operation_type, True)
+        
+        # Create a worker thread for the API call
+        class ApiWorker(QThread):
+            finished = pyqtSignal(str, bool, object)
+            
+            def __init__(self, op_id, func, args, kwargs):
+                super().__init__()
+                self.op_id = op_id
+                self.func = func
+                self.args = args
+                self.kwargs = kwargs
+                
+            def run(self):
+                try:
+                    result = self.func(*self.args, **self.kwargs)
+                    self.finished.emit(self.op_id, True, result)
+                except Exception as e:
+                    self.finished.emit(self.op_id, False, str(e))
+        
+        # Create and start worker
+        worker = ApiWorker(operation_id, api_func, args, kwargs)
+        worker.finished.connect(lambda op_id, success, result: 
+                               self._handle_async_result(op_id, success, result))
+        
+        # Store reference to prevent garbage collection
+        if not hasattr(self, '_api_workers'):
+            self._api_workers = {}
+        self._api_workers[operation_id] = worker
+        
+        # Start the worker
+        worker.start()
+        
+        return operation_id
+
+    def _handle_async_result(self, operation_id, success, result):
+        """Handle the result from an async API call"""
+        # Extract operation type from ID
+        operation_type = operation_id.split('_')[0]
+        
+        # Hide loading indicator
+        self._show_loading_indicator(operation_type, False)
+        
+        # Process result based on operation type
+        if operation_type == "blacklist":
+            if success:
+                # Update the cache with the latest data
+                new_blacklist = set()
+                for vehicle in result:
+                    if vehicle.get('is_blacklisted', False):
+                        new_blacklist.add(vehicle.get('plate_id').upper())
+                
+                # Replace the cache atomically
+                self.blacklisted_plates = new_blacklist
+                self.last_blacklist_update = time.time()
+                
+                print(f"Blacklist updated: {len(self.blacklisted_plates)} vehicles")
+            else:
+                print(f"Failed to update blacklist: {result}")
+        elif operation_type == "logs":
+            if success:
+                # Clear existing log entries
+                self._clear_log_table()
+                
+                # Add log entries to the log area
+                for log_entry in result:
+                    self._add_log_entry(log_entry)
+            else:
+                print(f"Failed to fetch logs: {result}")
+        elif operation_type == "occupancy":
+            # Handle occupancy update
+            if success:
+                self._process_occupancy_data(result)
+            else:
+                self.occupancy_label.setText("Occupancy data unavailable")
+                self.occupancy_label.setStyleSheet("""
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: white;
+                    background-color: #7f8c8d;
+                    padding: 10px;
+                    border-radius: 4px;
+                    margin: 10px 0;
+                """)
+        
+        # Clean up worker reference
+        if hasattr(self, '_api_workers') and operation_id in self._api_workers:
+            del self._api_workers[operation_id]
+
+    def _show_loading_indicator(self, operation_type, is_loading):
+        """Show or hide loading indicator for specific operation"""
+        if operation_type == "blacklist":
+            # No UI element for blacklist loading currently
+            pass
+        elif operation_type == "logs":
+            # Could add a loading indicator to log table
+            pass
+        elif operation_type == "occupancy":
+            if is_loading:
+                self.occupancy_label.setText("Loading occupancy data...")
+                self.occupancy_label.setStyleSheet("""
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: white;
+                    background-color: #7f8c8d;
+                    padding: 10px;
+                    border-radius: 4px;
+                    margin: 10px 0;
+                """)

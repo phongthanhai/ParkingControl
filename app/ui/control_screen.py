@@ -567,21 +567,49 @@ class ControlScreen(QWidget):
             
         try:
             if status == "success":
-                # Check if plate is blacklisted before granting access
-                plate_text = data.get('text', '')
-                if self._is_blacklisted(plate_text):
-                    # Handle blacklisted vehicle - auto-skip after showing message
-                    widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
-                    widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
+                # Handle blacklisted vehicle - auto-skip after showing message
+                widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
+                widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
+                
+                # Hide all input controls, no skip button needed
+                widget.manual_input.setVisible(False)
+                widget.submit_btn.setVisible(False)
+                widget.skip_btn.setVisible(False)
+                
+                # Change the plate text color to indicate blacklist status
+                widget.plate_label.setText(f"BLACKLISTED: {data.get('text', '')}")
+                widget.plate_label.setStyleSheet("color: white; background-color: #dc3545; font-weight: bold;")
+                
+                # Log the denial
+                self._log_entry(lane, data, "denied-blacklist")
+                
+                # Set timer to auto-skip after showing message (5 seconds)
+                if lane in self.active_timers and self.active_timers[lane].isActive():
+                    self.active_timers[lane].stop()
+                
+                denial_timer = QTimer(self)
+                denial_timer.timeout.connect(lambda: self._reset_lane(lane))
+                denial_timer.setSingleShot(True)
+                denial_timer.start(5000)  # 5 seconds
+                self.active_timers[lane] = denial_timer
+                print(f"Blacklisted vehicle in {lane} lane, will skip automatically")
+            elif status == "requires_manual":
+                reason = data.get('reason', 'unknown')
+                
+                # Check if detected text is blacklisted
+                detected_text = data.get('text', '')
+                if detected_text and self._is_blacklisted(detected_text):
+                    # Blacklisted vehicle detected - no skip button needed
+                    widget.plate_label.setText(f"BLACKLISTED: {detected_text}")
+                    widget.plate_label.setStyleSheet("color: white; background-color: #dc3545; font-weight: bold;")
                     
-                    # Hide all input controls, no skip button needed
-                    widget.manual_input.setVisible(False)
+                    # Hide all controls
+                    widget.manual_input.setVisible(False) 
                     widget.submit_btn.setVisible(False)
                     widget.skip_btn.setVisible(False)
                     
-                    # Change the plate text color to indicate blacklist status
-                    widget.plate_label.setText(f"BLACKLISTED: {plate_text}")
-                    widget.plate_label.setStyleSheet("color: white; background-color: #dc3545; font-weight: bold;")
+                    widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
+                    widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
                     
                     # Log the denial
                     self._log_entry(lane, data, "denied-blacklist")
@@ -593,48 +621,9 @@ class ControlScreen(QWidget):
                     denial_timer = QTimer(self)
                     denial_timer.timeout.connect(lambda: self._reset_lane(lane))
                     denial_timer.setSingleShot(True)
-                    denial_timer.start(5000)  # 5 seconds
+                    denial_timer.start(5000)  # 5 seconds 
                     self.active_timers[lane] = denial_timer
-                    print(f"Blacklisted vehicle in {lane} lane, will skip automatically")
-                else:
-                    # Proceed with regular access flow
-                    self._activate_gate(lane)
-                    self._log_entry(lane, data, "auto")
-                    widget.status_label.setText("Access granted - automatic")
-                    widget.status_label.setStyleSheet("font-size: 14px; color: #28a745; font-weight: bold;")
-                    print(f"GPIO {GPIO_PINS[lane]} activated for {lane} lane")
-                
-            elif status == "requires_manual":
-                reason = data.get('reason', 'unknown')
-                
-                # Check if detected text is blacklisted
-                detected_text = data.get('text', '')
-                if detected_text and self._is_blacklisted(detected_text):
-                    # Blacklisted vehicle detected - show only Skip button
-                    widget.plate_label.setText(f"BLACKLISTED: {detected_text}")
-                    widget.plate_label.setStyleSheet("color: white; background-color: #dc3545; font-weight: bold;")
-                    
-                    # Configure UI to only show Skip button
-                    widget.manual_input.setVisible(False) 
-                    widget.submit_btn.setVisible(False)
-                    widget.skip_btn.setVisible(True)
-                    
-                    # Change the Skip button styling to be more prominent
-                    widget.skip_btn.setText("Skip Blacklisted Vehicle")
-                    widget.skip_btn.setStyleSheet("""
-                        background-color: #dc3545;
-                        color: white;
-                        padding: 8px 15px;
-                        border: none;
-                        border-radius: 4px;
-                        font-weight: bold;
-                    """)
-                    
-                    widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
-                    widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
-                    
-                    # Log the denial
-                    self._log_entry(lane, data, "denied-blacklist")
+                    print(f"Blacklisted vehicle in {lane} lane detected in manual mode, will skip automatically")
                 else:
                     # Standard manual verification needed - show all controls
                     widget.plate_label.setText(f"Manual input required: {reason}")
@@ -778,32 +767,21 @@ class ControlScreen(QWidget):
             return
         
         if self._is_blacklisted(plate_text):
-            # Configure UI to show blacklist message but no skip button
+            # Handle blacklisted vehicle - auto-skip after showing message
+            widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
+            widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
+            
+            # Hide all input controls, no skip button needed
             widget.manual_input.setVisible(False)
             widget.submit_btn.setVisible(False)
             widget.skip_btn.setVisible(False)
             
-            # Update the display
+            # Change the plate text color to indicate blacklist status
             widget.plate_label.setText(f"BLACKLISTED: {plate_text}")
             widget.plate_label.setStyleSheet("color: white; background-color: #dc3545; font-weight: bold;")
             
-            widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
-            widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
-            
-            # Create data with the manually entered plate text
-            worker = self.lane_workers.get(lane)
-            image_data = None
-            if worker and hasattr(worker, "last_detection_data") and worker.last_detection_data:
-                image_data = worker.last_detection_data.get("image")
-            
-            plate_data = {
-                "text": plate_text,
-                "confidence": 1.0,
-                "image": image_data
-            }
-            
             # Log the denial
-            self._log_entry(lane, plate_data, "denied-blacklist")
+            self._log_entry(lane, data, "denied-blacklist")
             
             # Set timer to auto-skip after showing message (5 seconds)
             if lane in self.active_timers and self.active_timers[lane].isActive():
@@ -814,7 +792,7 @@ class ControlScreen(QWidget):
             denial_timer.setSingleShot(True)
             denial_timer.start(5000)  # 5 seconds
             self.active_timers[lane] = denial_timer
-            print(f"Blacklisted vehicle in {lane} lane (manual entry), will skip automatically")
+            print(f"Blacklisted vehicle in {lane} lane, will skip automatically")
         else:
             # Normal flow for non-blacklisted vehicles
             self._activate_gate(lane)
@@ -836,6 +814,11 @@ class ControlScreen(QWidget):
             self._log_entry(lane, plate_data, "manual")
             widget.status_label.setText("Access granted - manual entry")
             widget.status_label.setStyleSheet("font-size: 14px; color: #28a745; font-weight: bold;")
+
+            # Immediately hide input controls to prevent double submission
+            widget.manual_input.setVisible(False)
+            widget.submit_btn.setVisible(False)
+            widget.skip_btn.setVisible(False)
 
     def _handle_manual_skip(self, lane):
         """Handle skip button press for manual entry"""
@@ -1229,7 +1212,6 @@ class ControlScreen(QWidget):
                         widget.status_label.setText("Reconnecting camera...")
                         widget.status_label.setStyleSheet("font-size: 14px; color: #3498db; font-weight: bold;")
 
-
     # Add this code to your _setup_ui method after creating the occupancy_frame
 
     # Enhanced occupancy display with visual meter
@@ -1456,10 +1438,8 @@ class ControlScreen(QWidget):
         
         # Create and start worker
         worker = ApiWorker(operation_id, api_func, args, kwargs)
-        worker.finished.connect(lambda op_id, success, result: 
-                               self._handle_async_result(op_id, success, result))
         
-        # Store reference to prevent garbage collection
+        # Store reference to prevent garbage collection - do this before connecting signal
         if not hasattr(self, '_api_workers'):
             self._api_workers = {}
         
@@ -1467,12 +1447,18 @@ class ControlScreen(QWidget):
         for old_id in list(self._api_workers.keys()):
             if old_id.startswith(operation_type) and self._api_workers[old_id].isRunning():
                 try:
-                    self._api_workers[old_id].stop()
-                    self._api_workers[old_id].terminate()
-                    self._api_workers[old_id].wait(100)  # Short wait
+                    old_worker = self._api_workers[old_id]
+                    old_worker.stop()
+                    old_worker.finished.disconnect()  # Disconnect signals before stopping
+                    if not old_worker.wait(300):  # Wait up to 300ms
+                        print(f"Warning: Thread {old_id} not responding to stop request")
                     del self._api_workers[old_id]
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Error cleaning up thread {old_id}: {str(e)}")
+        
+        # Connect signal after thread is stored and before starting
+        worker.finished.connect(lambda op_id, success, result: 
+                               self._handle_async_result(op_id, success, result))
         
         self._api_workers[operation_id] = worker
         
@@ -1490,73 +1476,83 @@ class ControlScreen(QWidget):
         self._show_loading_indicator(operation_type, False)
         
         # Process result based on operation type
-        if operation_type == "blacklist":
-            if success:
-                # The result contains a tuple of (success, data)
-                api_success, api_data = result
-                
-                if api_success:
-                    # Update the cache with the latest data
-                    new_blacklist = set()
-                    if api_data:  # Check if data is not empty
-                        for vehicle in api_data:
-                            if vehicle.get('is_blacklisted', False):
-                                new_blacklist.add(vehicle.get('plate_id').upper())
+        try:
+            if operation_type == "blacklist":
+                if success:
+                    # The result contains a tuple of (success, data)
+                    api_success, api_data = result
                     
-                    # Replace the cache atomically
-                    self.blacklisted_plates = new_blacklist
-                    self.last_blacklist_update = time.time()
-                    
-                    print(f"Blacklist updated: {len(self.blacklisted_plates)} vehicles")
-                else:
-                    print(f"Failed to update blacklist: {api_data}")
-            else:
-                print(f"Failed to execute blacklist API call: {result}")
-            
-        elif operation_type == "logs":
-            if success:
-                # The result contains a tuple of (success, data)
-                api_success, api_data = result
-                
-                if api_success:
-                    # Clear existing log entries
-                    self._clear_log_table()
-                    
-                    # Add log entries to the log area if there are any
-                    if api_data:
-                        for log_entry in api_data:
-                            self._add_log_entry(log_entry)
+                    if api_success:
+                        # Update the cache with the latest data
+                        new_blacklist = set()
+                        if api_data:  # Check if data is not empty
+                            for vehicle in api_data:
+                                if vehicle.get('is_blacklisted', False):
+                                    new_blacklist.add(vehicle.get('plate_id').upper())
+                        
+                        # Replace the cache atomically
+                        self.blacklisted_plates = new_blacklist
+                        self.last_blacklist_update = time.time()
+                        
+                        print(f"Blacklist updated: {len(self.blacklisted_plates)} vehicles")
                     else:
-                        print("No log data available")
+                        print(f"Failed to update blacklist: {api_data}")
                 else:
-                    print(f"Failed to fetch logs: {api_data}")
-            else:
-                print(f"Failed to execute logs API call: {result}")
+                    print(f"Failed to execute blacklist API call: {result}")
             
-        elif operation_type == "occupancy":
-            if success:
-                # The result contains a tuple of (success, data)
-                api_success, api_data = result
-                
-                if api_success and api_data:
-                    self._process_occupancy_data(api_data)
+            elif operation_type == "logs":
+                if success:
+                    # The result contains a tuple of (success, data)
+                    api_success, api_data = result
+                    
+                    if api_success:
+                        # Clear existing log entries
+                        self._clear_log_table()
+                        
+                        # Add log entries to the log area if there are any
+                        if api_data:
+                            for log_entry in api_data:
+                                self._add_log_entry(log_entry)
+                        else:
+                            print("No log data available")
+                    else:
+                        print(f"Failed to fetch logs: {api_data}")
                 else:
-                    self.occupancy_label.setText("Occupancy data unavailable")
-                    self.occupancy_label.setStyleSheet("""
-                        font-size: 24px;
-                        font-weight: bold;
-                        color: white;
-                        background-color: #7f8c8d;
-                        padding: 10px;
-                        border-radius: 4px;
-                        margin: 10px 0;
-                    """)
-            else:
-                print(f"Failed to execute occupancy API call: {result}")
+                    print(f"Failed to execute logs API call: {result}")
+            
+            elif operation_type == "occupancy":
+                if success:
+                    # The result contains a tuple of (success, data)
+                    api_success, api_data = result
+                    
+                    if api_success and api_data:
+                        self._process_occupancy_data(api_data)
+                    else:
+                        self.occupancy_label.setText("Occupancy data unavailable")
+                        self.occupancy_label.setStyleSheet("""
+                            font-size: 24px;
+                            font-weight: bold;
+                            color: white;
+                            background-color: #7f8c8d;
+                            padding: 10px;
+                            border-radius: 4px;
+                            margin: 10px 0;
+                        """)
+                else:
+                    print(f"Failed to execute occupancy API call: {result}")
         
-        # Clean up worker reference
-        if hasattr(self, '_api_workers') and operation_id in self._api_workers:
-            del self._api_workers[operation_id]
+        except Exception as e:
+            print(f"Error processing {operation_type} result: {str(e)}")
+        
+        # Clean up worker reference - do this in a safe way
+        try:
+            if hasattr(self, '_api_workers') and operation_id in self._api_workers:
+                worker = self._api_workers[operation_id]
+                # Only remove if it's no longer running
+                if not worker.isRunning():
+                    del self._api_workers[operation_id]
+        except Exception as e:
+            print(f"Error cleaning up thread reference: {str(e)}")
 
     def _show_loading_indicator(self, operation_type, is_loading):
         """Show or hide loading indicator for specific operation"""
@@ -1600,3 +1596,32 @@ class ControlScreen(QWidget):
             border-radius: 4px;
             margin: 10px 0;
         """)
+
+    def closeEvent(self, event):
+        """Handle application close properly by cleaning up threads"""
+        try:
+            # Stop all API worker threads first
+            if hasattr(self, '_api_workers'):
+                for thread_id, worker in list(self._api_workers.items()):
+                    if worker and worker.isRunning():
+                        worker.stop()  # Signal the thread to stop
+                        worker.wait(500)  # Wait up to 500ms for clean shutdown
+            
+            # Now stop camera workers
+            with self.worker_guard:
+                for lane, worker in list(self.lane_workers.items()):
+                    if worker and worker.isRunning():
+                        worker.stop()
+                        worker.wait(1000)  # Wait up to 1 second for clean shutdown
+            
+            # Clean GPIO
+            try:
+                GPIO.cleanup()
+            except:
+                pass
+            
+            # Accept the close event
+            event.accept()
+        except Exception as e:
+            print(f"Error during application shutdown: {str(e)}")
+            event.accept()  # Accept anyway to ensure the app closes

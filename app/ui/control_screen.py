@@ -1447,44 +1447,63 @@ class ControlScreen(QWidget):
         # Process result based on operation type
         if operation_type == "blacklist":
             if success:
-                # Update the cache with the latest data
-                new_blacklist = set()
-                for vehicle in result:
-                    if vehicle.get('is_blacklisted', False):
-                        new_blacklist.add(vehicle.get('plate_id').upper())
+                # The result contains a tuple of (success, data)
+                api_success, api_data = result
                 
-                # Replace the cache atomically
-                self.blacklisted_plates = new_blacklist
-                self.last_blacklist_update = time.time()
-                
-                print(f"Blacklist updated: {len(self.blacklisted_plates)} vehicles")
+                if api_success and api_data:
+                    # Update the cache with the latest data
+                    new_blacklist = set()
+                    for vehicle in api_data:
+                        if vehicle.get('is_blacklisted', False):
+                            new_blacklist.add(vehicle.get('plate_id').upper())
+                    
+                    # Replace the cache atomically
+                    self.blacklisted_plates = new_blacklist
+                    self.last_blacklist_update = time.time()
+                    
+                    print(f"Blacklist updated: {len(self.blacklisted_plates)} vehicles")
+                else:
+                    print(f"Failed to update blacklist: {api_data}")
             else:
-                print(f"Failed to update blacklist: {result}")
+                print(f"Failed to execute blacklist API call: {result}")
+            
         elif operation_type == "logs":
             if success:
-                # Clear existing log entries
-                self._clear_log_table()
+                # The result contains a tuple of (success, data)
+                api_success, api_data = result
                 
-                # Add log entries to the log area
-                for log_entry in result:
-                    self._add_log_entry(log_entry)
+                if api_success and api_data:
+                    # Clear existing log entries
+                    self._clear_log_table()
+                    
+                    # Add log entries to the log area
+                    for log_entry in api_data:
+                        self._add_log_entry(log_entry)
+                else:
+                    print(f"Failed to fetch logs: {api_data}")
             else:
-                print(f"Failed to fetch logs: {result}")
+                print(f"Failed to execute logs API call: {result}")
+            
         elif operation_type == "occupancy":
-            # Handle occupancy update
             if success:
-                self._process_occupancy_data(result)
+                # The result contains a tuple of (success, data)
+                api_success, api_data = result
+                
+                if api_success and api_data:
+                    self._process_occupancy_data(api_data)
+                else:
+                    self.occupancy_label.setText("Occupancy data unavailable")
+                    self.occupancy_label.setStyleSheet("""
+                        font-size: 24px;
+                        font-weight: bold;
+                        color: white;
+                        background-color: #7f8c8d;
+                        padding: 10px;
+                        border-radius: 4px;
+                        margin: 10px 0;
+                    """)
             else:
-                self.occupancy_label.setText("Occupancy data unavailable")
-                self.occupancy_label.setStyleSheet("""
-                    font-size: 24px;
-                    font-weight: bold;
-                    color: white;
-                    background-color: #7f8c8d;
-                    padding: 10px;
-                    border-radius: 4px;
-                    margin: 10px 0;
-                """)
+                print(f"Failed to execute occupancy API call: {result}")
         
         # Clean up worker reference
         if hasattr(self, '_api_workers') and operation_id in self._api_workers:

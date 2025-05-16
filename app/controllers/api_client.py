@@ -364,7 +364,16 @@ class ApiClient:
         Returns:
             tuple: (success, data or error_message)
         """
-        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        # Ensure base_url doesn't end with slash and endpoint doesn't start with slash
+        base = self.base_url.rstrip('/')
+        endpoint = endpoint.lstrip('/')
+        url = f"{base}/{endpoint}"
+        
+        print(f"Making POST request to: {url}")
+        if data:
+            print(f"With form data: {data}")
+        if files:
+            print(f"With files: {list(files.keys())}")
         
         # Use provided timeout or default values
         if timeout is None:
@@ -373,23 +382,36 @@ class ApiClient:
         
         # Get authentication headers
         headers = self.auth_manager.auth_header
+        print(f"Using auth headers: {headers}")
         
         try:
             response = requests.post(url, data=data, files=files, headers=headers, timeout=timeout)
+            print(f"Response status code: {response.status_code}")
             
             if response.status_code in [200, 201]:
-                return True, response.json()
+                response_data = response.json()
+                print(f"Successful response: {response_data}")
+                return True, response_data
             else:
                 try:
                     error_data = response.json()
+                    print(f"Error response: {error_data}")
                     if 'detail' in error_data:
                         return False, error_data['detail']
                 except:
-                    return False, f"HTTP Error: {response.status_code}"
+                    error_msg = f"HTTP Error: {response.status_code}"
+                    print(error_msg)
+                    return False, error_msg
                     
         except requests.exceptions.ConnectTimeout:
-            return False, "Connection timeout. The server is not responding."
+            error_msg = "Connection timeout. The server is not responding."
+            print(error_msg)
+            return False, error_msg
         except requests.exceptions.ReadTimeout:
-            return False, "Read timeout. The server took too long to respond."
+            error_msg = "Read timeout. The server took too long to respond."
+            print(error_msg)
+            return False, error_msg
         except Exception as e:
-            return False, f"An error occurred: {str(e)}"
+            error_msg = f"An error occurred: {str(e)}"
+            print(error_msg)
+            return False, error_msg

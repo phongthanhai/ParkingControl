@@ -10,37 +10,27 @@ from app.utils.db_manager import DBManager
 from app.utils.image_storage import ImageStorage
 from app.controllers.sync_service import SyncService
 
-# Initialize database folder
 def initialize_local_storage():
-    """Create necessary folders for local storage"""
     try:
-        # Create DB directory if it doesn't exist
         db_path = os.path.join(os.path.dirname(__file__), 'local_data.db')
         db_dir = os.path.dirname(db_path)
         if not os.path.exists(db_dir) and db_dir:
             os.makedirs(db_dir)
             
-        # Initialize image storage
         image_storage = ImageStorage()
-        
-        # Initialize database
         db_manager = DBManager()
-        
-        # Clean up old images
         image_storage.cleanup_old_images()
         
         return True
     except Exception as e:
-        print(f"Error initializing local storage: {str(e)}")
         return False
 
 class ParkingSystem(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Parking Control System")
-        self.resize(1920, 1080)  # Set initial window size
+        self.resize(1920, 1080)
         
-        # Initialize local storage before setting up UI
         if not initialize_local_storage():
             QMessageBox.critical(
                 self,
@@ -48,10 +38,6 @@ class ParkingSystem(QMainWindow):
                 "Failed to initialize local storage. The application may not work correctly."
             )
         
-        # Cleanup any existing corrupted logs (one-time fix)
-        self.cleanup_unsynced_logs()
-        
-        # Status bar with database indicator
         self.statusBar().showMessage("")
         self.db_status_layout = QHBoxLayout()
         self.db_status_layout.setContentsMargins(5, 0, 5, 0)
@@ -70,51 +56,41 @@ class ParkingSystem(QMainWindow):
         db_status_widget.setLayout(self.db_status_layout)
         self.statusBar().addPermanentWidget(db_status_widget)
         
-        # Initialize sync service
         self.sync_service = SyncService()
             
         self.setup_ui()
         
-        # Check database connectivity
         self.check_db_connection()
         
-        # Set up timer to periodically check database
         self.db_check_timer = QTimer(self)
         self.db_check_timer.timeout.connect(self.check_db_connection)
-        self.db_check_timer.start(30000)  # Check every 30 seconds
+        self.db_check_timer.start(30000)
 
     def check_db_connection(self):
-        """Check if the SQLite database is accessible"""
         try:
             db_manager = DBManager()
-            # Try to execute a simple query
             conn = db_manager._get_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT 1")
             cursor.fetchone()
             
-            # Database is connected
             self.db_indicator.setStyleSheet("background-color: #a0d468; border-radius: 6px; border: 1px solid #8cc152;")
             self.db_status_text.setText("Database: Connected")
             self.db_status_text.setStyleSheet("color: #8cc152;")
             return True
         except (sqlite3.Error, Exception) as e:
-            # Database connection failed
             self.db_indicator.setStyleSheet("background-color: #ed5565; border-radius: 6px; border: 1px solid #da4453;")
             self.db_status_text.setText("Database: Error")
             self.db_status_text.setStyleSheet("color: #ed5565;")
-            print(f"Database error: {str(e)}")
             return False
 
     def setup_ui(self):
         self.stack = QStackedWidget()
         
-        # Login Screen
         self.login_screen = LoginScreen()
         self.login_screen.login_success.connect(self.show_control)
         self.stack.addWidget(self.login_screen)
         
-        # Control Screen (created on demand)
         self.control_screen = None
         
         self.setCentralWidget(self.stack)
@@ -124,9 +100,7 @@ class ParkingSystem(QMainWindow):
         if self.control_screen is None:
             self.control_screen = ControlScreen()
             
-            # Connect sync service to control screen if it has a sync widget
             if hasattr(self.control_screen, 'sync_status_widget'):
-                # Connect signals
                 self.sync_service.api_status_changed.connect(
                     self.control_screen.sync_status_widget.set_connection_status)
                 self.sync_service.sync_progress.connect(
@@ -134,23 +108,17 @@ class ParkingSystem(QMainWindow):
                 self.sync_service.sync_all_complete.connect(
                     lambda: self.control_screen.sync_status_widget.sync_completed(True))
                 
-                # Connect manual reconnect
                 self.control_screen.sync_status_widget.reconnect_requested.connect(
                     self.handle_reconnect_request)
                 
-                # Connect sync button
                 self.control_screen.sync_status_widget.sync_requested.connect(
                     lambda: self.sync_service.sync_now())
                 
-                # Connect refresh request
                 self.control_screen.sync_status_widget.refresh_requested.connect(
                     self.update_sync_counts)
                 
-                # Connect log signal from control screen to handle log entries for sync
-                print("Connecting control_screen.log_signal to sync_service")
                 self.control_screen.log_signal.connect(self.handle_log_entry)
                 
-                # Initial status update
                 self.control_screen.sync_status_widget.set_connection_status(
                     self.sync_service.api_available)
                 self.update_sync_counts()
@@ -160,41 +128,27 @@ class ParkingSystem(QMainWindow):
         self.stack.setCurrentWidget(self.control_screen)
     
     def handle_reconnect_request(self):
-        """Handle manual reconnection request from sync widget"""
         success = self.sync_service.reconnect()
         if hasattr(self.control_screen, 'sync_status_widget'):
             self.control_screen.sync_status_widget.reconnect_result(success)
     
     def update_sync_counts(self):
-        """Update the sync counts in the UI"""
         if self.control_screen and hasattr(self.control_screen, 'sync_status_widget'):
             counts = self.sync_service.get_pending_sync_counts()
             self.control_screen.sync_status_widget.update_pending_counts(counts)
         
     def handle_log_entry(self, log_data):
-        """Handle log entries sent from control screen for synchronization"""
-        print(f"Received log entry for sync: {log_data.get('plate')} - {log_data.get('type')}")
-        
-        # Check if this log entry already indicates it was sent to API
         if log_data.get('already_synced', False):
-            print(f"Skipping duplicate processing - log for {log_data.get('plate')} was already sent to API")
             return
         
-        # Check if this entry has already been stored locally
         if log_data.get('stored_locally', False):
-            print(f"Entry for {log_data.get('plate')} already stored in database, only updating sync service")
-            # In this case, the control screen already stored it in the database,
-            # so we just need to ensure the sync service knows about it 
             self.update_sync_counts()
             return
             
-        # Store in local DB for sync later
         try:
-            # Only store auto and manual entries (not blacklist or skipped)
             entry_type = log_data.get('type')
             if entry_type in ('auto', 'manual'):
                 db_manager = DBManager()
-                # Store in the database with a transaction to prevent duplication
                 db_manager.add_log_entry(
                     lane=log_data.get('lane'),
                     plate_id=log_data.get('plate', 'N/A'),
@@ -202,66 +156,28 @@ class ParkingSystem(QMainWindow):
                     entry_type=entry_type,
                     image_path=log_data.get('image_path')
                 )
-                print(f"Stored log entry in local DB for sync: {log_data.get('plate')}")
                 
-                # Update sync counts in UI if available
                 self.update_sync_counts()
         except Exception as e:
-            print(f"Error handling log entry for sync: {str(e)}")
+            pass
     
     def closeEvent(self, event):
-        """Handle application close properly"""
         try:
-            # Stop sync service
             if hasattr(self, 'sync_service'):
                 self.sync_service.stop()
             
-            # Close database connection
             db_manager = DBManager()
             db_manager.close()
             
-            # Clear blacklist logs if control screen exists
             if hasattr(self, 'control_screen') and self.control_screen:
                 if hasattr(self.control_screen, 'local_blacklist_logs'):
                     self.control_screen.local_blacklist_logs = []
-                    print("Cleared temporary blacklist logs on application close")
             
-            # Stop timers
             if hasattr(self, 'db_check_timer'):
                 self.db_check_timer.stop()
         except Exception as e:
-            print(f"Error during application shutdown: {str(e)}")
+            pass
         event.accept()
-
-    def cleanup_unsynced_logs(self):
-        """One-time cleanup of potentially corrupted unsynced logs"""
-        try:
-            db_manager = DBManager()
-            conn = db_manager._get_connection()
-            cursor = conn.cursor()
-            
-            # Check if there are any unsynced logs
-            cursor.execute("SELECT COUNT(*) FROM local_log WHERE synced = 0")
-            unsynced_count = cursor.fetchone()[0]
-            
-            if unsynced_count > 0:
-                print(f"Found {unsynced_count} potentially corrupted unsynced logs, cleaning up...")
-                
-                # Mark all existing unsynced logs as synced
-                cursor.execute("UPDATE local_log SET synced = 1 WHERE synced = 0")
-                conn.commit()
-                
-                print(f"Marked {unsynced_count} unsynced logs as synced")
-                
-                # Show confirmation in status bar briefly
-                self.statusBar().showMessage(f"Fixed {unsynced_count} corrupted log entries", 5000)
-            else:
-                print("No unsynced logs found, no cleanup needed")
-                
-        except Exception as e:
-            print(f"Error during log cleanup: {str(e)}")
-            # Show error in status bar
-            self.statusBar().showMessage(f"Error fixing corrupted logs: {str(e)}", 5000)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

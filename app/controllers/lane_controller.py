@@ -18,45 +18,38 @@ class LaneState:
     ERROR = "error"
 
 class LaneWorker(QThread):
-    detection_signal = pyqtSignal(str, object, str, float, bool)  # lane, frame, text, confidence, valid
-    status_signal = pyqtSignal(str, str, dict)  # lane, status, data
-    error_signal = pyqtSignal(str, str)  # lane, error
+    detection_signal = pyqtSignal(str, object, str, float, bool)
+    status_signal = pyqtSignal(str, str, dict)
+    error_signal = pyqtSignal(str, str)
     
     def __init__(self, lane_type):
         super().__init__()
         self.lane_type = lane_type
         self.state = LaneState.IDLE
         
-        # Thread safety objects
         self.mutex = QMutex()
         self.condition = QWaitCondition()
         self.camera_lock = threading.Lock()
         
-        # Processing objects
         self.detector = None
         self.recognizer = None
         
-        # Control flags
         self._running = True
         self._paused = False
         self._camera_index = CAMERA_SOURCES.get(lane_type)
         self.last_api_call = 0
         
-        # Error handling
         self._error_count = 0
         self._max_errors = 3
         self._last_frame = None
         
-        # Initialize in the thread's run method to avoid cross-thread issues
         self._cap = None
         
-        # Cooldown
         self.cooldown_active = False
         self.cooldown_timer  = None
         self.frame_buffer_clear_count = 0
         self.required_clear_frames = 10
         
-        # Store last detection data for manual verification
         self.last_detection_data = None
     
     def run(self):
@@ -65,7 +58,6 @@ class LaneWorker(QThread):
     
     def _initialize_resources(self):
         try:
-            # Initialize processing resources in the worker thread
             self.detector = PlateDetector()
             self.recognizer = PlateRecognizer()
             self.recognizer.error_signal.connect(
@@ -82,9 +74,8 @@ class LaneWorker(QThread):
             if self._camera_index is None:
                 raise ValueError(f"No camera configured for {self.lane_type}")
             
-            # Set initial timeout for camera initialization
             init_start_time = time.time()
-            init_timeout = 5.0  # 5 seconds max for initialization
+            init_timeout = 5.0
             
             with self.camera_lock:
                 if self._cap is not None and self._cap.isOpened():
@@ -92,15 +83,12 @@ class LaneWorker(QThread):
                 
                 self._cap = cv2.VideoCapture(self._camera_index)
                 
-                # Check if camera opened successfully with timeout
                 attempts = 0
                 max_attempts = 3
                 while not self._cap.isOpened() and attempts < max_attempts:
-                    # Check for timeout
                     if time.time() - init_start_time > init_timeout:
                         raise RuntimeError(f"Camera {self._camera_index} initialization timed out")
                         
-                    # Wait a bit and retry
                     time.sleep(0.5)
                     attempts += 1
                     self._cap = cv2.VideoCapture(self._camera_index)
@@ -108,26 +96,19 @@ class LaneWorker(QThread):
                 if not self._cap.isOpened():
                     raise RuntimeError(f"Camera {self._camera_index} not available after {max_attempts} attempts")
                 
-                # Camera configuration
                 self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
                 self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_RESOLUTION[0])
                 self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_RESOLUTION[1])
                 self._cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
                 
-                # Warm-up period - read a few frames to stabilize
-                # Add timeout to warm-up as well
                 warmup_start = time.time()
-                warmup_timeout = 3.0  # 3 seconds max for warm-up
+                warmup_timeout = 3.0
                 
                 for _ in range(5):
-                    # Check for timeout during warm-up
                     if time.time() - warmup_start > warmup_timeout:
-                        print(f"Camera {self._camera_index} warm-up timed out, continuing anyway")
                         break
                         
                     ret, _ = self._cap.read()
-                    if not ret:
-                        print(f"Warning: Failed to read frame during camera warm-up")
                     time.sleep(0.1)
                 
                 self.state = LaneState.DETECTING
@@ -137,35 +118,28 @@ class LaneWorker(QThread):
             self.error_signal.emit(self.lane_type, f"Camera Initialization Error: {str(e)}")
             self.state = LaneState.ERROR
             
-            # Schedule a retry if we haven't exceeded max errors
             if self._error_count < self._max_errors:
                 self._error_count += 1
                 QTimer.singleShot(2000, self._init_camera)
     
     def _main_loop(self):
         while self._running:
-            # Handle paused state
             if self._paused:
-                # Use condition variable for efficient pausing
                 self.mutex.lock()
                 self.condition.wait(self.mutex)
                 self.mutex.unlock()
                 continue
                 
-            # Handle error state
             if self.state == LaneState.ERROR:
                 time.sleep(0.5)
                 continue
                 
-            # Read frame with proper locking
             frame = self._read_frame()
             if frame is None:
                 continue
                 
-            # Process the frame
             self._process_frame(frame)
                 
-            # Small delay to prevent CPU hogging
             time.sleep(0.01)
     
     def _read_frame(self):
@@ -189,7 +163,7 @@ class LaneWorker(QThread):
                 return None
                 
             self._error_count = 0
-            self._last_frame = frame.copy()  # Keep a copy for debugging
+            self._last_frame = frame.copy()
             return frame
             
         except Exception as e:
@@ -218,10 +192,8 @@ class LaneWorker(QThread):
                         self.cooldown_active = False
                 return
                 
-            # Detection
             display_frame, plate_img = self.detector.detect(frame)
             
-            # OCR processing with rate limiting
             plate_text, confidence = None, 0.0
             api_timeout = False
             
@@ -232,22 +204,18 @@ class LaneWorker(QThread):
                         plate_text, confidence = result
                         self.last_api_call = time.time()
                     else:
-                        # API timeout or rate limit
                         api_timeout = True
                 except Exception as e:
                     api_timeout = True
                     self.error_signal.emit(self.lane_type, f"API Error: {str(e)}")
             
-            # Ensure we have valid data types for signal
             plate_text = plate_text if plate_text is not None else "Scanning..."
             confidence = float(confidence) if confidence is not None else 0.0
             
-            # Validation
             is_valid = False
             if plate_text and plate_text != "Scanning...":
                 is_valid = VIETNAMESE_PLATE_PATTERN.match(plate_text) is not None
             
-            # Emit detection signal with safe values
             self.detection_signal.emit(
                 self.lane_type,
                 display_frame,
@@ -256,18 +224,15 @@ class LaneWorker(QThread):
                 is_valid
             )
             
-            # State management for manual entry cases
             if plate_img is not None:
-                # Store the last detection data for potential manual entry
                 self.last_detection_data = {
                     "text": plate_text if plate_text != "Scanning..." else "",
                     "confidence": confidence,
-                    "image": display_frame,  # Store the display frame with the rectangle drawn
-                    "plate_img": plate_img,  # Store the cropped plate image separately
+                    "image": display_frame,
+                    "plate_img": plate_img,
                     "is_valid": is_valid
                 }
                 
-                # Case 1: API timeout
                 if api_timeout:
                     self._pause_processing()
                     self.status_signal.emit(
@@ -275,7 +240,6 @@ class LaneWorker(QThread):
                         "requires_manual",
                         {"reason": "API timeout", "image": display_frame, "text": plate_text if plate_text != "Scanning..." else ""}
                     )
-                # Case 2: Successfully detected plate but confidence too low
                 elif plate_text and plate_text != "Scanning..." and confidence < 0.9:
                     self._pause_processing()
                     self.status_signal.emit(
@@ -283,7 +247,6 @@ class LaneWorker(QThread):
                         "requires_manual",
                         {"reason": "low confidence", "text": plate_text, "confidence": confidence, "image": display_frame}
                     )
-                # Case 3: Successfully detected plate but doesn't match regex
                 elif plate_text and plate_text != "Scanning..." and not is_valid:
                     self._pause_processing()
                     self.status_signal.emit(
@@ -291,7 +254,6 @@ class LaneWorker(QThread):
                         "requires_manual",
                         {"reason": "invalid format", "text": plate_text, "confidence": confidence, "image": display_frame}
                     )
-                # Case 4: Success case - high confidence valid plate
                 elif is_valid and confidence >= 0.9:
                     self._pause_processing()
                     self.status_signal.emit(
@@ -310,19 +272,15 @@ class LaneWorker(QThread):
         self.mutex.unlock()
     
     def resume_processing(self):
-        # Start cooldown timer
         self.cooldown_active = True
-        # Clear existing cooldown timer
         if self.cooldown_timer is not None and self.cooldown_timer.isActive():
             self.cooldown_timer.stop()
             
-        # New timer
         self.cooldown_timer = QTimer()
         self.cooldown_timer.setSingleShot(True)
         self.cooldown_timer.timeout.connect(self._end_cooldown)
-        self.cooldown_timer.start(8000) #seconds of cooldown before allowing detection
+        self.cooldown_timer.start(8000)
         
-        # Clear last detection data
         self.last_detection_data = None
         
         self.mutex.lock()
@@ -334,34 +292,29 @@ class LaneWorker(QThread):
         self.cooldown_active = False
         self.frame_buffer_clear_count = 0
         
-        #resume detection
         self.mutex.lock()
         if self.state != LaneState.ERROR:
             self.state = LaneState.DETECTING
         self.mutex.unlock()
     
     def restart_camera(self):
-        """Attempt to restart the camera after an error"""
         if self.state == LaneState.ERROR:
             self._init_camera()
     
     def stop(self):
-        """Clean shutdown of the worker thread"""
         self.mutex.lock()
         self._running = False
         self._paused = False
         self.condition.wakeAll()
         self.mutex.unlock()
         
-        # Release camera resources
         with self.camera_lock:
             if self._cap is not None and self._cap.isOpened():
                 self._cap.release()
                 self._cap = None
         
-        # Wait for thread to finish
         if self.isRunning():
             self.quit()
-            if not self.wait(3000):  # Wait up to 3 seconds
+            if not self.wait(3000):
                 self.terminate()
                 self.wait()

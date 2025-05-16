@@ -86,7 +86,6 @@ class ImageStorage:
             return None
             
         except Exception as e:
-            print(f"Error saving image: {str(e)}")
             return None
     
     def cleanup_old_images(self):
@@ -107,11 +106,9 @@ class ImageStorage:
                     file_age = now - os.path.getmtime(file_path)
                     if file_age > retention_seconds:
                         os.remove(file_path)
-                        print(f"Removed old image: {file_path}")
             
             return True
         except Exception as e:
-            print(f"Error cleaning up old images: {str(e)}")
             return False
     
     def get_storage_stats(self):
@@ -145,7 +142,6 @@ class ImageStorage:
             
             return stats
         except Exception as e:
-            print(f"Error getting storage stats: {str(e)}")
             return None
     
     def delete_image(self, image_path):
@@ -156,7 +152,6 @@ class ImageStorage:
                 return True
             return False
         except Exception as e:
-            print(f"Error deleting image {image_path}: {str(e)}")
             return False
     
     def clear_all_images(self):
@@ -169,5 +164,4 @@ class ImageStorage:
             self._initialize()
             return True
         except Exception as e:
-            print(f"Error clearing images: {str(e)}")
             return False 

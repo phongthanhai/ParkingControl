@@ -469,6 +469,8 @@ class SyncService(QObject):
         """Manually attempt to reconnect to the API"""
         self.api_retry_count = 0
         
+        print("Attempting to reconnect to API server...")
+        
         # First try to check if server is available
         api_check_timeout = (2.0, 3.0)
         try:
@@ -476,20 +478,21 @@ class SyncService(QObject):
             success, _ = self.api_client.get('services/health', timeout=api_check_timeout, auth_required=False)
             
             if success:
+                print("Server is available, checking authentication...")
                 # Server is up, now check if token has expired by making an authenticated request
-                auth_success, _ = self.api_client.get('services/lot-occupancy/1', timeout=api_check_timeout)
+                auth_success, auth_response = self.api_client.get('services/lot-occupancy/1', timeout=api_check_timeout)
                 
                 # If auth failed but server is up, we need to refresh token
                 if not auth_success:
-                    print("API is available but authentication failed. Token may have expired.")
+                    print("Authentication failed, attempting to refresh token...")
                     # Check if auth_manager has stored credentials
                     from app.utils.auth_manager import AuthManager
                     auth_manager = AuthManager()
                     
                     # If we have stored credentials, try to login again
-                    if hasattr(auth_manager, 'username') and hasattr(auth_manager, 'password'):
-                        print("Attempting to refresh authentication token...")
-                        login_success, _, _ = self.api_client.login(
+                    if auth_manager.username and auth_manager.password:
+                        print(f"Attempting to refresh authentication token for user {auth_manager.username}...")
+                        login_success, login_msg, _ = self.api_client.login(
                             auth_manager.username, 
                             auth_manager.password,
                             timeout=(3.0, 5.0)
@@ -497,18 +500,35 @@ class SyncService(QObject):
                         if login_success:
                             print("Authentication token refreshed successfully")
                             self.api_available = True
-                            self.check_api_connection()  # Update status after token refresh
+                            self.api_status_changed.emit(True)
+                            self.sync_worker.resume()
                             return True
                         else:
-                            print("Failed to refresh authentication token")
+                            print(f"Failed to refresh authentication token: {login_msg}")
+                            self.api_available = False
+                            self.api_status_changed.emit(False)
                             return False
-            
-            # Standard connection check if token refresh wasn't needed or possible
-            self.check_api_connection()
-            return self.api_available
+                    else:
+                        print("No stored credentials available for token refresh")
+                        self.api_available = False
+                        self.api_status_changed.emit(False)
+                        return False
+                else:
+                    print("Authentication is valid")
+                    self.api_available = True
+                    self.api_status_changed.emit(True)
+                    self.sync_worker.resume()
+                    return True
+            else:
+                print("Server is not available")
+                self.api_available = False
+                self.api_status_changed.emit(False)
+                return False
             
         except Exception as e:
             print(f"Reconnection error: {str(e)}")
+            self.api_available = False
+            self.api_status_changed.emit(False)
             return False
     
     def get_pending_sync_counts(self):

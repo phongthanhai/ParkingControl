@@ -115,6 +115,9 @@ class ApiClient:
         }
         
         try:
+            # Clear any existing token before attempting a new login
+            self.auth_manager.clear()
+            
             # Send POST request with timeout
             response = requests.post(login_url, data=form_data, headers=headers, timeout=timeout)
             
@@ -136,6 +139,7 @@ class ApiClient:
                 self.user_role = data.get('user_role')
                 self.assigned_lots = data.get('assigned_lots', [])
                 
+                print(f"Login successful. Token type: {self.auth_manager.token_type}")
                 return True, "Login successful", data
             else:
                 # Handle error responses

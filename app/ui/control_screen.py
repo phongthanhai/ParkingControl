@@ -14,6 +14,7 @@ from app.utils.db_manager import DBManager
 from app.utils.image_storage import ImageStorage
 from app.controllers.sync_service import SyncService, SyncStatus
 from app.ui.sync_status_widget import SyncStatusWidget
+from app.utils.auth_manager import AuthManager
 
 class LaneWidget(QWidget):
     def __init__(self, title):
@@ -1275,27 +1276,78 @@ class ControlScreen(QWidget):
         
         # Check connection
         try:
+            print("Attempting to reconnect to the API server...")
             api_check_timeout = (3.0, 5.0)  # Slightly longer timeout for manual reconnect
+            
+            # First check if the server is available at all using the health endpoint
             success, _ = self.api_client.get('services/health', timeout=api_check_timeout, auth_required=False)
             
             if success:
-                self.api_available = True
-                self._update_api_status(True)
-                # Update data after reconnection
-                self._update_occupancy()
-                self._fetch_logs()
+                print("Server is available, checking authentication...")
+                
+                # Now check if we need to refresh authentication
+                auth_success, auth_response = self.api_client.get('vehicles/blacklisted/', 
+                                                               params={'skip': 0, 'limit': 1}, 
+                                                               timeout=api_check_timeout)
+                
+                if not auth_success:
+                    # Authentication failed, try to refresh token
+                    print("Authentication failed, attempting to refresh token...")
+                    auth_manager = AuthManager()
+                    
+                    if auth_manager.username and auth_manager.password:
+                        print(f"Refreshing authentication for user {auth_manager.username}")
+                        login_success, login_msg, _ = self.api_client.login(
+                            auth_manager.username,
+                            auth_manager.password,
+                            timeout=api_check_timeout
+                        )
+                        
+                        if login_success:
+                            print("Authentication refreshed successfully")
+                            self.api_available = True
+                            self._update_api_status(True)
+                            # Update data after reconnection
+                            self._update_occupancy()
+                            self._fetch_logs()
+                            self.api_reconnect_button.setText("Reconnect")
+                            self.api_reconnect_button.setEnabled(True)
+                            self.api_reconnect_button.setVisible(False)
+                            return
+                        else:
+                            print(f"Failed to refresh authentication: {login_msg}")
+                            # Show error message to user
+                            QMessageBox.warning(self, "Authentication Error", 
+                                               f"Could not reconnect: {login_msg}\nYou may need to restart the application.")
+                    else:
+                        print("No stored credentials for authentication refresh")
+                        QMessageBox.warning(self, "Connection Error", 
+                                           "Session expired. Please restart the application to log in again.")
+                else:
+                    # Authentication is valid
+                    self.api_available = True
+                    self._update_api_status(True)
+                    # Update data after reconnection
+                    self._update_occupancy()
+                    self._fetch_logs()
+                    self.api_reconnect_button.setText("Reconnect")
+                    self.api_reconnect_button.setEnabled(True)
+                    self.api_reconnect_button.setVisible(False)
+                    return
             else:
                 self.api_available = False
                 self._update_api_status(False)
-                self.api_reconnect_button.setText("Reconnect")
-                self.api_reconnect_button.setEnabled(True)
+                QMessageBox.warning(self, "Connection Error", 
+                                  "Could not connect to the server. Please check your network connection.")
                 
         except Exception as e:
             print(f"Manual reconnect error: {str(e)}")
             self.api_available = False
             self._update_api_status(False)
-            self.api_reconnect_button.setText("Reconnect")
-            self.api_reconnect_button.setEnabled(True)
+        
+        # If we got here, reconnection failed
+        self.api_reconnect_button.setText("Reconnect")
+        self.api_reconnect_button.setEnabled(True)
 
     def _update_occupancy(self):
         """Update the occupancy display with data from API asynchronously"""

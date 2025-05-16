@@ -48,6 +48,9 @@ class ParkingSystem(QMainWindow):
                 "Failed to initialize local storage. The application may not work correctly."
             )
         
+        # Cleanup any existing corrupted logs (one-time fix)
+        self.cleanup_unsynced_logs()
+        
         # Status bar with database indicator
         self.statusBar().showMessage("")
         self.db_status_layout = QHBoxLayout()
@@ -171,6 +174,12 @@ class ParkingSystem(QMainWindow):
     def handle_log_entry(self, log_data):
         """Handle log entries sent from control screen for synchronization"""
         print(f"Received log entry for sync: {log_data.get('plate')} - {log_data.get('type')}")
+        
+        # Check if this log entry already indicates it was sent to API
+        if log_data.get('already_synced', False):
+            print(f"Skipping duplicate processing - log for {log_data.get('plate')} was already sent to API")
+            return
+            
         # Store in local DB for sync later
         try:
             db_manager = DBManager()
@@ -213,6 +222,36 @@ class ParkingSystem(QMainWindow):
         except Exception as e:
             print(f"Error during application shutdown: {str(e)}")
         event.accept()
+
+    def cleanup_unsynced_logs(self):
+        """One-time cleanup of potentially corrupted unsynced logs"""
+        try:
+            db_manager = DBManager()
+            conn = db_manager._get_connection()
+            cursor = conn.cursor()
+            
+            # Check if there are any unsynced logs
+            cursor.execute("SELECT COUNT(*) FROM local_log WHERE synced = 0")
+            unsynced_count = cursor.fetchone()[0]
+            
+            if unsynced_count > 0:
+                print(f"Found {unsynced_count} potentially corrupted unsynced logs, cleaning up...")
+                
+                # Mark all existing unsynced logs as synced
+                cursor.execute("UPDATE local_log SET synced = 1 WHERE synced = 0")
+                conn.commit()
+                
+                print(f"Marked {unsynced_count} unsynced logs as synced")
+                
+                # Show confirmation in status bar briefly
+                self.statusBar().showMessage(f"Fixed {unsynced_count} corrupted log entries", 5000)
+            else:
+                print("No unsynced logs found, no cleanup needed")
+                
+        except Exception as e:
+            print(f"Error during log cleanup: {str(e)}")
+            # Show error in status bar
+            self.statusBar().showMessage(f"Error fixing corrupted logs: {str(e)}", 5000)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

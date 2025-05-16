@@ -1022,6 +1022,8 @@ class ControlScreen(QWidget):
                         # Emit signal for any listeners (used by sync service)
                         # even though already synced - to keep sync widget updated
                         print(f"Emitting log_signal for {entry_type} entry (already sent to API): {log_data.get('plate')}")
+                        # Add flag to indicate this has already been synced to prevent duplicate processing
+                        log_data['already_synced'] = True
                         self.log_signal.emit(log_data)
                         
                         return  # Exit early since we've successfully sent to API and stored locally as synced

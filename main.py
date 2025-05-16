@@ -179,6 +179,11 @@ class ParkingSystem(QMainWindow):
         if log_data.get('already_synced', False):
             print(f"Skipping duplicate processing - log for {log_data.get('plate')} was already sent to API")
             return
+        
+        # Check if this entry has already been stored locally
+        if log_data.get('stored_locally', False):
+            print(f"Skipping duplicate database entry - log for {log_data.get('plate')} already stored locally")
+            return
             
         # Store in local DB for sync later
         try:

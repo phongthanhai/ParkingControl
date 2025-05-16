@@ -859,6 +859,24 @@ class ControlScreen(QWidget):
         widget.submit_btn.setVisible(False)
         widget.skip_btn.setVisible(False)
         
+        # Add entry to local log table UI only, don't store in database
+        current_time = time.time()
+        formatted_timestamp = datetime.fromtimestamp(current_time).strftime('%Y-%m-%d %H:%M:%S.%f')
+        
+        # Create UI-only log entry
+        log_data = {
+            "lane": lane,
+            "plate": widget.manual_input.text() or "SKIPPED",
+            "confidence": 0.0,
+            "timestamp": current_time,
+            "formatted_time": formatted_timestamp,
+            "type": "skipped"
+        }
+        
+        # Only add to the UI display, not to database
+        self._add_log_entry(log_data)
+        print(f"Vehicle skipped in {lane} lane - only shown in UI, not stored in database")
+        
         # Resume worker thread (this already includes cooldown period)
         with self.worker_guard:
             if lane in self.lane_workers and self.lane_workers[lane].isRunning():
@@ -899,6 +917,7 @@ class ControlScreen(QWidget):
             if entry_type == "skipped":
                 # Add entry to the log table only locally
                 self._add_log_entry(log_data)
+                print("Skipped vehicle entry - only shown in UI, not stored or synced")
                 return
             
             # IMPORTANT CHANGE: For online mode, we want to try direct API call first
@@ -910,6 +929,7 @@ class ControlScreen(QWidget):
             # For auto and manual entries, try to send directly to API first if we're online
             local_storage_id = None
             local_image_path = None
+            stored_locally = False  # Flag to track if we've stored locally
             
             if entry_type in ('auto', 'manual') and self.api_available:
                 try:
@@ -973,6 +993,7 @@ class ControlScreen(QWidget):
                             image_path=local_image_path,
                             synced=True  # Key change: Mark as already synced
                         )
+                        stored_locally = True  # Mark that we've stored this locally
                         print(f"Stored API-sent log entry locally with ID {local_storage_id} (already marked as synced)")
                         
                         # Update status indicator
@@ -1024,6 +1045,7 @@ class ControlScreen(QWidget):
                         print(f"Emitting log_signal for {entry_type} entry (already sent to API): {log_data.get('plate')}")
                         # Add flag to indicate this has already been synced to prevent duplicate processing
                         log_data['already_synced'] = True
+                        log_data['stored_locally'] = True  # Add flag to indicate it's already stored
                         self.log_signal.emit(log_data)
                         
                         return  # Exit early since we've successfully sent to API and stored locally as synced
@@ -1059,9 +1081,11 @@ class ControlScreen(QWidget):
             # 1. We're offline from the start
             # 2. Direct API call failed
             # 3. This isn't an auto/manual entry
-            # In all cases, we need to store locally for syncing later
+            # In all cases, we need to store locally for syncing later, but only if not already stored
             
             # Emit signal for any listeners (this is used by sync service)
+            # Add flag to indicate this needs to be stored locally
+            log_data['stored_locally'] = stored_locally  # Pass flag to indicate if already stored
             print(f"Emitting log_signal for {entry_type} entry (needs to be synced later): {log_data.get('plate')}")
             self.log_signal.emit(log_data)
             
@@ -1070,7 +1094,7 @@ class ControlScreen(QWidget):
                 print("Skipping API log due to previous connection failures")
             
             # Only store locally if we haven't already (from API success case)
-            if local_storage_id is None:
+            if not stored_locally:
                 self._store_log_locally(lane, data, entry_type, local_image_path)
         
         except Exception as e:

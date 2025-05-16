@@ -406,13 +406,27 @@ class SyncService(QObject):
             }
     
     def stop(self):
-        """Stop the sync service."""
-        if self.sync_worker and self.sync_worker.isRunning():
-            self.sync_worker.stop()
-            self.sync_worker.wait(1000)  # Wait up to 1 second
+        """Stop the sync service and cleanup threads."""
+        print("Stopping sync service...")
         
+        # Stop the sync worker
+        if self.sync_worker and self.sync_worker.isRunning():
+            print("Stopping sync worker thread...")
+            self.sync_worker.stop()
+            self.sync_worker.wait(2000)  # Wait up to 2 seconds
+            
+            # Force quit if still running
+            if self.sync_worker.isRunning():
+                print("Force terminating sync worker thread...")
+                self.sync_worker.terminate()
+                self.sync_worker.wait()
+        
+        # Stop the API check timer
         if self.api_check_timer and self.api_check_timer.isActive():
+            print("Stopping API check timer...")
             self.api_check_timer.stop()
+        
+        print("Sync service stopped successfully")
     
     def __del__(self):
         """Clean up resources."""

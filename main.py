@@ -167,20 +167,38 @@ class ParkingSystem(QMainWindow):
     def closeEvent(self, event):
         """Handle application close properly"""
         try:
-            # Stop sync service
+            # Stop sync service first (this will handle its threads)
             if hasattr(self, 'sync_service'):
+                print("Stopping sync service...")
                 self.sync_service.stop()
+                
+            # If control screen exists, stop its threads
+            if self.control_screen:
+                print("Stopping control screen...")
+                self.control_screen.cleanup()
+                
+            # Stop timers
+            if hasattr(self, 'db_check_timer'):
+                print("Stopping database check timer...")
+                self.db_check_timer.stop()
             
-            # Close database connection
+            # Close database connection last
+            print("Closing database connection...")
             db_manager = DBManager()
             db_manager.close()
             
-            # Stop timers
-            if hasattr(self, 'db_check_timer'):
-                self.db_check_timer.stop()
+            # Wait a brief moment for threads to clean up
+            QTimer.singleShot(500, self._force_close)
+            event.ignore()  # Temporarily ignore the close event
+            
         except Exception as e:
             print(f"Error during application shutdown: {str(e)}")
-        event.accept()
+            event.accept()
+    
+    def _force_close(self):
+        """Force close the application after cleanup"""
+        print("Final cleanup complete, closing application...")
+        QApplication.quit()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

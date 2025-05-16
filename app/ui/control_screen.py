@@ -1870,31 +1870,48 @@ class ControlScreen(QWidget):
             margin: 10px 0;
         """)
 
-    def closeEvent(self, event):
-        """Handle application close properly by cleaning up threads"""
+    def cleanup(self):
+        """Clean up resources and stop threads before destruction."""
+        print("Cleaning up control screen resources...")
+        
         try:
-            # Stop all API worker threads first
-            if hasattr(self, '_api_workers'):
-                for thread_id, worker in list(self._api_workers.items()):
-                    if worker and worker.isRunning():
-                        worker.stop()  # Signal the thread to stop
-                        worker.wait(500)  # Wait up to 500ms for clean shutdown
+            # Stop camera workers
+            if hasattr(self, 'entry_worker'):
+                print("Stopping entry lane worker...")
+                self.entry_worker.stop()
+                self.entry_worker.wait(2000)  # Wait up to 2 seconds
+                if self.entry_worker.isRunning():
+                    print("Force terminating entry worker...")
+                    self.entry_worker.terminate()
+                    self.entry_worker.wait()
             
-            # Now stop camera workers
-            with self.worker_guard:
-                for lane, worker in list(self.lane_workers.items()):
-                    if worker and worker.isRunning():
-                        worker.stop()
-                        worker.wait(1000)  # Wait up to 1 second for clean shutdown
+            if hasattr(self, 'exit_worker'):
+                print("Stopping exit lane worker...")
+                self.exit_worker.stop()
+                self.exit_worker.wait(2000)  # Wait up to 2 seconds
+                if self.exit_worker.isRunning():
+                    print("Force terminating exit worker...")
+                    self.exit_worker.terminate()
+                    self.exit_worker.wait()
             
-            # Clean GPIO
-            try:
-                GPIO.cleanup()
-            except:
-                pass
+            # Stop any active timers
+            if hasattr(self, 'health_check_timer'):
+                print("Stopping health check timer...")
+                self.health_check_timer.stop()
             
-            # Accept the close event
-            event.accept()
+            if hasattr(self, 'occupancy_timer'):
+                print("Stopping occupancy timer...")
+                self.occupancy_timer.stop()
+            
+            print("Control screen cleanup completed")
+            
         except Exception as e:
-            print(f"Error during application shutdown: {str(e)}")
-            event.accept()  # Accept anyway to ensure the app closes
+            print(f"Error during control screen cleanup: {str(e)}")
+
+    def closeEvent(self, event):
+        """Handle window close event."""
+        try:
+            self.cleanup()
+        except Exception as e:
+            print(f"Error in control screen close event: {str(e)}")
+        event.accept()

@@ -1875,33 +1875,56 @@ class ControlScreen(QWidget):
         print("Cleaning up control screen resources...")
         
         try:
-            # Stop camera workers
-            if hasattr(self, 'entry_worker'):
-                print("Stopping entry lane worker...")
-                self.entry_worker.stop()
-                self.entry_worker.wait(2000)  # Wait up to 2 seconds
-                if self.entry_worker.isRunning():
-                    print("Force terminating entry worker...")
-                    self.entry_worker.terminate()
-                    self.entry_worker.wait()
+            # Stop all API worker threads first
+            if hasattr(self, '_api_workers'):
+                print(f"Stopping {len(self._api_workers)} API worker threads...")
+                for thread_id, worker in list(self._api_workers.items()):
+                    if worker and worker.isRunning():
+                        worker.stop() if hasattr(worker, 'stop') else None
+                        worker.wait(1000)  # Wait up to 1 second for clean shutdown
+                        if worker.isRunning():
+                            print(f"Force terminating API worker {thread_id}...")
+                            worker.terminate()
+                            worker.wait()
             
-            if hasattr(self, 'exit_worker'):
-                print("Stopping exit lane worker...")
-                self.exit_worker.stop()
-                self.exit_worker.wait(2000)  # Wait up to 2 seconds
-                if self.exit_worker.isRunning():
-                    print("Force terminating exit worker...")
-                    self.exit_worker.terminate()
-                    self.exit_worker.wait()
+            # Stop camera workers using the worker_guard
+            with self.worker_guard:
+                print(f"Stopping {len(self.lane_workers)} lane worker threads...")
+                for lane, worker in list(self.lane_workers.items()):
+                    if worker and worker.isRunning():
+                        print(f"Stopping {lane} worker...")
+                        worker.stop()
+                        worker.wait(2000)  # Wait up to 2 seconds
+                        if worker.isRunning():
+                            print(f"Force terminating {lane} worker...")
+                            worker.terminate()
+                            worker.wait()
+                # Clear the workers dictionary
+                self.lane_workers.clear()
             
-            # Stop any active timers
-            if hasattr(self, 'health_check_timer'):
-                print("Stopping health check timer...")
-                self.health_check_timer.stop()
+            # Stop all timers
+            print("Stopping all timers...")
+            for timer_name in ['watchdog_timer', 'occupancy_timer', 'api_check_timer', 'db_check_timer']:
+                if hasattr(self, timer_name):
+                    timer = getattr(self, timer_name)
+                    if timer and timer.isActive():
+                        print(f"Stopping {timer_name}...")
+                        timer.stop()
             
-            if hasattr(self, 'occupancy_timer'):
-                print("Stopping occupancy timer...")
-                self.occupancy_timer.stop()
+            # Clean up active lane timers
+            for lane, timer in list(self.active_timers.items()):
+                if timer and timer.isActive():
+                    print(f"Stopping active timer for {lane}...")
+                    timer.stop()
+            self.active_timers.clear()
+            
+            # Clean GPIO
+            try:
+                print("Cleaning up GPIO...")
+                import RPi.GPIO as GPIO
+                GPIO.cleanup()
+            except Exception as e:
+                print(f"GPIO cleanup error: {str(e)}")
             
             print("Control screen cleanup completed")
             
@@ -1910,6 +1933,7 @@ class ControlScreen(QWidget):
 
     def closeEvent(self, event):
         """Handle window close event."""
+        print("Control screen close event triggered...")
         try:
             self.cleanup()
         except Exception as e:

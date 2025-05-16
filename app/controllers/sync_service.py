@@ -41,6 +41,7 @@ class SyncWorker(QThread):
     
     def __init__(self, sync_service):
         super().__init__()
+        self.setObjectName("SyncWorker")  # Set object name for debugging
         self.sync_service = sync_service
         self.db_manager = DBManager()
         self.api_client = ApiClient(base_url=API_BASE_URL)
@@ -50,25 +51,42 @@ class SyncWorker(QThread):
         self._current_operation = None
         
     def run(self):
-        while self._running:
-            if not self._paused and self.sync_service.api_available:
-                try:
-                    # Sync in this order: vehicle blacklist, logs (which handles everything)
-                    self._sync_blacklist()
-                    self._sync_logs()
-                    
-                    # Signal completion of entire sync process
-                    self.sync_service.sync_all_complete.emit()
-                except Exception as e:
-                    print(f"Sync worker error: {str(e)}")
-            
-            # Sleep between sync attempts
-            time.sleep(10)  # 10 second sleep between sync cycles
+        print("SyncWorker thread started")
+        try:
+            while self._running:
+                if not self._paused and self.sync_service.api_available:
+                    try:
+                        # Sync in this order: vehicle blacklist, logs (which handles everything)
+                        self._sync_blacklist()
+                        self._sync_logs()
+                        
+                        # Signal completion of entire sync process
+                        self.sync_service.sync_all_complete.emit()
+                    except Exception as e:
+                        print(f"Sync worker error: {str(e)}")
+                
+                # Sleep between sync attempts
+                for i in range(10):  # Check stop flag every second instead of sleeping for 10s at once
+                    if not self._running:
+                        break
+                    time.sleep(1)
+        except Exception as e:
+            print(f"Error in SyncWorker thread: {str(e)}")
+        finally:
+            print("SyncWorker thread ending")
     
     def stop(self):
+        print("SyncWorker stop requested")
         self.mutex.lock()
         self._running = False
+        self._paused = False  # Make sure we're not paused when stopping
         self.mutex.unlock()
+        
+        # Wake the condition if it's waiting
+        if hasattr(self, 'condition') and self.condition:
+            self.condition.wakeAll()
+            
+        print("SyncWorker stop request completed")
     
     def pause(self):
         self.mutex.lock()

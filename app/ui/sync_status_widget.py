@@ -328,6 +328,10 @@ class SyncStatusWidget(QWidget):
         # Update last sync time
         import time
         self.set_last_sync_time(time.time())
+        
+        # Emit refresh request to update pending counts
+        print("Sync completed, requesting refresh of pending counts")
+        self.refresh_requested.emit()
     
     def hide_completion_message(self):
         """Hide the completion message."""

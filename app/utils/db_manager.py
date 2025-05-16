@@ -317,12 +317,37 @@ class DBManager:
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
-            cursor.execute(
-                'SELECT * FROM local_log WHERE synced = 0 ORDER BY timestamp ASC LIMIT ?',
-                (limit,)
-            )
-            results = cursor.fetchall()
-            return [dict(row) for row in results]
+            print(f"Fetching up to {limit} unsynced logs from database")
+            
+            # First, try to query with the synced column
+            try:
+                cursor.execute(
+                    'SELECT * FROM local_log WHERE synced = 0 ORDER BY timestamp ASC LIMIT ?',
+                    (limit,)
+                )
+                rows = cursor.fetchall()
+                if rows:
+                    results = [dict(row) for row in rows]
+                    print(f"Found {len(results)} unsynced logs in the database")
+                    return results
+                else:
+                    print("No unsynced logs found in the database")
+                    return []
+                    
+            except sqlite3.OperationalError as e:
+                if "no such column" in str(e).lower() and "synced" in str(e).lower():
+                    # Fall back to getting all logs if the synced column doesn't exist
+                    print("Warning: 'synced' column not found in local_log table, falling back to all logs")
+                    cursor.execute(
+                        'SELECT * FROM local_log ORDER BY timestamp ASC LIMIT ?',
+                        (limit,)
+                    )
+                    results = [dict(row) for row in cursor.fetchall()]
+                    return results
+                else:
+                    print(f"Database error while querying unsynced logs: {str(e)}")
+                    raise e
+                
         except Exception as e:
             print(f"Error getting unsynced logs: {str(e)}")
             return []

@@ -306,14 +306,133 @@ class SyncService(QObject):
         if not self.api_available:
             return False
         
+        print("Starting manual sync process...")
+        
+        # Perform sync operations directly in the main thread for manual sync
+        # This avoids potential threading issues when user initiates sync
         if entity_type is None or entity_type == "blacklist":
+            print("Manually syncing blacklist...")
             self.sync_status_changed.emit("blacklist", SyncStatus.RUNNING)
-            self.sync_worker._sync_blacklist()
+            
+            # Handle blacklist sync
+            try:
+                # Get blacklisted vehicles from API
+                success, response = self.api_client.get(
+                    'vehicles/blacklisted/',
+                    params={'skip': 0, 'limit': 1000},
+                    timeout=(3.0, 10.0)
+                )
+                
+                if success and response:
+                    # Update local database
+                    self.db_manager.update_blacklist(response)
+                    self.sync_status_changed.emit("blacklist", SyncStatus.SUCCESS)
+                    print(f"Manually synced blacklist: Updated {len(response)} records")
+                else:
+                    self.sync_status_changed.emit("blacklist", SyncStatus.FAILED)
+                    print(f"Failed to retrieve blacklist data: {response}")
+            except Exception as e:
+                self.sync_status_changed.emit("blacklist", SyncStatus.FAILED)
+                print(f"Blacklist sync error: {str(e)}")
             
         if entity_type is None or entity_type == "logs":
+            print("Manually syncing logs...")
             self.sync_status_changed.emit("logs", SyncStatus.RUNNING)
-            self.sync_worker._sync_logs()
+            
+            # Handle logs sync
+            try:
+                # Get unsynced logs
+                unsynced_logs = self.db_manager.get_unsynced_logs(limit=20)
+                
+                if not unsynced_logs:
+                    print("No logs to sync")
+                    self.sync_status_changed.emit("logs", SyncStatus.SUCCESS)
+                    self.sync_all_complete.emit()
+                    return True
+                    
+                # Only sync auto and manual entries, not denied-blacklist or skipped
+                filtered_logs = [log for log in unsynced_logs 
+                                if log['type'] in ('auto', 'manual')]
+                
+                if not filtered_logs:
+                    print("No valid logs to sync after filtering")
+                    self.sync_status_changed.emit("logs", SyncStatus.SUCCESS)
+                    self.sync_all_complete.emit()
+                    return True
+                    
+                total_logs = len(filtered_logs)
+                self.sync_progress.emit("logs", 0, total_logs)
+                print(f"Starting to sync {total_logs} logs to server...")
+                
+                # Process each log
+                synced_count = 0
+                for i, log in enumerate(filtered_logs):
+                    try:
+                        # Prepare form data
+                        form_data = {
+                            'plate_id': log['plate_id'],
+                            'lot_id': LOT_ID,
+                            'lane': log['lane'],
+                            'type': log['type'],
+                            'timestamp': log['timestamp']
+                        }
+                        
+                        print(f"Syncing log {log['id']}: {log['plate_id']} - {log['lane']} - {log['type']}") 
+                        
+                        # Handle image if available
+                        files = None
+                        if log.get('image_path') and os.path.exists(log['image_path']):
+                            # Read image and convert to bytes
+                            img = cv2.imread(log['image_path'])
+                            if img is not None:
+                                print(f"Found image for log {log['id']}, adding to sync")
+                                _, img_encoded = cv2.imencode('.png', img)
+                                img_bytes = img_encoded.tobytes()
+                                files = {
+                                    'image': ('frame.png', img_bytes, 'image/png')
+                                }
+                        
+                        # Send to API - guard-control endpoint handles everything
+                        print(f"Sending log {log['id']} to API...")
+                        success, response = self.api_client.post_with_files(
+                            'services/guard-control/',
+                            data=form_data,
+                            files=files,
+                            timeout=(5.0, 15.0)
+                        )
+                        
+                        if success:
+                            # Mark as synced
+                            self.db_manager.mark_log_synced(log['id'])
+                            synced_count += 1
+                            print(f"Successfully synced log {log['id']}")
+                        else:
+                            print(f"Failed to sync log {log['id']}: {response}")
+                        
+                        # Update progress
+                        progress = i + 1
+                        self.sync_progress.emit("logs", progress, total_logs)
+                        
+                    except Exception as e:
+                        print(f"Error syncing log {log['id']}: {str(e)}")
+                
+                # Always emit final progress at 100%
+                if total_logs > 0:
+                    self.sync_progress.emit("logs", total_logs, total_logs)
+                
+                if synced_count > 0:
+                    self.sync_status_changed.emit("logs", SyncStatus.SUCCESS)
+                    print(f"Successfully synced {synced_count}/{total_logs} logs")
+                else:
+                    self.sync_status_changed.emit("logs", SyncStatus.FAILED)
+                    print(f"Failed to sync any logs")
+                
+            except Exception as e:
+                self.sync_status_changed.emit("logs", SyncStatus.FAILED)
+                print(f"Error in log sync process: {str(e)}")
         
+        # Signal completion of entire sync process
+        self.sync_all_complete.emit()
         return True
     
     def reconnect(self):

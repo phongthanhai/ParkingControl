@@ -1,16 +1,5 @@
 # Fix imports for PyQt5 on Raspberry Pi
-from PyQt5.QtGui import QPixmap, QImage, QFont, QColor, QPalette
-from PyQt5.QtWidgets import QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSpacerItem, QWidget, QComboBox, QMessageBox
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG, QPropertyAnimation, QEasingCurve, QRect, QThread
-import RPi.GPIO as GPIO
-import time
-import threading
-from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE_PATTERN, API_BASE_URL, LOT_ID
-from app.controllers.lane_controller import LaneWorker, LaneState
-import cv2
-from app.controllers.api_client import ApiClient
-from PyQt5.QtWidgets import QApplication
-from datetime import datetime
+# Fix imports for PyQt5 on Raspberry Pifrom PyQt5.QtGui import QPixmap, QImage, QFont, QColor, QPalettefrom PyQt5.QtWidgets import QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSpacerItem, QWidget, QComboBox, QMessageBoxfrom PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG, QPropertyAnimation, QEasingCurve, QRect, QThreadimport RPi.GPIO as GPIOimport timeimport threadingfrom config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE_PATTERN, API_BASE_URL, LOT_IDfrom app.controllers.lane_controller import LaneWorker, LaneStateimport cv2from app.controllers.api_client import ApiClientfrom PyQt5.QtWidgets import QApplicationfrom datetime# Import new modules for offline supportfrom app.utils.db_manager import DBManagerfrom app.utils.image_storage import ImageStoragefrom app.controllers.sync_service import SyncService, SyncStatusfrom app.ui.sync_status_widget import SyncStatusWidget
 
 class LaneWidget(QWidget):
     def __init__(self, title):
@@ -223,6 +212,9 @@ class ControlScreen(QWidget):
         
         # Setup refresh button
         self.add_refresh_button()
+        
+        # Add sync status widget to the UI
+        self.add_sync_status_widget()
         
         # Initial data load
         QTimer.singleShot(1000, self.refresh_data)
@@ -876,6 +868,78 @@ class ControlScreen(QWidget):
             # Skip API logging if we've determined it's not available
             if not self.api_available and self.api_retry_count >= self.max_api_retries:
                 print("Skipping API log due to previous connection failures")
+                
+                # Save locally using offline storage
+                try:
+                    # Initialize managers if not done before
+                    db_manager = DBManager()
+                    image_storage = ImageStorage()
+                    
+                    # Save image if available
+                    image_path = None
+                    if data.get('image') is not None:
+                        image_path = image_storage.save_image(
+                            data.get('image'), 
+                            lane, 
+                            data.get('text', 'N/A'), 
+                            entry_type
+                        )
+                    
+                    # Store log in local database
+                    log_id = db_manager.add_log_entry(
+                        lane=lane,
+                        plate_id=data.get('text', 'N/A'),
+                        confidence=data.get('confidence', 0.0),
+                        entry_type=entry_type,
+                        image_path=image_path
+                    )
+                    
+                    print(f"Stored log entry locally with ID {log_id}")
+                    
+                    # Handle vehicle entry/exit specific logic
+                    if entry_type != "denied-blacklist":
+                        # Create or ensure vehicle exists
+                        vehicle_id = db_manager.add_vehicle(data.get('text', 'N/A'), False)
+                        
+                        # For entry lane, start a parking session
+                        if lane == 'entry':
+                            session_id = db_manager.start_parking_session(
+                                plate_id=data.get('text', 'N/A'),
+                                lot_id=LOT_ID,
+                                entry_confidence=data.get('confidence', 0.0),
+                                entry_img=image_path
+                            )
+                            
+                            # Record barrier action
+                            if session_id:
+                                action_id = db_manager.add_barrier_action(
+                                    session_id=session_id,
+                                    action_type='entry',
+                                    trigger_type=entry_type
+                                )
+                                print(f"Created local entry session {session_id} and action {action_id}")
+                        
+                        # For exit lane, end an existing parking session
+                        elif lane == 'exit':
+                            session_id = db_manager.end_parking_session(
+                                plate_id=data.get('text', 'N/A'),
+                                lot_id=LOT_ID,
+                                exit_confidence=data.get('confidence', 0.0),
+                                exit_img=image_path
+                            )
+                            
+                            # Record barrier action
+                            if session_id:
+                                action_id = db_manager.add_barrier_action(
+                                    session_id=session_id,
+                                    action_type='exit',
+                                    trigger_type=entry_type
+                                )
+                                print(f"Completed local exit session {session_id} and action {action_id}")
+                    
+                except Exception as e:
+                    print(f"Error storing offline data: {str(e)}")
+                
                 return
             
             # Send to API
@@ -948,7 +1012,7 @@ class ControlScreen(QWidget):
                         # Update status indicator
                         self.api_status_indicator.setStyleSheet("background-color: red;")
                         self.api_status_label.setText("API: Disconnected")
-                
+        
         except Exception as e:
             print(f"Logging error: {str(e)}")
 
@@ -1196,6 +1260,37 @@ class ControlScreen(QWidget):
         occupancy_layout = self.occupancy_frame.layout()
         if occupancy_layout:
             occupancy_layout.addWidget(refresh_btn)
+
+    def add_sync_status_widget(self):
+        """Add the sync status widget to the UI"""
+        # Create the sync status widget
+        self.sync_status_widget = SyncStatusWidget()
+        
+        # Find the main container to add it to
+        main_layout = None
+        for i in range(self.layout().count()):
+            item = self.layout().itemAt(i)
+            if item.widget() and isinstance(item.widget(), QScrollArea):
+                scroll_widget = item.widget().widget()
+                if scroll_widget and scroll_widget.layout():
+                    main_layout = scroll_widget.layout()
+                    break
+        
+        if main_layout:
+            # Create a container for the sync widget
+            sync_container = QHBoxLayout()
+            sync_container.addStretch(1)
+            sync_container.addWidget(self.sync_status_widget)
+            
+            # Add to main layout before the log area
+            for i in range(main_layout.count()):
+                item = main_layout.itemAt(i)
+                if item.widget() and isinstance(item.widget(), QFrame):
+                    if "Parking Occupancy" in item.widget().findChildren(QLabel)[0].text():
+                        main_layout.insertLayout(i + 1, sync_container)
+                        break
+        else:
+            print("Could not find main layout to add sync widget")
 
     def _check_workers_health(self):
         """Periodic check of worker thread health"""

@@ -1,5 +1,19 @@
-# Fix imports for PyQt5 on Raspberry Pi
-# Fix imports for PyQt5 on Raspberry Pifrom PyQt5.QtGui import QPixmap, QImage, QFont, QColor, QPalettefrom PyQt5.QtWidgets import QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSpacerItem, QWidget, QComboBox, QMessageBoxfrom PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG, QPropertyAnimation, QEasingCurve, QRect, QThreadimport RPi.GPIO as GPIOimport timeimport threadingfrom config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE_PATTERN, API_BASE_URL, LOT_IDfrom app.controllers.lane_controller import LaneWorker, LaneStateimport cv2from app.controllers.api_client import ApiClientfrom PyQt5.QtWidgets import QApplicationfrom datetime# Import new modules for offline supportfrom app.utils.db_manager import DBManagerfrom app.utils.image_storage import ImageStoragefrom app.controllers.sync_service import SyncService, SyncStatusfrom app.ui.sync_status_widget import SyncStatusWidget
+from PyQt5.QtGui import QPixmap, QImage, QFont, QColor, QPalette
+from PyQt5.QtWidgets import QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSpacerItem, QWidget, QComboBox, QMessageBox
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG, QPropertyAnimation, QEasingCurve, QRect, QThread
+import RPi.GPIO as GPIO
+import time
+import threading
+from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE_PATTERN, API_BASE_URL, LOT_ID
+from app.controllers.lane_controller import LaneWorker, LaneState
+import cv2
+from app.controllers.api_client import ApiClient
+from PyQt5.QtWidgets import QApplication
+from datetime import datetime
+from app.utils.db_manager import DBManager
+from app.utils.image_storage import ImageStorage
+from app.controllers.sync_service import SyncService, SyncStatus
+from app.ui.sync_status_widget import SyncStatusWidget
 
 class LaneWidget(QWidget):
     def __init__(self, title):

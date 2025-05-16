@@ -34,10 +34,10 @@ CONFIDENCE_THRESHOLD = 0.25
 PLATE_RECOGNIZER_API_KEY = ""
 PLATE_RECOGNIZER_URL = "https://api.platerecognizer.com/v1/plate-reader"
 OCR_RATE_LIMIT = 5  # seconds between API calls
-API_BASE_URL = "http://192.168.1.18:8000/api/v1"  # Base URL for backend API on Raspberry Pi
+API_BASE_URL = "http://192.168.1.8:8000/api/v1"  # Base URL for backend API on Raspberry Pi
 
 # UI Settings
 UI_REFRESH_RATE = 100  # ms
 
 # Lot ID for this raspberry pi
-LOT_ID = 4
+LOT_ID = 1

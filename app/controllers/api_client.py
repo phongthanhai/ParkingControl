@@ -3,7 +3,7 @@ import requests
 from io import BytesIO
 import cv2
 from PyQt5.QtCore import pyqtSignal, QObject
-from config import PLATE_RECOGNIZER_API_KEY, PLATE_RECOGNIZER_URL, OCR_RATE_LIMIT
+from config import PLATE_RECOGNIZER_API_KEY, PLATE_RECOGNIZER_URL, OCR_RATE_LIMIT, API_BASE_URL
 import json
 from app.utils.auth_manager import AuthManager
 
@@ -69,7 +69,7 @@ class ApiClient:
     Client for handling API requests to the backend server.
     Manages all API interactions and authentication.
     """
-    def __init__(self, base_url="http://192.168.1.18:8000/api/v1"):
+    def __init__(self, base_url=API_BASE_URL):
         self.base_url = base_url
         self.auth_manager = AuthManager()
         # Store user information

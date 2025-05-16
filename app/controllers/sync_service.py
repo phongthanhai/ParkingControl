@@ -34,12 +34,17 @@ class SyncWorker(QThread):
         while self._running:
             if not self._paused and self.sync_service.api_available:
                 try:
-                    # Sync in this order: vehicle blacklist, logs (which handles everything)
-                    self._sync_blacklist()
-                    self._sync_logs()
-                    
-                    # Signal completion of entire sync process
-                    self.sync_service.sync_all_complete.emit()
+                    # Force token refresh before each sync cycle
+                    if self.sync_service._ensure_fresh_token():
+                        print("Worker starting sync with fresh token")
+                        # Sync in this order: vehicle blacklist, logs (which handles everything)
+                        self._sync_blacklist()
+                        self._sync_logs()
+                        
+                        # Signal completion of entire sync process
+                        self.sync_service.sync_all_complete.emit()
+                    else:
+                        print("Worker skipping sync cycle due to token refresh failure")
                 except Exception as e:
                     print(f"Sync worker error: {str(e)}")
             
@@ -323,6 +328,13 @@ class SyncService(QObject):
         
         print("Starting manual sync process...")
         
+        # Force token refresh before sync to avoid authentication issues
+        if not self._ensure_fresh_token():
+            print("Failed to refresh authentication token before sync")
+            self.api_available = False
+            self.api_status_changed.emit(False)
+            return False
+        
         # Perform sync operations directly in the main thread for manual sync
         # This avoids potential threading issues when user initiates sync
         if entity_type is None or entity_type == "blacklist":
@@ -464,6 +476,32 @@ class SyncService(QObject):
         # Signal completion of entire sync process
         self.sync_all_complete.emit()
         return True
+    
+    def _ensure_fresh_token(self):
+        """Ensure we have a fresh authentication token by forcing a login"""
+        from app.utils.auth_manager import AuthManager
+        auth_manager = AuthManager()
+        
+        # Check if we have stored credentials
+        if not (auth_manager.username and auth_manager.password):
+            print("No stored credentials available for token refresh")
+            return False
+            
+        print(f"Pre-sync token refresh for {auth_manager.username}")
+        
+        # Attempt login to get fresh token
+        success, message, _ = self.api_client.login(
+            auth_manager.username,
+            auth_manager.password,
+            timeout=(3.0, 5.0)
+        )
+        
+        if success:
+            print("Token refreshed successfully before sync")
+            return True
+        else:
+            print(f"Failed to refresh token before sync: {message}")
+            return False
     
     def reconnect(self):
         """Manually attempt to reconnect to the API"""

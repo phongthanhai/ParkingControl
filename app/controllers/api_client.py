@@ -177,7 +177,7 @@ class ApiClient:
             # If conversion fails, fall back to direct comparison
             return lot_id in self.assigned_lots
 
-    def get(self, endpoint, params=None, timeout=None, auth_required=True):
+    def get(self, endpoint, params=None, timeout=None, auth_required=True, retry_on_auth_fail=True):
         """
         Send a GET request to the API.
         
@@ -186,6 +186,7 @@ class ApiClient:
             params (dict, optional): Query parameters
             timeout (float or tuple, optional): Connection and read timeout in seconds
             auth_required (bool, optional): Whether authentication is required for this endpoint
+            retry_on_auth_fail (bool, optional): Whether to retry with fresh token if auth fails
             
         Returns:
             tuple: (success, data or error_message)
@@ -204,6 +205,13 @@ class ApiClient:
             
             if response.status_code == 200:
                 return True, response.json()
+            elif response.status_code == 401 and auth_required and retry_on_auth_fail:
+                print(f"Authentication failed for {url} - attempting to refresh token and retry")
+                if self._refresh_token():
+                    # Retry the request with the new token (but don't allow further retries to prevent loops)
+                    return self.get(endpoint, params, timeout, auth_required, False)
+                else:
+                    return False, "Authentication failed and token refresh failed"
             else:
                 try:
                     error_data = response.json()
@@ -219,7 +227,7 @@ class ApiClient:
         except Exception as e:
             return False, f"An error occurred: {str(e)}"
 
-    def post(self, endpoint, data=None, json_data=None, timeout=None):
+    def post(self, endpoint, data=None, json_data=None, timeout=None, retry_on_auth_fail=True):
         """
         Send a POST request to the API.
         
@@ -228,6 +236,7 @@ class ApiClient:
             data (dict, optional): Form data
             json_data (dict, optional): JSON data
             timeout (float or tuple, optional): Connection and read timeout in seconds
+            retry_on_auth_fail (bool, optional): Whether to retry with fresh token if auth fails
             
         Returns:
             tuple: (success, data or error_message)
@@ -250,6 +259,13 @@ class ApiClient:
             
             if response.status_code in [200, 201]:
                 return True, response.json()
+            elif response.status_code == 401 and retry_on_auth_fail:
+                print(f"Authentication failed for {url} - attempting to refresh token and retry")
+                if self._refresh_token():
+                    # Retry the request with the new token (but don't allow further retries to prevent loops)
+                    return self.post(endpoint, data, json_data, timeout, False)
+                else:
+                    return False, "Authentication failed and token refresh failed"
             else:
                 try:
                     error_data = response.json()
@@ -265,7 +281,7 @@ class ApiClient:
         except Exception as e:
             return False, f"An error occurred: {str(e)}"
 
-    def put(self, endpoint, data=None, json_data=None, timeout=None):
+    def put(self, endpoint, data=None, json_data=None, timeout=None, retry_on_auth_fail=True):
         """
         Send a PUT request to the API.
         
@@ -274,6 +290,7 @@ class ApiClient:
             data (dict, optional): Form data
             json_data (dict, optional): JSON data
             timeout (float or tuple, optional): Connection and read timeout in seconds
+            retry_on_auth_fail (bool, optional): Whether to retry with fresh token if auth fails
             
         Returns:
             tuple: (success, data or error_message)
@@ -298,6 +315,13 @@ class ApiClient:
                 if response.content:
                     return True, response.json()
                 return True, {}
+            elif response.status_code == 401 and retry_on_auth_fail:
+                print(f"Authentication failed for {url} - attempting to refresh token and retry")
+                if self._refresh_token():
+                    # Retry the request with the new token (but don't allow further retries to prevent loops)
+                    return self.put(endpoint, data, json_data, timeout, False)
+                else:
+                    return False, "Authentication failed and token refresh failed"
             else:
                 try:
                     error_data = response.json()
@@ -313,13 +337,14 @@ class ApiClient:
         except Exception as e:
             return False, f"An error occurred: {str(e)}"
 
-    def delete(self, endpoint, timeout=None):
+    def delete(self, endpoint, timeout=None, retry_on_auth_fail=True):
         """
         Send a DELETE request to the API.
         
         Args:
             endpoint (str): API endpoint
             timeout (float or tuple, optional): Connection and read timeout in seconds
+            retry_on_auth_fail (bool, optional): Whether to retry with fresh token if auth fails
             
         Returns:
             tuple: (success, data or error_message)
@@ -340,6 +365,13 @@ class ApiClient:
                 if response.content:
                     return True, response.json()
                 return True, {}
+            elif response.status_code == 401 and retry_on_auth_fail:
+                print(f"Authentication failed for {url} - attempting to refresh token and retry")
+                if self._refresh_token():
+                    # Retry the request with the new token (but don't allow further retries to prevent loops)
+                    return self.delete(endpoint, timeout, False)
+                else:
+                    return False, "Authentication failed and token refresh failed"
             else:
                 try:
                     error_data = response.json()
@@ -355,7 +387,7 @@ class ApiClient:
         except Exception as e:
             return False, f"An error occurred: {str(e)}"
 
-    def post_with_files(self, endpoint, data=None, files=None, timeout=None):
+    def post_with_files(self, endpoint, data=None, files=None, timeout=None, retry_on_auth_fail=True):
         """
         Send a POST request with multipart/form-data including file uploads.
         
@@ -364,6 +396,7 @@ class ApiClient:
             data (dict, optional): Form data
             files (dict, optional): Files to upload
             timeout (float or tuple, optional): Connection and read timeout in seconds
+            retry_on_auth_fail (bool, optional): Whether to retry with fresh token if auth fails
             
         Returns:
             tuple: (success, data or error_message)
@@ -383,6 +416,13 @@ class ApiClient:
             
             if response.status_code in [200, 201]:
                 return True, response.json()
+            elif response.status_code == 401 and retry_on_auth_fail:
+                print(f"Authentication failed for {url} - attempting to refresh token and retry")
+                if self._refresh_token():
+                    # Retry the request with the new token (but don't allow further retries to prevent loops)
+                    return self.post_with_files(endpoint, data, files, timeout, False)
+                else:
+                    return False, "Authentication failed and token refresh failed"
             else:
                 try:
                     error_data = response.json()
@@ -397,3 +437,34 @@ class ApiClient:
             return False, "Read timeout. The server took too long to respond."
         except Exception as e:
             return False, f"An error occurred: {str(e)}"
+    
+    def _refresh_token(self):
+        """
+        Internal method to refresh the authentication token using stored credentials.
+        
+        Returns:
+            bool: True if token refresh was successful, False otherwise
+        """
+        # Check if we have stored credentials
+        if not (self.auth_manager.username and self.auth_manager.password):
+            print("No stored credentials available for token refresh")
+            return False
+            
+        print(f"Attempting automatic token refresh for {self.auth_manager.username}")
+        
+        # Use a quick timeout for login - we don't want to hang here too long
+        timeout = (3.0, 5.0)
+        
+        # Attempt login to get fresh token
+        success, message, _ = self.login(
+            self.auth_manager.username,
+            self.auth_manager.password,
+            timeout=timeout
+        )
+        
+        if success:
+            print("Token refreshed successfully")
+            return True
+        else:
+            print(f"Failed to refresh token: {message}")
+            return False

@@ -1870,72 +1870,31 @@ class ControlScreen(QWidget):
             margin: 10px 0;
         """)
 
-    def cleanup(self):
-        """Clean up resources and stop threads before destruction."""
-        print("Cleaning up control screen resources...")
-        
+    def closeEvent(self, event):
+        """Handle application close properly by cleaning up threads"""
         try:
             # Stop all API worker threads first
             if hasattr(self, '_api_workers'):
-                print(f"Stopping {len(self._api_workers)} API worker threads...")
                 for thread_id, worker in list(self._api_workers.items()):
                     if worker and worker.isRunning():
-                        worker.stop() if hasattr(worker, 'stop') else None
-                        worker.wait(1000)  # Wait up to 1 second for clean shutdown
-                        if worker.isRunning():
-                            print(f"Force terminating API worker {thread_id}...")
-                            worker.terminate()
-                            worker.wait()
+                        worker.stop()  # Signal the thread to stop
+                        worker.wait(500)  # Wait up to 500ms for clean shutdown
             
-            # Stop camera workers using the worker_guard
+            # Now stop camera workers
             with self.worker_guard:
-                print(f"Stopping {len(self.lane_workers)} lane worker threads...")
                 for lane, worker in list(self.lane_workers.items()):
                     if worker and worker.isRunning():
-                        print(f"Stopping {lane} worker...")
                         worker.stop()
-                        worker.wait(2000)  # Wait up to 2 seconds
-                        if worker.isRunning():
-                            print(f"Force terminating {lane} worker...")
-                            worker.terminate()
-                            worker.wait()
-                # Clear the workers dictionary
-                self.lane_workers.clear()
-            
-            # Stop all timers
-            print("Stopping all timers...")
-            for timer_name in ['watchdog_timer', 'occupancy_timer', 'api_check_timer', 'db_check_timer']:
-                if hasattr(self, timer_name):
-                    timer = getattr(self, timer_name)
-                    if timer and timer.isActive():
-                        print(f"Stopping {timer_name}...")
-                        timer.stop()
-            
-            # Clean up active lane timers
-            for lane, timer in list(self.active_timers.items()):
-                if timer and timer.isActive():
-                    print(f"Stopping active timer for {lane}...")
-                    timer.stop()
-            self.active_timers.clear()
+                        worker.wait(1000)  # Wait up to 1 second for clean shutdown
             
             # Clean GPIO
             try:
-                print("Cleaning up GPIO...")
-                import RPi.GPIO as GPIO
                 GPIO.cleanup()
-            except Exception as e:
-                print(f"GPIO cleanup error: {str(e)}")
+            except:
+                pass
             
-            print("Control screen cleanup completed")
-            
+            # Accept the close event
+            event.accept()
         except Exception as e:
-            print(f"Error during control screen cleanup: {str(e)}")
-
-    def closeEvent(self, event):
-        """Handle window close event."""
-        print("Control screen close event triggered...")
-        try:
-            self.cleanup()
-        except Exception as e:
-            print(f"Error in control screen close event: {str(e)}")
-        event.accept()
+            print(f"Error during application shutdown: {str(e)}")
+            event.accept()  # Accept anyway to ensure the app closes

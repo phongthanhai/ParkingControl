@@ -15,25 +15,6 @@ class SyncStatus:
     FAILED = "failed"
     RUNNING = "running"
 
-class ApiCheckWorker(QThread):
-    """Worker thread for asynchronous API health checks"""
-    finished = pyqtSignal(bool)
-    
-    def __init__(self, api_client):
-        super().__init__()
-        self.api_client = api_client
-    
-    def run(self):
-        try:
-            api_check_timeout = (2.0, 3.0)
-            success, _ = self.api_client.get('services/health', 
-                                           timeout=api_check_timeout, 
-                                           auth_required=False)
-            self.finished.emit(success)
-        except Exception as e:
-            print(f"API check error: {str(e)}")
-            self.finished.emit(False)
-
 class SyncWorker(QThread):
     """Worker thread for background synchronization operations"""
     sync_progress = pyqtSignal(str, int, int)  # entity_type, completed, total
@@ -41,7 +22,6 @@ class SyncWorker(QThread):
     
     def __init__(self, sync_service):
         super().__init__()
-        self.setObjectName("SyncWorker")  # Set object name for debugging
         self.sync_service = sync_service
         self.db_manager = DBManager()
         self.api_client = ApiClient(base_url=API_BASE_URL)
@@ -51,42 +31,25 @@ class SyncWorker(QThread):
         self._current_operation = None
         
     def run(self):
-        print("SyncWorker thread started")
-        try:
-            while self._running:
-                if not self._paused and self.sync_service.api_available:
-                    try:
-                        # Sync in this order: vehicle blacklist, logs (which handles everything)
-                        self._sync_blacklist()
-                        self._sync_logs()
-                        
-                        # Signal completion of entire sync process
-                        self.sync_service.sync_all_complete.emit()
-                    except Exception as e:
-                        print(f"Sync worker error: {str(e)}")
-                
-                # Sleep between sync attempts
-                for i in range(10):  # Check stop flag every second instead of sleeping for 10s at once
-                    if not self._running:
-                        break
-                    time.sleep(1)
-        except Exception as e:
-            print(f"Error in SyncWorker thread: {str(e)}")
-        finally:
-            print("SyncWorker thread ending")
+        while self._running:
+            if not self._paused and self.sync_service.api_available:
+                try:
+                    # Sync in this order: vehicle blacklist, logs (which handles everything)
+                    self._sync_blacklist()
+                    self._sync_logs()
+                    
+                    # Signal completion of entire sync process
+                    self.sync_service.sync_all_complete.emit()
+                except Exception as e:
+                    print(f"Sync worker error: {str(e)}")
+            
+            # Sleep between sync attempts
+            time.sleep(10)  # 10 second sleep between sync cycles
     
     def stop(self):
-        print("SyncWorker stop requested")
         self.mutex.lock()
         self._running = False
-        self._paused = False  # Make sure we're not paused when stopping
         self.mutex.unlock()
-        
-        # Wake the condition if it's waiting
-        if hasattr(self, 'condition') and self.condition:
-            self.condition.wakeAll()
-            
-        print("SyncWorker stop request completed")
     
     def pause(self):
         self.mutex.lock()
@@ -108,7 +71,6 @@ class SyncWorker(QThread):
         self.mutex.unlock()
         
         try:
-            print("Starting blacklist sync...")
             # Get blacklisted vehicles from API
             success, response = self.api_client.get(
                 'vehicles/blacklisted/',
@@ -119,14 +81,11 @@ class SyncWorker(QThread):
             if success and response:
                 # Update local database
                 self.db_manager.update_blacklist(response)
-                print(f"Successfully synced {len(response)} blacklist records")
                 self.sync_complete.emit("blacklist", True, f"Updated {len(response)} blacklist records")
             else:
-                print(f"Failed to retrieve blacklist data: {response}")
                 self.sync_complete.emit("blacklist", False, "Failed to retrieve blacklist data")
         
         except Exception as e:
-            print(f"Blacklist sync error: {str(e)}")
             self.sync_complete.emit("blacklist", False, f"Blacklist sync error: {str(e)}")
         
         self.mutex.lock()
@@ -143,12 +102,10 @@ class SyncWorker(QThread):
         self.mutex.unlock()
             
         try:
-            print("Starting log sync...")
             # Get unsynced logs
             unsynced_logs = self.db_manager.get_unsynced_logs(limit=20)
             
             if not unsynced_logs:
-                print("No logs to sync")
                 self.sync_complete.emit("logs", True, "No logs to sync")
                 self.mutex.lock()
                 self._current_operation = None
@@ -161,7 +118,6 @@ class SyncWorker(QThread):
             
             # If no valid logs after filtering, exit
             if not filtered_logs:
-                print("No valid logs to sync after filtering")
                 self.sync_complete.emit("logs", True, "No valid logs to sync")
                 self.mutex.lock()
                 self._current_operation = None
@@ -169,7 +125,6 @@ class SyncWorker(QThread):
                 return
                 
             total_logs = len(filtered_logs)
-            print(f"Attempting to sync {total_logs} logs")
             self.sync_progress.emit("logs", 0, total_logs)
             
             # Process each log
@@ -179,7 +134,6 @@ class SyncWorker(QThread):
                     break
                 
                 try:
-                    print(f"Processing log {i+1}/{total_logs}: {log['plate_id']}")
                     # Prepare form data
                     form_data = {
                         'plate_id': log['plate_id'],
@@ -189,12 +143,9 @@ class SyncWorker(QThread):
                         'timestamp': log['timestamp']
                     }
                     
-                    print(f"Sending data: {form_data}")
-                    
                     # Handle image if available
                     files = None
                     if log['image_path'] and os.path.exists(log['image_path']):
-                        print(f"Including image from {log['image_path']}")
                         # Read image and convert to bytes
                         img = cv2.imread(log['image_path'])
                         if img is not None:
@@ -203,8 +154,6 @@ class SyncWorker(QThread):
                             files = {
                                 'image': ('frame.png', img_bytes, 'image/png')
                             }
-                        else:
-                            print(f"Failed to read image from {log['image_path']}")
                     
                     # Send to API - guard-control endpoint handles everything
                     success, response = self.api_client.post_with_files(
@@ -214,13 +163,10 @@ class SyncWorker(QThread):
                         timeout=(5.0, 15.0)
                     )
                     
-                    print(f"API Response: Success={success}, Response={response}")
-                    
                     if success:
                         # Mark as synced
                         self.db_manager.mark_log_synced(log['id'])
                         synced_count += 1
-                        print(f"Successfully synced log {log['id']}")
                     else:
                         print(f"Failed to sync log {log['id']}: {response}")
                     
@@ -238,12 +184,10 @@ class SyncWorker(QThread):
             if total_logs > 0:
                 self.sync_progress.emit("logs", total_logs, total_logs)
                 
-            print(f"Sync complete. Successfully synced {synced_count}/{total_logs} logs")
             self.sync_complete.emit("logs", synced_count > 0, 
                                    f"Synced {synced_count}/{total_logs} log entries")
                                    
         except Exception as e:
-            print(f"Log sync error: {str(e)}")
             self.sync_complete.emit("logs", False, f"Log sync error: {str(e)}")
         
         self.mutex.lock()
@@ -301,10 +245,14 @@ class SyncService(QObject):
     
     def check_api_connection(self):
         """Check if the API server is available."""
-        # Create and start the API check worker
-        worker = ApiCheckWorker(self.api_client)
-        
-        def handle_check_result(success):
+        try:
+            # Use a short timeout for connectivity checks
+            api_check_timeout = (2.0, 3.0)
+            
+            # Use the dedicated health check endpoint
+            success, _ = self.api_client.get('services/health', timeout=api_check_timeout, auth_required=False)
+            
+            # Update API status
             if success and not self.api_available:
                 self.api_available = True
                 self.api_retry_count = 0
@@ -318,9 +266,14 @@ class SyncService(QObject):
                     self.api_status_changed.emit(False)
                     print("API connection lost, pausing sync operations")
                     self.sync_worker.pause()
-        
-        worker.finished.connect(handle_check_result)
-        worker.start()
+            
+        except Exception as e:
+            self.api_retry_count += 1
+            if self.api_retry_count >= self.max_api_retries:
+                self.api_available = False
+                self.api_status_changed.emit(False)
+                print(f"API connection check error: {str(e)}")
+                self.sync_worker.pause()
     
     def _handle_sync_progress(self, entity_type, completed, total):
         """Handle progress updates from the sync worker."""
@@ -424,27 +377,13 @@ class SyncService(QObject):
             }
     
     def stop(self):
-        """Stop the sync service and cleanup threads."""
-        print("Stopping sync service...")
-        
-        # Stop the sync worker
+        """Stop the sync service."""
         if self.sync_worker and self.sync_worker.isRunning():
-            print("Stopping sync worker thread...")
             self.sync_worker.stop()
-            self.sync_worker.wait(2000)  # Wait up to 2 seconds
-            
-            # Force quit if still running
-            if self.sync_worker.isRunning():
-                print("Force terminating sync worker thread...")
-                self.sync_worker.terminate()
-                self.sync_worker.wait()
+            self.sync_worker.wait(1000)  # Wait up to 1 second
         
-        # Stop the API check timer
         if self.api_check_timer and self.api_check_timer.isActive():
-            print("Stopping API check timer...")
             self.api_check_timer.stop()
-        
-        print("Sync service stopped successfully")
     
     def __del__(self):
         """Clean up resources."""

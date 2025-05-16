@@ -24,7 +24,6 @@ class LaneWorker(QThread):
     
     def __init__(self, lane_type):
         super().__init__()
-        self.setObjectName(f"LaneWorker_{lane_type}")  # Set object name for debugging
         self.lane_type = lane_type
         self.state = LaneState.IDLE
         
@@ -61,19 +60,8 @@ class LaneWorker(QThread):
         self.last_detection_data = None
     
     def run(self):
-        print(f"LaneWorker_{self.lane_type} thread started")
-        try:
-            self._initialize_resources()
-            self._main_loop()
-        except Exception as e:
-            print(f"Error in LaneWorker_{self.lane_type} thread: {str(e)}")
-        finally:
-            # Make sure to release camera
-            with self.camera_lock:
-                if self._cap is not None and self._cap.isOpened():
-                    self._cap.release()
-                    self._cap = None
-            print(f"LaneWorker_{self.lane_type} thread ended")
+        self._initialize_resources()
+        self._main_loop()
     
     def _initialize_resources(self):
         try:
@@ -359,24 +347,21 @@ class LaneWorker(QThread):
     
     def stop(self):
         """Clean shutdown of the worker thread"""
-        print(f"LaneWorker_{self.lane_type} stop requested")
-        
         self.mutex.lock()
         self._running = False
-        self._paused = False  # Make sure we're not paused when stopping
-        self.condition.wakeAll()  # Wake up any waiting threads
+        self._paused = False
+        self.condition.wakeAll()
         self.mutex.unlock()
         
-        # Stop cooldown timer if active
-        if self.cooldown_timer is not None and self.cooldown_timer.isActive():
-            self.cooldown_timer.stop()
-            
         # Release camera resources
         with self.camera_lock:
             if self._cap is not None and self._cap.isOpened():
                 self._cap.release()
                 self._cap = None
         
-        print(f"LaneWorker_{self.lane_type} stop completed")
-        
-        # No wait or quit here to avoid deadlocks - parent will handle waiting
+        # Wait for thread to finish
+        if self.isRunning():
+            self.quit()
+            if not self.wait(3000):  # Wait up to 3 seconds
+                self.terminate()
+                self.wait()

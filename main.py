@@ -2,7 +2,6 @@ import sys
 import os
 import time
 import sqlite3
-import signal
 from PyQt5.QtWidgets import QApplication, QMainWindow, QStackedWidget, QMessageBox, QLabel, QHBoxLayout
 from PyQt5.QtCore import Qt, QTimer
 from app.ui.login_screen import LoginScreen
@@ -10,19 +9,6 @@ from app.ui.control_screen import ControlScreen
 from app.utils.db_manager import DBManager
 from app.utils.image_storage import ImageStorage
 from app.controllers.sync_service import SyncService
-
-# Define signal handler for clean shutdown
-def signal_handler(sig, frame):
-    print(f"Received signal {sig}, initiating clean shutdown...")
-    if 'window' in globals():
-        window._force_close()
-    else:
-        print("Application window not initialized, forcing exit")
-        os._exit(0)
-
-# Register signal handler
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
 
 # Initialize database folder
 def initialize_local_storage():
@@ -180,83 +166,23 @@ class ParkingSystem(QMainWindow):
         
     def closeEvent(self, event):
         """Handle application close properly"""
-        # Flag to prevent multiple close attempts
-        if hasattr(self, '_closing') and self._closing:
-            print("Already in closing process, accepting event...")
-            event.accept()
-            return
-            
-        self._closing = True
-        print("Starting application shutdown sequence...")
-        
         try:
-            # If control screen exists, stop its threads first
-            if self.control_screen:
-                print("Stopping control screen...")
-                self.control_screen.cleanup()
-                
-            # Stop sync service (this will handle its threads)
+            # Stop sync service
             if hasattr(self, 'sync_service'):
-                print("Stopping sync service...")
                 self.sync_service.stop()
-                
-            # Stop timers
-            if hasattr(self, 'db_check_timer'):
-                print("Stopping database check timer...")
-                self.db_check_timer.stop()
             
-            # Close database connection last
-            print("Closing database connection...")
+            # Close database connection
             db_manager = DBManager()
             db_manager.close()
             
-            # Wait a brief moment for threads to clean up
-            print("Starting final cleanup timer...")
-            QTimer.singleShot(1000, self._force_close)
-            event.ignore()  # Temporarily ignore the close event until everything is cleaned up
-            
+            # Stop timers
+            if hasattr(self, 'db_check_timer'):
+                self.db_check_timer.stop()
         except Exception as e:
             print(f"Error during application shutdown: {str(e)}")
-            # Don't wait, just exit
-            self._force_close()
-    
-    def _force_close(self):
-        """Force close the application after cleanup"""
-        print("Final cleanup complete, forcing application quit...")
-        
-        try:
-            # Get any remaining threads before exit
-            import threading
-            active_threads = threading.enumerate()
-            if len(active_threads) > 1:  # More than main thread
-                print(f"WARNING: {len(active_threads)-1} threads still active at exit:")
-                for thread in active_threads:
-                    if thread != threading.current_thread():
-                        print(f"  - {thread.name}")
-            
-            # Ensure PyQt exits properly
-            import sys
-            print("Calling QApplication.quit()...")
-            QApplication.quit()
-            print("Setting exit code to 0...")
-            sys.exit(0)  # Force the Python interpreter to exit
-        except Exception as e:
-            print(f"Error during force close: {str(e)}")
-            import os
-            os._exit(0)  # Absolute last resort
+        event.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    
-    # Create global window for signal handler
-    global window
     window = ParkingSystem()
-    
-    # Proper exception handling to ensure clean exit
-    try:
-        exit_code = app.exec_()
-        print(f"Application exited with code {exit_code}")
-        sys.exit(exit_code)
-    except Exception as e:
-        print(f"Unhandled exception in main: {str(e)}")
-        sys.exit(1)
+    sys.exit(app.exec_())

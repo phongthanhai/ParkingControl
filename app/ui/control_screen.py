@@ -263,9 +263,23 @@ class ControlScreen(QWidget):
         self.api_status_indicator.setFixedSize(15, 15)
         self.api_status_indicator.setStyleSheet("background-color: green; border-radius: 7px;")
         
+        # Add reconnect button (initially hidden)
+        self.api_reconnect_button = QPushButton("Reconnect")
+        self.api_reconnect_button.setStyleSheet("""
+            background-color: #3498db;
+            color: white;
+            padding: 5px 10px;
+            border: none;
+            border-radius: 4px;
+            font-weight: bold;
+        """)
+        self.api_reconnect_button.clicked.connect(self._reconnect_api)
+        self.api_reconnect_button.setVisible(False)
+        
         api_status_layout.addWidget(api_status_label)
         api_status_layout.addWidget(self.api_status_indicator)
         api_status_layout.addWidget(self.api_status_label)
+        api_status_layout.addWidget(self.api_reconnect_button)
         api_status_layout.addStretch()
         
         main_layout.addLayout(api_status_layout)
@@ -868,16 +882,50 @@ class ControlScreen(QWidget):
             if entry_type == "denied-blacklist":
                 # Store a copy of the log data
                 self.local_blacklist_logs.append(log_data.copy())
+                
+                # Add entry to the log table only locally - don't send to API
+                self._add_log_entry(log_data)
+                
+                # Initialize local storage for blacklist entries
+                try:
+                    # Save image if available
+                    db_manager = DBManager()
+                    image_storage = ImageStorage()
+                    
+                    image_path = None
+                    if data.get('image') is not None:
+                        image_path = image_storage.save_image(
+                            data.get('image'), 
+                            lane, 
+                            data.get('text', 'N/A'), 
+                            entry_type
+                        )
+                    
+                    # Store log in local database
+                    db_manager.add_log_entry(
+                        lane=lane,
+                        plate_id=data.get('text', 'N/A'),
+                        confidence=data.get('confidence', 0.0),
+                        entry_type=entry_type,
+                        image_path=image_path
+                    )
+                except Exception as e:
+                    print(f"Error storing blacklist entry locally: {str(e)}")
+                
+                # Return early - no API call for blacklist entries
+                return
+            
+            # Skip API logging for skipped entries - only add to local UI
+            if entry_type == "skipped":
+                # Add entry to the log table only locally
+                self._add_log_entry(log_data)
+                return
+            
+            # Emit signal for any listeners (this is used by sync service)
+            self.log_signal.emit(log_data)
             
             # Add entry to the log table
             self._add_log_entry(log_data)
-            
-            # Emit signal for any listeners
-            self.log_signal.emit(log_data)
-            
-            # Skip API logging for blacklist entries since there's no endpoint
-            if entry_type == "denied-blacklist":
-                return
             
             # Skip API logging if we've determined it's not available
             if not self.api_available and self.api_retry_count >= self.max_api_retries:
@@ -911,7 +959,7 @@ class ControlScreen(QWidget):
                     print(f"Stored log entry locally with ID {log_id}")
                     
                     # Handle vehicle entry/exit specific logic
-                    if entry_type != "denied-blacklist":
+                    if entry_type in ('auto', 'manual'):
                         # Create or ensure vehicle exists
                         vehicle_id = db_manager.add_vehicle(data.get('text', 'N/A'), False)
                         
@@ -956,79 +1004,156 @@ class ControlScreen(QWidget):
                 
                 return
             
-            # Send to API
-            try:
-                # Extract image from data if available - use the full frame image
-                frame_image = data.get('image')
-                
-                # Prepare form data
-                form_data = {
-                    'plate_id': data.get('text', 'N/A'),
-                    'lot_id': LOT_ID,  # Use configured lot ID
-                    'lane': lane,
-                    'type': entry_type, 
-                    'timestamp': formatted_timestamp  # Use formatted timestamp
-                }
-                
-                # Prepare files dict if image is available
-                files = None
-                if frame_image is not None:
-                    # Convert OpenCV image to bytes
-                    _, img_encoded = cv2.imencode('.png', frame_image)
-                    img_bytes = img_encoded.tobytes()
-                    files = {
-                        'image': ('frame.png', img_bytes, 'image/png')
-                    }
-                
-                # Use a reasonable timeout for log submissions since they include image data
-                log_timeout = (5.0, 15.0)  # 5s connect, 15s read
-                
-                # Send to API
-                success, response = self.api_client.post_with_files(
-                    'services/guard-control/',
-                    data=form_data,
-                    files=files,
-                    timeout=log_timeout
-                )
-                
-                if success:
-                    print(f"API log successful: {response}")
-                    self.api_available = True
-                    self.api_retry_count = 0
-                    # Update status indicator
-                    self.api_status_indicator.setStyleSheet("background-color: green;")
-                    self.api_status_label.setText("API: Connected")
-                else:
-                    error_msg = str(response) if response else "Unknown error"
-                    print(f"API log failed: {error_msg}")
+            # Send to API for auto and manual entries only
+            if entry_type in ('auto', 'manual'):
+                try:
+                    # Extract image from data if available - use the full frame image
+                    frame_image = data.get('image')
                     
-                    if "timeout" in error_msg.lower():
-                        print("API log timed out - may retry later")
+                    # Prepare form data
+                    form_data = {
+                        'plate_id': data.get('text', 'N/A'),
+                        'lot_id': LOT_ID,  # Use configured lot ID
+                        'lane': lane,
+                        'type': entry_type, 
+                        'timestamp': formatted_timestamp  # Use formatted timestamp
+                    }
+                    
+                    # Prepare files dict if image is available
+                    files = None
+                    if frame_image is not None:
+                        # Convert OpenCV image to bytes
+                        _, img_encoded = cv2.imencode('.png', frame_image)
+                        img_bytes = img_encoded.tobytes()
+                        files = {
+                            'image': ('frame.png', img_bytes, 'image/png')
+                        }
+                    
+                    # Use a reasonable timeout for log submissions since they include image data
+                    log_timeout = (5.0, 15.0)  # 5s connect, 15s read
+                    
+                    # Send to API
+                    success, response = self.api_client.post_with_files(
+                        'services/guard-control/',
+                        data=form_data,
+                        files=files,
+                        timeout=log_timeout
+                    )
+                    
+                    if success:
+                        print(f"API log successful: {response}")
+                        self.api_available = True
+                        self.api_retry_count = 0
+                        # Update status indicator
+                        self._update_api_status(True)
+                    else:
+                        error_msg = str(response) if response else "Unknown error"
+                        print(f"API log failed: {error_msg}")
                         
-                    if "Connection" in error_msg or "timeout" in error_msg.lower():
+                        # Store locally on failure
+                        self._store_log_locally(lane, data, entry_type)
+                        
+                        if "timeout" in error_msg.lower():
+                            print("API log timed out - may retry later")
+                            
+                        if "Connection" in error_msg or "timeout" in error_msg.lower():
+                            self.api_retry_count += 1
+                            if self.api_retry_count >= self.max_api_retries:
+                                self.api_available = False
+                                print(f"Backend API marked as unavailable after {self.max_api_retries} failed attempts")
+                                # Update status indicator
+                                self._update_api_status(False)
+                        
+                except Exception as e:
+                    error_msg = str(e)
+                    print(f"API logging error: {error_msg}")
+                    
+                    # Store locally on exception
+                    self._store_log_locally(lane, data, entry_type)
+                    
+                    if "Connection" in error_msg or "HTTPConnectionPool" in error_msg or "timeout" in error_msg.lower():
                         self.api_retry_count += 1
                         if self.api_retry_count >= self.max_api_retries:
                             self.api_available = False
                             print(f"Backend API marked as unavailable after {self.max_api_retries} failed attempts")
                             # Update status indicator
-                            self.api_status_indicator.setStyleSheet("background-color: red;")
-                            self.api_status_label.setText("API: Disconnected")
-                    
-            except Exception as e:
-                error_msg = str(e)
-                print(f"API logging error: {error_msg}")
-                
-                if "Connection" in error_msg or "HTTPConnectionPool" in error_msg or "timeout" in error_msg.lower():
-                    self.api_retry_count += 1
-                    if self.api_retry_count >= self.max_api_retries:
-                        self.api_available = False
-                        print(f"Backend API marked as unavailable after {self.max_api_retries} failed attempts")
-                        # Update status indicator
-                        self.api_status_indicator.setStyleSheet("background-color: red;")
-                        self.api_status_label.setText("API: Disconnected")
+                            self._update_api_status(False)
         
         except Exception as e:
             print(f"Logging error: {str(e)}")
+
+    def _store_log_locally(self, lane, data, entry_type):
+        """Store log locally when API fails"""
+        try:
+            # Initialize managers
+            db_manager = DBManager()
+            image_storage = ImageStorage()
+            
+            # Save image if available
+            image_path = None
+            if data.get('image') is not None:
+                image_path = image_storage.save_image(
+                    data.get('image'), 
+                    lane, 
+                    data.get('text', 'N/A'), 
+                    entry_type
+                )
+            
+            # Store log in local database
+            log_id = db_manager.add_log_entry(
+                lane=lane,
+                plate_id=data.get('text', 'N/A'),
+                confidence=data.get('confidence', 0.0),
+                entry_type=entry_type,
+                image_path=image_path,
+                synced=False
+            )
+            
+            print(f"Stored log entry locally with ID {log_id}")
+            
+            # Handle vehicle entry/exit specific logic
+            if entry_type in ('auto', 'manual'):
+                # Create or ensure vehicle exists
+                vehicle_id = db_manager.add_vehicle(data.get('text', 'N/A'), False)
+                
+                # For entry lane, start a parking session
+                if lane == 'entry':
+                    session_id = db_manager.start_parking_session(
+                        plate_id=data.get('text', 'N/A'),
+                        lot_id=LOT_ID,
+                        entry_confidence=data.get('confidence', 0.0),
+                        entry_img=image_path
+                    )
+                    
+                    # Record barrier action
+                    if session_id:
+                        action_id = db_manager.add_barrier_action(
+                            session_id=session_id,
+                            action_type='entry',
+                            trigger_type=entry_type
+                        )
+                        print(f"Created local entry session {session_id} and action {action_id}")
+                
+                # For exit lane, end an existing parking session
+                elif lane == 'exit':
+                    session_id = db_manager.end_parking_session(
+                        plate_id=data.get('text', 'N/A'),
+                        lot_id=LOT_ID,
+                        exit_confidence=data.get('confidence', 0.0),
+                        exit_img=image_path
+                    )
+                    
+                    # Record barrier action
+                    if session_id:
+                        action_id = db_manager.add_barrier_action(
+                            session_id=session_id,
+                            action_type='exit',
+                            trigger_type=entry_type
+                        )
+                        print(f"Completed local exit session {session_id} and action {action_id}")
+                
+        except Exception as e:
+            print(f"Error storing log locally: {str(e)}")
 
     def _add_log_entry(self, data):
         """Add a new entry to the log area"""
@@ -1113,6 +1238,78 @@ class ControlScreen(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
+    def _check_api_connection(self):
+        """Regularly check if API server is online"""
+        try:
+            # Use a very short timeout for connectivity checks to avoid blocking
+            api_check_timeout = (2.0, 3.0)  # 2s connect, 3s read
+            
+            # Use the dedicated health check endpoint
+            success, _ = self.api_client.get('services/health', timeout=api_check_timeout, auth_required=False)
+            
+            # Update UI based on API status
+            if success and not self.api_available:
+                self.api_available = True
+                self.api_retry_count = 0
+                self._update_api_status(True)
+                # Try to update occupancy after regaining connectivity
+                self._update_occupancy()
+            elif not success and self.api_available:
+                self.api_retry_count += 1
+                if self.api_retry_count >= self.max_api_retries:
+                    self.api_available = False
+                    self._update_api_status(False)
+                
+        except Exception as e:
+            self.api_retry_count += 1
+            if self.api_retry_count >= self.max_api_retries:
+                self.api_available = False
+                self._update_api_status(False)
+                print(f"API connection check error: {str(e)}")
+
+    def _update_api_status(self, is_connected):
+        """Update API status indicators"""
+        if is_connected:
+            self.api_status_indicator.setStyleSheet("background-color: green; border-radius: 7px;")
+            self.api_status_label.setText("API: Connected")
+            self.api_reconnect_button.setVisible(False)
+        else:
+            self.api_status_indicator.setStyleSheet("background-color: red; border-radius: 7px;")
+            self.api_status_label.setText("API: Disconnected")
+            self.api_reconnect_button.setVisible(True)
+
+    def _reconnect_api(self):
+        """Manually attempt to reconnect to the API"""
+        self.api_reconnect_button.setText("Reconnecting...")
+        self.api_reconnect_button.setEnabled(False)
+        
+        # Reset counters
+        self.api_retry_count = 0
+        
+        # Check connection
+        try:
+            api_check_timeout = (3.0, 5.0)  # Slightly longer timeout for manual reconnect
+            success, _ = self.api_client.get('services/health', timeout=api_check_timeout, auth_required=False)
+            
+            if success:
+                self.api_available = True
+                self._update_api_status(True)
+                # Update data after reconnection
+                self._update_occupancy()
+                self._fetch_logs()
+            else:
+                self.api_available = False
+                self._update_api_status(False)
+                self.api_reconnect_button.setText("Reconnect")
+                self.api_reconnect_button.setEnabled(True)
+                
+        except Exception as e:
+            print(f"Manual reconnect error: {str(e)}")
+            self.api_available = False
+            self._update_api_status(False)
+            self.api_reconnect_button.setText("Reconnect")
+            self.api_reconnect_button.setEnabled(True)
+
     def _update_occupancy(self):
         """Update the occupancy display with data from API asynchronously"""
         # Set loading state while waiting for API
@@ -1164,38 +1361,6 @@ class ControlScreen(QWidget):
         except Exception as e:
             print(f"Error processing occupancy data: {str(e)}")
             self.occupancy_label.setText("Error processing data")
-
-    def _check_api_connection(self):
-        """Regularly check if API server is online"""
-        try:
-            # Use a very short timeout for connectivity checks to avoid blocking
-            api_check_timeout = (2.0, 3.0)  # 2s connect, 3s read
-            
-            # Use the dedicated health check endpoint
-            success, _ = self.api_client.get('services/health', timeout=api_check_timeout, auth_required=False)
-            
-            # Update UI based on API status
-            if success and not self.api_available:
-                self.api_available = True
-                self.api_retry_count = 0
-                self.api_status_indicator.setStyleSheet("background-color: green;")
-                self.api_status_label.setText("API: Connected")
-                # Try to update occupancy after regaining connectivity
-                self._update_occupancy()
-            elif not success and self.api_available:
-                self.api_retry_count += 1
-                if self.api_retry_count >= self.max_api_retries:
-                    self.api_available = False
-                    self.api_status_indicator.setStyleSheet("background-color: red;")
-                    self.api_status_label.setText("API: Disconnected")
-                
-        except Exception as e:
-            self.api_retry_count += 1
-            if self.api_retry_count >= self.max_api_retries:
-                self.api_available = False
-                self.api_status_indicator.setStyleSheet("background-color: red;")
-                self.api_status_label.setText("API: Disconnected")
-                print(f"API connection check error: {str(e)}")
 
     def _fetch_logs(self):
         """Fetch logs for the current lot from the API and add local blacklist entries"""

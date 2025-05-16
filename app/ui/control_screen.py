@@ -896,7 +896,8 @@ class ControlScreen(QWidget):
                 "confidence": data.get('confidence', 0.0),
                 "timestamp": current_time,
                 "formatted_time": formatted_timestamp,
-                "type": entry_type
+                "type": entry_type,
+                "processed": False  # Add a processed flag to track this entry 
             }
             print(f"Log entry created: {log_data}")
             
@@ -920,25 +921,25 @@ class ControlScreen(QWidget):
                 print("Skipped vehicle entry - only shown in UI, not stored or synced")
                 return
             
-            # IMPORTANT CHANGE: For online mode, we want to try direct API call first
-            # then store locally only if that fails. This avoids duplicate entries.
-            
             # Add entry to the log table display
             self._add_log_entry(log_data)
             
-            # For auto and manual entries, try to send directly to API first if we're online
-            local_storage_id = None
-            local_image_path = None
-            stored_locally = False  # Flag to track if we've stored locally
+            # CRITICAL FIX: Use a completely different approach for online vs offline
+            # to avoid any possible duplicate paths
             
-            if entry_type in ('auto', 'manual') and self.api_available:
+            # Check if we're online or offline FIRST, then take completely separate paths
+            if self.api_available and entry_type in ('auto', 'manual'):
+                #========================
+                # ONLINE MODE PATH
+                #========================
                 try:
-                    # Extract image from data if available - use the full frame image
+                    # Extract image from data if available
                     frame_image = data.get('image')
                     
-                    # Save image to local storage first (we need it for both API and local storage)
+                    # Save image to local storage
                     db_manager = DBManager()
                     image_storage = ImageStorage()
+                    local_image_path = None
                     
                     if frame_image is not None:
                         local_image_path = image_storage.save_image(
@@ -948,157 +949,156 @@ class ControlScreen(QWidget):
                             entry_type
                         )
                     
-                    # Prepare form data
+                    # Prepare form data for API
                     form_data = {
                         'plate_id': data.get('text', 'N/A'),
-                        'lot_id': LOT_ID,  # Use configured lot ID
+                        'lot_id': LOT_ID,
                         'lane': lane,
                         'type': entry_type, 
-                        'timestamp': formatted_timestamp  # Use formatted timestamp
+                        'timestamp': formatted_timestamp
                     }
                     
-                    # Prepare files dict if image is available
+                    # Prepare files for API
                     files = None
                     if frame_image is not None:
-                        # Convert OpenCV image to bytes
                         _, img_encoded = cv2.imencode('.png', frame_image)
                         img_bytes = img_encoded.tobytes()
                         files = {
                             'image': ('frame.png', img_bytes, 'image/png')
                         }
                     
-                    # Use a reasonable timeout for log submissions since they include image data
-                    log_timeout = (5.0, 15.0)  # 5s connect, 15s read
-                    
-                    # Try making a direct API call with more debugging
+                    # Try the API call
                     print(f"Making direct API call to services/guard-control/ for {lane} lane, {entry_type} type")
                     success, response = self.api_client.post_with_files(
                         'services/guard-control/',
                         data=form_data,
                         files=files,
-                        timeout=log_timeout
+                        timeout=(5.0, 15.0)
                     )
                     
+                    # Handle API success
                     if success:
                         print(f"API log successful: {response}")
                         self.api_available = True
                         self.api_retry_count = 0
+                        self._update_api_status(True)
                         
-                        # Save to local DB but mark as already synced
-                        local_storage_id = db_manager.add_log_entry(
+                        # Store in DB as already synced
+                        db_manager.add_log_entry(
                             lane=lane,
                             plate_id=data.get('text', 'N/A'),
                             confidence=data.get('confidence', 0.0),
                             entry_type=entry_type,
                             image_path=local_image_path,
-                            synced=True  # Key change: Mark as already synced
+                            synced=True
                         )
-                        stored_locally = True  # Mark that we've stored this locally
-                        print(f"Stored API-sent log entry locally with ID {local_storage_id} (already marked as synced)")
                         
-                        # Update status indicator
-                        self._update_api_status(True)
+                        # Handle local session tracking (parking session)
+                        self._create_or_update_parking_session(
+                            lane, data.get('text', 'N/A'), 
+                            data.get('confidence', 0.0), entry_type, local_image_path
+                        )
                         
-                        # Handle vehicle entry/exit specific logic - STILL NEEDED even for online mode
-                        if entry_type in ('auto', 'manual'):
-                            # Create or ensure vehicle exists
-                            vehicle_id = db_manager.add_vehicle(data.get('text', 'N/A'), False)
-                            
-                            # For entry lane, start a parking session
-                            if lane == 'entry':
-                                session_id = db_manager.start_parking_session(
-                                    plate_id=data.get('text', 'N/A'),
-                                    lot_id=LOT_ID,
-                                    entry_confidence=data.get('confidence', 0.0),
-                                    entry_img=local_image_path
-                                )
-                                
-                                # Record barrier action
-                                if session_id:
-                                    action_id = db_manager.add_barrier_action(
-                                        session_id=session_id,
-                                        action_type='entry',
-                                        trigger_type=entry_type
-                                    )
-                                    print(f"Created local entry session {session_id} and action {action_id}")
-                            
-                            # For exit lane, end an existing parking session
-                            elif lane == 'exit':
-                                session_id = db_manager.end_parking_session(
-                                    plate_id=data.get('text', 'N/A'),
-                                    lot_id=LOT_ID,
-                                    exit_confidence=data.get('confidence', 0.0),
-                                    exit_img=local_image_path
-                                )
-                                
-                                # Record barrier action
-                                if session_id:
-                                    action_id = db_manager.add_barrier_action(
-                                        session_id=session_id,
-                                        action_type='exit',
-                                        trigger_type=entry_type
-                                    )
-                                    print(f"Completed local exit session {session_id} and action {action_id}")
-                        
-                        # Emit signal for any listeners (used by sync service)
-                        # even though already synced - to keep sync widget updated
-                        print(f"Emitting log_signal for {entry_type} entry (already sent to API): {log_data.get('plate')}")
-                        # Add flag to indicate this has already been synced to prevent duplicate processing
-                        log_data['already_synced'] = True
-                        log_data['stored_locally'] = True  # Add flag to indicate it's already stored
-                        self.log_signal.emit(log_data)
-                        
-                        return  # Exit early since we've successfully sent to API and stored locally as synced
+                        # Since we already handled this completely, don't emit signal
+                        # This prevents any possible duplicate processing
+                        log_data["processed"] = True
+                        return
                         
                     else:
+                        # API failed, fall through to offline mode
                         error_msg = str(response) if response else "Unknown error"
                         print(f"API log failed: {error_msg}")
                         
-                        if "timeout" in error_msg.lower():
-                            print("API log timed out - will store locally")
-                            
+                        # Handle connectivity issues
                         if "Connection" in error_msg or "timeout" in error_msg.lower():
                             self.api_retry_count += 1
                             if self.api_retry_count >= self.max_api_retries:
                                 self.api_available = False
                                 print(f"Backend API marked as unavailable after {self.max_api_retries} failed attempts")
-                                # Update status indicator
                                 self._update_api_status(False)
-                        
+                                
                 except Exception as e:
                     error_msg = str(e)
                     print(f"API logging error: {error_msg}")
                     
+                    # Handle connectivity issues
                     if "Connection" in error_msg or "HTTPConnectionPool" in error_msg or "timeout" in error_msg.lower():
                         self.api_retry_count += 1
                         if self.api_retry_count >= self.max_api_retries:
                             self.api_available = False
                             print(f"Backend API marked as unavailable after {self.max_api_retries} failed attempts")
-                            # Update status indicator
                             self._update_api_status(False)
             
-            # If we reach here, it means either:
-            # 1. We're offline from the start
-            # 2. Direct API call failed
-            # 3. This isn't an auto/manual entry
-            # In all cases, we need to store locally for syncing later, but only if not already stored
-            
-            # Emit signal for any listeners (this is used by sync service)
-            # Add flag to indicate this needs to be stored locally
-            log_data['stored_locally'] = stored_locally  # Pass flag to indicate if already stored
-            print(f"Emitting log_signal for {entry_type} entry (needs to be synced later): {log_data.get('plate')}")
-            self.log_signal.emit(log_data)
-            
-            # Skip API logging if we've determined it's not available
-            if not self.api_available and self.api_retry_count >= self.max_api_retries:
-                print("Skipping API log due to previous connection failures")
-            
-            # Only store locally if we haven't already (from API success case)
-            if not stored_locally:
-                self._store_log_locally(lane, data, entry_type, local_image_path)
-        
+            #========================
+            # OFFLINE MODE PATH - Use this path if online path didn't return
+            #========================
+            if not log_data["processed"] and entry_type in ('auto', 'manual'):
+                print(f"Using offline storage for {lane} lane, {entry_type} type")
+                
+                # Set proper flags to prevent duplication
+                log_data['stored_locally'] = True  # Flag to prevent duplicate storage in main.py
+                
+                # Save locally in database for later sync
+                image_path = self._store_log_locally(lane, data, entry_type, None)
+                
+                # After storing locally, we need to let main.py know this was already stored
+                # to prevent it from creating duplicate entries
+                log_data['already_synced'] = False  # Not synced with the server yet
+                log_data['image_path'] = image_path
+                
+                # Only emit signal after we've stored it locally
+                # This is used for updating the sync service about this entry
+                self.log_signal.emit(log_data)
+                
         except Exception as e:
             print(f"Logging error: {str(e)}")
+    
+    def _create_or_update_parking_session(self, lane, plate_id, confidence, entry_type, image_path):
+        """Handle parking session logic (starting or ending a session)"""
+        try:
+            db_manager = DBManager()
+            
+            # Create or ensure vehicle exists
+            vehicle_id = db_manager.add_vehicle(plate_id, False)
+            
+            # For entry lane, start a parking session
+            if lane == 'entry':
+                session_id = db_manager.start_parking_session(
+                    plate_id=plate_id,
+                    lot_id=LOT_ID,
+                    entry_confidence=confidence,
+                    entry_img=image_path
+                )
+                
+                # Record barrier action
+                if session_id:
+                    action_id = db_manager.add_barrier_action(
+                        session_id=session_id,
+                        action_type='entry',
+                        trigger_type=entry_type
+                    )
+                    print(f"Created local entry session {session_id} and action {action_id}")
+            
+            # For exit lane, end an existing parking session
+            elif lane == 'exit':
+                session_id = db_manager.end_parking_session(
+                    plate_id=plate_id,
+                    lot_id=LOT_ID,
+                    exit_confidence=confidence,
+                    exit_img=image_path
+                )
+                
+                # Record barrier action
+                if session_id:
+                    action_id = db_manager.add_barrier_action(
+                        session_id=session_id,
+                        action_type='exit',
+                        trigger_type=entry_type
+                    )
+                    print(f"Completed local exit session {session_id} and action {action_id}")
+                    
+        except Exception as e:
+            print(f"Error updating parking session: {str(e)}")
 
     def _store_log_locally(self, lane, data, entry_type, existing_image_path=None):
         """Store log locally when API fails"""
@@ -1129,49 +1129,18 @@ class ControlScreen(QWidget):
             
             print(f"Stored log entry locally with ID {log_id} (needs syncing)")
             
-            # Handle vehicle entry/exit specific logic
-            if entry_type in ('auto', 'manual'):
-                # Create or ensure vehicle exists
-                vehicle_id = db_manager.add_vehicle(data.get('text', 'N/A'), False)
-                
-                # For entry lane, start a parking session
-                if lane == 'entry':
-                    session_id = db_manager.start_parking_session(
-                        plate_id=data.get('text', 'N/A'),
-                        lot_id=LOT_ID,
-                        entry_confidence=data.get('confidence', 0.0),
-                        entry_img=image_path
-                    )
-                    
-                    # Record barrier action
-                    if session_id:
-                        action_id = db_manager.add_barrier_action(
-                            session_id=session_id,
-                            action_type='entry',
-                            trigger_type=entry_type
-                        )
-                        print(f"Created local entry session {session_id} and action {action_id}")
-                
-                # For exit lane, end an existing parking session
-                elif lane == 'exit':
-                    session_id = db_manager.end_parking_session(
-                        plate_id=data.get('text', 'N/A'),
-                        lot_id=LOT_ID,
-                        exit_confidence=data.get('confidence', 0.0),
-                        exit_img=image_path
-                    )
-                    
-                    # Record barrier action
-                    if session_id:
-                        action_id = db_manager.add_barrier_action(
-                            session_id=session_id,
-                            action_type='exit',
-                            trigger_type=entry_type
-                        )
-                        print(f"Completed local exit session {session_id} and action {action_id}")
+            # Handle parking session
+            self._create_or_update_parking_session(
+                lane, data.get('text', 'N/A'), 
+                data.get('confidence', 0.0), entry_type, image_path
+            )
+            
+            # Return the image path so it can be used by the caller
+            return image_path
             
         except Exception as e:
             print(f"Error storing log locally: {str(e)}")
+            return None
 
     def _add_log_entry(self, data):
         """Add a new entry to the log area"""

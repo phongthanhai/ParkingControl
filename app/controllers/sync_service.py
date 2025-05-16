@@ -130,11 +130,17 @@ class SyncWorker(QThread):
             
             # Process each log
             synced_count = 0
+            failed_count = 0
             for i, log in enumerate(filtered_logs):
                 if not self._running or self._paused:
                     break
                 
                 try:
+                    # Check if this log is already marked as synced
+                    if log.get('synced', 0) == 1:
+                        print(f"Skipping log {log['id']} as it's already marked as synced")
+                        continue
+                        
                     # Prepare form data
                     form_data = {
                         'plate_id': log['plate_id'],
@@ -158,6 +164,8 @@ class SyncWorker(QThread):
                             files = {
                                 'image': ('frame.png', img_bytes, 'image/png')
                             }
+                        else:
+                            print(f"Image for log {log['id']} couldn't be read, sending without image")
                     
                     # Send to API - guard-control endpoint handles everything
                     print(f"Sending log {log['id']} to API...")
@@ -169,11 +177,13 @@ class SyncWorker(QThread):
                     )
                     
                     if success:
-                        # Mark as synced
+                        # Mark as synced in a separate transaction to ensure status is updated
+                        # even if other logs fail
                         self.db_manager.mark_log_synced(log['id'])
                         synced_count += 1
                         print(f"Successfully synced log {log['id']}")
                     else:
+                        failed_count += 1
                         print(f"Failed to sync log {log['id']}: {response}")
                     
                     # Update progress (ensure we report accurate progress)
@@ -184,14 +194,19 @@ class SyncWorker(QThread):
                     time.sleep(0.1)
                     
                 except Exception as e:
+                    failed_count += 1
                     print(f"Error syncing log {log['id']}: {str(e)}")
             
             # Always emit final progress at 100%
             if total_logs > 0:
                 self.sync_progress.emit("logs", total_logs, total_logs)
                 
-            self.sync_complete.emit("logs", synced_count > 0, 
-                                   f"Synced {synced_count}/{total_logs} log entries")
+            # Show detailed summary
+            result_message = f"Synced {synced_count}/{total_logs} log entries"
+            if failed_count > 0:
+                result_message += f" ({failed_count} failed)"
+                
+            self.sync_complete.emit("logs", synced_count > 0, result_message)
                                    
         except Exception as e:
             self.sync_complete.emit("logs", False, f"Log sync error: {str(e)}")
@@ -366,8 +381,14 @@ class SyncService(QObject):
                 
                 # Process each log
                 synced_count = 0
+                failed_count = 0
                 for i, log in enumerate(filtered_logs):
                     try:
+                        # Check if this log is already marked as synced
+                        if log.get('synced', 0) == 1:
+                            print(f"Skipping log {log['id']} as it's already marked as synced")
+                            continue
+                            
                         # Prepare form data
                         form_data = {
                             'plate_id': log['plate_id'],
@@ -391,6 +412,8 @@ class SyncService(QObject):
                                 files = {
                                     'image': ('frame.png', img_bytes, 'image/png')
                                 }
+                            else:
+                                print(f"Image for log {log['id']} couldn't be read, sending without image")
                         
                         # Send to API - guard-control endpoint handles everything
                         print(f"Sending log {log['id']} to API...")
@@ -402,11 +425,12 @@ class SyncService(QObject):
                         )
                         
                         if success:
-                            # Mark as synced
+                            # Mark as synced in a separate transaction
                             self.db_manager.mark_log_synced(log['id'])
                             synced_count += 1
                             print(f"Successfully synced log {log['id']}")
                         else:
+                            failed_count += 1
                             print(f"Failed to sync log {log['id']}: {response}")
                         
                         # Update progress
@@ -414,15 +438,21 @@ class SyncService(QObject):
                         self.sync_progress.emit("logs", progress, total_logs)
                         
                     except Exception as e:
+                        failed_count += 1
                         print(f"Error syncing log {log['id']}: {str(e)}")
                 
                 # Always emit final progress at 100%
                 if total_logs > 0:
                     self.sync_progress.emit("logs", total_logs, total_logs)
                 
+                # Show detailed result
+                result_message = f"Synced {synced_count}/{total_logs} logs"
+                if failed_count > 0:
+                    result_message += f" ({failed_count} failed)"
+                
                 if synced_count > 0:
                     self.sync_status_changed.emit("logs", SyncStatus.SUCCESS)
-                    print(f"Successfully synced {synced_count}/{total_logs} logs")
+                    print(f"Successfully {result_message}")
                 else:
                     self.sync_status_changed.emit("logs", SyncStatus.FAILED)
                     print(f"Failed to sync any logs")

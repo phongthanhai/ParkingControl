@@ -182,25 +182,30 @@ class ParkingSystem(QMainWindow):
         
         # Check if this entry has already been stored locally
         if log_data.get('stored_locally', False):
-            print(f"Skipping duplicate database entry - log for {log_data.get('plate')} already stored locally")
+            print(f"Entry for {log_data.get('plate')} already stored in database, only updating sync service")
+            # In this case, the control screen already stored it in the database,
+            # so we just need to ensure the sync service knows about it 
+            self.update_sync_counts()
             return
             
         # Store in local DB for sync later
         try:
-            db_manager = DBManager()
             # Only store auto and manual entries (not blacklist or skipped)
             entry_type = log_data.get('type')
             if entry_type in ('auto', 'manual'):
-                image_path = None
-                # If there's an image, it should already be saved by the control screen
+                db_manager = DBManager()
+                # Store in the database with a transaction to prevent duplication
                 db_manager.add_log_entry(
                     lane=log_data.get('lane'),
                     plate_id=log_data.get('plate', 'N/A'),
                     confidence=log_data.get('confidence', 0.0), 
                     entry_type=entry_type,
-                    image_path=image_path
+                    image_path=log_data.get('image_path')
                 )
                 print(f"Stored log entry in local DB for sync: {log_data.get('plate')}")
+                
+                # Update sync counts in UI if available
+                self.update_sync_counts()
         except Exception as e:
             print(f"Error handling log entry for sync: {str(e)}")
     

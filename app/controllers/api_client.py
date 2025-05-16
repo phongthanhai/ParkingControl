@@ -127,6 +127,10 @@ class ApiClient:
                 self.auth_manager.access_token = data['access_token']
                 self.auth_manager.token_type = data['token_type']
                 
+                # Store credentials for reconnection
+                self.auth_manager.username = username
+                self.auth_manager.password = password
+                
                 # Store user information
                 self.user_id = data.get('user_id')
                 self.user_role = data.get('user_role')

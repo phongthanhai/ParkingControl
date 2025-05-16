@@ -45,7 +45,6 @@ class SyncStatusWidget(QWidget):
                 border-radius: 8px;
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                                           stop:0 #f5f7fa, stop:1 #e4e8f0);
-                box-shadow: 0px 2px 5px rgba(0, 0, 0, 0.1);
             }
         """)
         

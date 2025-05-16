@@ -313,8 +313,48 @@ class SyncService(QObject):
     def reconnect(self):
         """Manually attempt to reconnect to the API"""
         self.api_retry_count = 0
-        self.check_api_connection()
-        return self.api_available
+        
+        # First try to check if server is available
+        api_check_timeout = (2.0, 3.0)
+        try:
+            # Use the dedicated health check endpoint (doesn't require auth)
+            success, _ = self.api_client.get('services/health', timeout=api_check_timeout, auth_required=False)
+            
+            if success:
+                # Server is up, now check if token has expired by making an authenticated request
+                auth_success, _ = self.api_client.get('services/lot-occupancy/1', timeout=api_check_timeout)
+                
+                # If auth failed but server is up, we need to refresh token
+                if not auth_success:
+                    print("API is available but authentication failed. Token may have expired.")
+                    # Check if auth_manager has stored credentials
+                    from app.utils.auth_manager import AuthManager
+                    auth_manager = AuthManager()
+                    
+                    # If we have stored credentials, try to login again
+                    if hasattr(auth_manager, 'username') and hasattr(auth_manager, 'password'):
+                        print("Attempting to refresh authentication token...")
+                        login_success, _, _ = self.api_client.login(
+                            auth_manager.username, 
+                            auth_manager.password,
+                            timeout=(3.0, 5.0)
+                        )
+                        if login_success:
+                            print("Authentication token refreshed successfully")
+                            self.api_available = True
+                            self.check_api_connection()  # Update status after token refresh
+                            return True
+                        else:
+                            print("Failed to refresh authentication token")
+                            return False
+            
+            # Standard connection check if token refresh wasn't needed or possible
+            self.check_api_connection()
+            return self.api_available
+            
+        except Exception as e:
+            print(f"Reconnection error: {str(e)}")
+            return False
     
     def get_pending_sync_counts(self):
         """Get counts of pending items for each sync category."""

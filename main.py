@@ -143,6 +143,10 @@ class ParkingSystem(QMainWindow):
                 self.control_screen.sync_status_widget.refresh_requested.connect(
                     self.update_sync_counts)
                 
+                # Connect log signal from control screen to handle log entries for sync
+                print("Connecting control_screen.log_signal to sync_service")
+                self.control_screen.log_signal.connect(self.handle_log_entry)
+                
                 # Initial status update
                 self.control_screen.sync_status_widget.set_connection_status(
                     self.sync_service.api_available)
@@ -164,6 +168,28 @@ class ParkingSystem(QMainWindow):
             counts = self.sync_service.get_pending_sync_counts()
             self.control_screen.sync_status_widget.update_pending_counts(counts)
         
+    def handle_log_entry(self, log_data):
+        """Handle log entries sent from control screen for synchronization"""
+        print(f"Received log entry for sync: {log_data.get('plate')} - {log_data.get('type')}")
+        # Store in local DB for sync later
+        try:
+            db_manager = DBManager()
+            # Only store auto and manual entries (not blacklist or skipped)
+            entry_type = log_data.get('type')
+            if entry_type in ('auto', 'manual'):
+                image_path = None
+                # If there's an image, it should already be saved by the control screen
+                db_manager.add_log_entry(
+                    lane=log_data.get('lane'),
+                    plate_id=log_data.get('plate', 'N/A'),
+                    confidence=log_data.get('confidence', 0.0), 
+                    entry_type=entry_type,
+                    image_path=image_path
+                )
+                print(f"Stored log entry in local DB for sync: {log_data.get('plate')}")
+        except Exception as e:
+            print(f"Error handling log entry for sync: {str(e)}")
+    
     def closeEvent(self, event):
         """Handle application close properly"""
         try:
@@ -174,6 +200,12 @@ class ParkingSystem(QMainWindow):
             # Close database connection
             db_manager = DBManager()
             db_manager.close()
+            
+            # Clear blacklist logs if control screen exists
+            if hasattr(self, 'control_screen') and self.control_screen:
+                if hasattr(self.control_screen, 'local_blacklist_logs'):
+                    self.control_screen.local_blacklist_logs = []
+                    print("Cleared temporary blacklist logs on application close")
             
             # Stop timers
             if hasattr(self, 'db_check_timer'):

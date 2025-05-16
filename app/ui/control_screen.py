@@ -203,6 +203,10 @@ class ControlScreen(QWidget):
         
         self.local_blacklist_logs = []
         
+        # Connect log_signal for sync service
+        # This signal will be captured by SyncService to handle log synchronization
+        print("Setting up log_signal for sync service")
+        
         self._setup_gpio()
         self._setup_ui()
         
@@ -878,41 +882,17 @@ class ControlScreen(QWidget):
             }
             print(f"Log entry created: {log_data}")
             
-            # Store denied-blacklist entries locally
+            # Store denied-blacklist entries locally only in UI, not in DB
             if entry_type == "denied-blacklist":
-                # Store a copy of the log data
+                # Store a copy of the log data in memory only
                 self.local_blacklist_logs.append(log_data.copy())
                 
                 # Add entry to the log table only locally - don't send to API
                 self._add_log_entry(log_data)
+                print("Blacklisted vehicle entry - stored only in local UI, not sending to server")
                 
-                # Initialize local storage for blacklist entries
-                try:
-                    # Save image if available
-                    db_manager = DBManager()
-                    image_storage = ImageStorage()
-                    
-                    image_path = None
-                    if data.get('image') is not None:
-                        image_path = image_storage.save_image(
-                            data.get('image'), 
-                            lane, 
-                            data.get('text', 'N/A'), 
-                            entry_type
-                        )
-                    
-                    # Store log in local database
-                    db_manager.add_log_entry(
-                        lane=lane,
-                        plate_id=data.get('text', 'N/A'),
-                        confidence=data.get('confidence', 0.0),
-                        entry_type=entry_type,
-                        image_path=image_path
-                    )
-                except Exception as e:
-                    print(f"Error storing blacklist entry locally: {str(e)}")
-                
-                # Return early - no API call for blacklist entries
+                # No need to store blacklist entries in local DB for sync
+                # We only want to show them in the UI during the current session
                 return
             
             # Skip API logging for skipped entries - only add to local UI
@@ -922,6 +902,7 @@ class ControlScreen(QWidget):
                 return
             
             # Emit signal for any listeners (this is used by sync service)
+            print(f"Emitting log_signal for {entry_type} entry: {log_data.get('plate')}")
             self.log_signal.emit(log_data)
             
             # Add entry to the log table
@@ -953,7 +934,8 @@ class ControlScreen(QWidget):
                         plate_id=data.get('text', 'N/A'),
                         confidence=data.get('confidence', 0.0),
                         entry_type=entry_type,
-                        image_path=image_path
+                        image_path=image_path,
+                        synced=False
                     )
                     
                     print(f"Stored log entry locally with ID {log_id}")
@@ -1032,7 +1014,8 @@ class ControlScreen(QWidget):
                     # Use a reasonable timeout for log submissions since they include image data
                     log_timeout = (5.0, 15.0)  # 5s connect, 15s read
                     
-                    # Send to API
+                    # Try making a direct API call with more debugging
+                    print(f"Making direct API call to services/guard-control/ for {lane} lane, {entry_type} type")
                     success, response = self.api_client.post_with_files(
                         'services/guard-control/',
                         data=form_data,

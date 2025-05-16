@@ -126,6 +126,7 @@ class SyncWorker(QThread):
                 
             total_logs = len(filtered_logs)
             self.sync_progress.emit("logs", 0, total_logs)
+            print(f"Starting to sync {total_logs} logs to server...")
             
             # Process each log
             synced_count = 0
@@ -143,12 +144,15 @@ class SyncWorker(QThread):
                         'timestamp': log['timestamp']
                     }
                     
+                    print(f"Syncing log {log['id']}: {log['plate_id']} - {log['lane']} - {log['type']}") 
+                    
                     # Handle image if available
                     files = None
                     if log['image_path'] and os.path.exists(log['image_path']):
                         # Read image and convert to bytes
                         img = cv2.imread(log['image_path'])
                         if img is not None:
+                            print(f"Found image for log {log['id']}, adding to sync")
                             _, img_encoded = cv2.imencode('.png', img)
                             img_bytes = img_encoded.tobytes()
                             files = {
@@ -156,6 +160,7 @@ class SyncWorker(QThread):
                             }
                     
                     # Send to API - guard-control endpoint handles everything
+                    print(f"Sending log {log['id']} to API...")
                     success, response = self.api_client.post_with_files(
                         'services/guard-control/',
                         data=form_data,
@@ -167,6 +172,7 @@ class SyncWorker(QThread):
                         # Mark as synced
                         self.db_manager.mark_log_synced(log['id'])
                         synced_count += 1
+                        print(f"Successfully synced log {log['id']}")
                     else:
                         print(f"Failed to sync log {log['id']}: {response}")
                     
@@ -360,10 +366,27 @@ class SyncService(QObject):
         """Get counts of pending items for each sync category."""
         # Filter to count only auto and manual entries (not blacklist or skipped)
         try:
+            # Get raw DB counts first for debugging
+            raw_count = self.db_manager.get_log_entry_count()
+            unsynced_count = self.db_manager.get_log_entry_count(only_unsynced=True)
+            print(f"Database stats - Total logs: {raw_count}, Unsynced logs: {unsynced_count}")
+            
+            # Get detailed logs for filtering
             unsynced_logs = self.db_manager.get_unsynced_logs(limit=1000)
+            if unsynced_logs:
+                print(f"Found {len(unsynced_logs)} unsynced logs in the database")
+                for idx, log in enumerate(unsynced_logs[:5]):  # Just print first 5 for diagnostics
+                    print(f"  Log {idx+1}: ID={log.get('id')}, Type={log.get('type')}, Plate={log.get('plate_id')}")
+                if len(unsynced_logs) > 5:
+                    print(f"  ... and {len(unsynced_logs)-5} more")
+            else:
+                print("No unsynced logs found in the database")
+                
             filtered_logs = [log for log in unsynced_logs 
                            if log['type'] in ('auto', 'manual')]
             total = len(filtered_logs)
+            
+            print(f"After filtering for auto/manual entries: {total} logs need to be synced")
             
             return {
                 "logs": total,

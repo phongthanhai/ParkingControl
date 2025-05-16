@@ -240,15 +240,31 @@ class DBManager:
             return []
     
     # Log methods
-    def add_log_entry(self, lane, plate_id, confidence, entry_type, image_path=None):
+    def add_log_entry(self, lane, plate_id, confidence, entry_type, image_path=None, synced=False):
         """Add a log entry to the local database."""
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
-            cursor.execute(
-                'INSERT INTO local_log (lane, plate_id, confidence, type, image_path) VALUES (?, ?, ?, ?, ?)',
-                (lane, plate_id, confidence, entry_type, image_path)
-            )
+            # Debug print to show what we're adding
+            print(f"Adding log entry to database: {lane}, {plate_id}, {entry_type}, synced={synced}")
+            
+            # Check if synced parameter is supported in the current schema
+            try:
+                cursor.execute(
+                    'INSERT INTO local_log (lane, plate_id, confidence, type, image_path, synced) VALUES (?, ?, ?, ?, ?, ?)',
+                    (lane, plate_id, confidence, entry_type, image_path, 1 if synced else 0)
+                )
+            except sqlite3.OperationalError as e:
+                if "no such column" in str(e).lower() and "synced" in str(e).lower():
+                    # Handle older schema without synced column
+                    print("Using legacy schema without synced column")
+                    cursor.execute(
+                        'INSERT INTO local_log (lane, plate_id, confidence, type, image_path) VALUES (?, ?, ?, ?, ?)',
+                        (lane, plate_id, confidence, entry_type, image_path)
+                    )
+                else:
+                    raise e
+                    
             conn.commit()
             return cursor.lastrowid
         except Exception as e:
@@ -256,6 +272,30 @@ class DBManager:
             if conn:
                 conn.rollback()
             return None
+    
+    def get_log_entry_count(self, only_unsynced=False):
+        """Get count of log entries, optionally only unsynced ones."""
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            if only_unsynced:
+                try:
+                    cursor.execute('SELECT COUNT(*) as count FROM local_log WHERE synced = 0')
+                except sqlite3.OperationalError as e:
+                    if "no such column" in str(e).lower() and "synced" in str(e).lower():
+                        # Fall back to counting all logs if synced column doesn't exist
+                        cursor.execute('SELECT COUNT(*) as count FROM local_log')
+                    else:
+                        raise e
+            else:
+                cursor.execute('SELECT COUNT(*) as count FROM local_log')
+            
+            result = cursor.fetchone()
+            return result['count'] if result else 0
+        except Exception as e:
+            print(f"Error getting log count: {str(e)}")
+            return 0
     
     def get_recent_logs(self, limit=100):
         """Get recent log entries."""

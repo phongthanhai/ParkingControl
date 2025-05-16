@@ -6,6 +6,7 @@ from PyQt5.QtGui import QIcon, QFont, QColor
 class SyncStatusWidget(QWidget):
     """Widget that displays synchronization status and controls for offline mode."""
     sync_requested = pyqtSignal()
+    refresh_requested = pyqtSignal()  # Define the signal inside the class
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -179,7 +180,4 @@ class SyncStatusWidget(QWidget):
     
     def update_requested(self):
         """Signal that we need updated counts."""
-        self.refresh_requested.emit()
-
-# Connect a signal after defining it
-SyncStatusWidget.refresh_requested = pyqtSignal() 
+        self.refresh_requested.emit() 

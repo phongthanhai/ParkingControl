@@ -30,102 +30,124 @@ class DBManager:
             
             # Check if tables already exist
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sync_status'")
-            if cursor.fetchone() is not None:
-                return  # Database already initialized
+            tables_exist = cursor.fetchone() is not None
             
-            # Create vehicle table
-            cursor.execute('''
-                CREATE TABLE vehicle (
-                    plate_id TEXT PRIMARY KEY,
-                    is_blacklisted INTEGER DEFAULT 0 NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    synced INTEGER DEFAULT 0
-                )
-            ''')
-            
-            # Create parking_lot table
-            cursor.execute('''
-                CREATE TABLE parking_lot (
-                    id INTEGER PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    capacity INTEGER NOT NULL CHECK (capacity > 0),
-                    location TEXT NOT NULL,
-                    synced INTEGER DEFAULT 1
-                )
-            ''')
-            
-            # Create parking_session table
-            cursor.execute('''
-                CREATE TABLE parking_session (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    plate_id TEXT NOT NULL,
-                    lot_id INTEGER NOT NULL,
-                    entry_time TIMESTAMP NOT NULL,
-                    entry_img TEXT,
-                    entry_confidence REAL,
-                    exit_time TIMESTAMP,
-                    exit_img TEXT,
-                    exit_confidence REAL,
-                    status TEXT DEFAULT 'pending' CHECK (
-                        status IN ('pending', 'finished')
-                    ),
-                    synced INTEGER DEFAULT 0,
-                    remote_id INTEGER DEFAULT NULL,
-                    FOREIGN KEY (plate_id) REFERENCES vehicle(plate_id),
-                    FOREIGN KEY (lot_id) REFERENCES parking_lot(id)
-                )
-            ''')
-            
-            # Create barrier_action table
-            cursor.execute('''
-                CREATE TABLE barrier_action (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id INTEGER,
-                    action_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    action_type TEXT CHECK (action_type IN ('entry', 'exit')),
-                    trigger_type TEXT CHECK (trigger_type IN ('auto', 'manual')),
-                    synced INTEGER DEFAULT 0,
-                    remote_id INTEGER DEFAULT NULL,
-                    FOREIGN KEY (session_id) REFERENCES parking_session(id)
-                )
-            ''')
-            
-            # Create sync_status table to track last sync times
-            cursor.execute('''
-                CREATE TABLE sync_status (
-                    table_name TEXT PRIMARY KEY,
-                    last_sync_time TIMESTAMP DEFAULT 0
-                )
-            ''')
-            
-            # Insert initial sync_status records
-            tables = ['vehicle', 'parking_session', 'barrier_action']
-            for table in tables:
-                cursor.execute('INSERT INTO sync_status (table_name) VALUES (?)', (table,))
-            
-            # Create local_log table for activity tracking
-            cursor.execute('''
-                CREATE TABLE local_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    lane TEXT NOT NULL,
-                    plate_id TEXT NOT NULL,
-                    confidence REAL,
-                    type TEXT NOT NULL,
-                    synced INTEGER DEFAULT 0,
-                    image_path TEXT
-                )
-            ''')
-            
-            # Create an index for sync status
-            cursor.execute('CREATE INDEX idx_vehicle_sync ON vehicle(synced)')
-            cursor.execute('CREATE INDEX idx_session_sync ON parking_session(synced)')
-            cursor.execute('CREATE INDEX idx_action_sync ON barrier_action(synced)')
-            cursor.execute('CREATE INDEX idx_log_sync ON local_log(synced)')
-            
-            conn.commit()
-            print("Database initialized successfully")
-            
+            if not tables_exist:
+                print("Initializing database schema...")
+                
+                # Create vehicle table
+                cursor.execute('''
+                    CREATE TABLE vehicle (
+                        plate_id TEXT PRIMARY KEY,
+                        is_blacklisted INTEGER DEFAULT 0 NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        synced INTEGER DEFAULT 0
+                    )
+                ''')
+                
+                # Create parking_lot table
+                cursor.execute('''
+                    CREATE TABLE parking_lot (
+                        id INTEGER PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        capacity INTEGER NOT NULL CHECK (capacity > 0),
+                        location TEXT NOT NULL,
+                        synced INTEGER DEFAULT 1
+                    )
+                ''')
+                
+                # Create parking_session table
+                cursor.execute('''
+                    CREATE TABLE parking_session (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        plate_id TEXT NOT NULL,
+                        lot_id INTEGER NOT NULL,
+                        entry_time TIMESTAMP NOT NULL,
+                        entry_img TEXT,
+                        entry_confidence REAL,
+                        exit_time TIMESTAMP,
+                        exit_img TEXT,
+                        exit_confidence REAL,
+                        status TEXT DEFAULT 'pending' CHECK (
+                            status IN ('pending', 'finished')
+                        ),
+                        synced INTEGER DEFAULT 0,
+                        remote_id INTEGER DEFAULT NULL,
+                        FOREIGN KEY (plate_id) REFERENCES vehicle(plate_id),
+                        FOREIGN KEY (lot_id) REFERENCES parking_lot(id)
+                    )
+                ''')
+                
+                # Create barrier_action table
+                cursor.execute('''
+                    CREATE TABLE barrier_action (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id INTEGER,
+                        action_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        action_type TEXT CHECK (action_type IN ('entry', 'exit')),
+                        trigger_type TEXT CHECK (trigger_type IN ('auto', 'manual')),
+                        synced INTEGER DEFAULT 0,
+                        remote_id INTEGER DEFAULT NULL,
+                        FOREIGN KEY (session_id) REFERENCES parking_session(id)
+                    )
+                ''')
+                
+                # Create sync_status table to track last sync times
+                cursor.execute('''
+                    CREATE TABLE sync_status (
+                        table_name TEXT PRIMARY KEY,
+                        last_sync_time TIMESTAMP DEFAULT 0
+                    )
+                ''')
+                
+                # Insert initial sync_status records
+                tables = ['vehicle', 'parking_session', 'barrier_action']
+                for table in tables:
+                    cursor.execute('INSERT INTO sync_status (table_name) VALUES (?)', (table,))
+                
+                # Create local_log table for activity tracking with synced column
+                cursor.execute('''
+                    CREATE TABLE local_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        lane TEXT NOT NULL,
+                        plate_id TEXT NOT NULL,
+                        confidence REAL,
+                        type TEXT NOT NULL,
+                        synced INTEGER DEFAULT 0,
+                        image_path TEXT
+                    )
+                ''')
+                
+                # Create an index for sync status
+                cursor.execute('CREATE INDEX idx_vehicle_sync ON vehicle(synced)')
+                cursor.execute('CREATE INDEX idx_session_sync ON parking_session(synced)')
+                cursor.execute('CREATE INDEX idx_action_sync ON barrier_action(synced)')
+                cursor.execute('CREATE INDEX idx_log_sync ON local_log(synced)')
+                
+                conn.commit()
+                print("Database initialized successfully")
+            else:
+                # Check if local_log table has synced column
+                try:
+                    cursor.execute("PRAGMA table_info(local_log)")
+                    columns = cursor.fetchall()
+                    column_names = [col[1] for col in columns]
+                    
+                    # If synced column doesn't exist, add it
+                    if 'synced' not in column_names:
+                        print("Adding synced column to local_log table...")
+                        cursor.execute("ALTER TABLE local_log ADD COLUMN synced INTEGER DEFAULT 0")
+                        conn.commit()
+                        print("Added synced column to local_log table")
+                        
+                        # Create index for the new column
+                        cursor.execute('CREATE INDEX IF NOT EXISTS idx_log_sync ON local_log(synced)')
+                        conn.commit()
+                        print("Created index for synced column")
+                except Exception as e:
+                    print(f"Error checking or updating local_log table: {str(e)}")
+                    
         except Exception as e:
             print(f"Database initialization error: {str(e)}")
             if conn:

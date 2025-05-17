@@ -566,8 +566,9 @@ class DBManager:
             conn = self._get_connection()
             cursor = conn.cursor()
             
-            # Try to get capacity from API first
-            capacity = self._get_lot_capacity_from_api(lot_id)
+            # Get capacity from config directly, no API call needed for offline use
+            from config import LOT_CAPACITY
+            capacity = LOT_CAPACITY
                 
             # Count active sessions
             cursor.execute(

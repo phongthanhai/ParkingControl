@@ -138,10 +138,6 @@ class ParkingSystem(QMainWindow):
                 self.control_screen.sync_status_widget.reconnect_requested.connect(
                     self.handle_reconnect_request)
                 
-                # Connect sync button
-                self.control_screen.sync_status_widget.sync_requested.connect(
-                    lambda: self.sync_service.sync_now())
-                
                 # Connect refresh request
                 self.control_screen.sync_status_widget.refresh_requested.connect(
                     self.update_sync_counts)

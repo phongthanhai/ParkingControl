@@ -267,7 +267,7 @@ class SyncService(QObject):
         self.max_api_retries = 3
         self.last_sync_attempt = 0
         self.sync_cooldown = 60  # seconds between sync attempts
-        self.auto_reconnect = False  # Don't automatically reconnect
+        self.auto_reconnect = True  # Automatically reconnect and sync when API is available
         
         # Set up background sync worker
         self.sync_worker = SyncWorker(self)
@@ -313,6 +313,13 @@ class SyncService(QObject):
                 self.api_status_changed.emit(True)
                 print("API connection restored, resuming sync operations")
                 self.sync_worker.resume()
+                
+                # Auto-sync when connection is restored
+                if self.auto_reconnect:
+                    print("Auto-syncing after connection restored...")
+                    # Use a slight delay to allow UI to update first
+                    QTimer.singleShot(1000, self.sync_now)
+                    
             elif not success and self.api_available:
                 self.api_retry_count += 1
                 if self.api_retry_count >= self.max_api_retries:

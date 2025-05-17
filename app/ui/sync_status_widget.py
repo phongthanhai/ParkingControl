@@ -1,11 +1,10 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                             QPushButton, QProgressBar, QFrame)
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QIcon, QFont, QColor
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QSize
+from PyQt5.QtGui import QIcon, QFont, QColor, QMovie
 
 class SyncStatusWidget(QWidget):
     """Widget that displays synchronization status and controls for offline mode."""
-    sync_requested = pyqtSignal()
     refresh_requested = pyqtSignal()  # Define the signal inside the class
     reconnect_requested = pyqtSignal()  # Signal for manual reconnection
     
@@ -111,10 +110,41 @@ class SyncStatusWidget(QWidget):
         self.reconnect_button.setVisible(False)
         self.reconnect_button.clicked.connect(self.request_reconnect)
         
+        # Add sync status indicator next to connection status
+        self.sync_spinner_label = QLabel()
+        try:
+            self.spinner_movie = QMovie("app/resources/loading_spinner.gif")
+            self.spinner_movie.setScaledSize(QSize(16, 16))
+            self.sync_spinner_label.setMovie(self.spinner_movie)
+        except Exception as e:
+            print(f"Failed to load spinner GIF: {str(e)}")
+            # Fallback to a colored indicator
+            self.sync_spinner_label.setFixedSize(16, 16)
+            self.sync_spinner_label.setStyleSheet("background-color: #3bafda; border-radius: 8px;")
+        self.sync_spinner_label.setVisible(False)
+        
+        self.sync_status_indicator = QLabel()
+        self.sync_status_indicator.setFixedSize(16, 16)
+        self.sync_status_indicator.setStyleSheet("""
+            background-color: #a0d468; 
+            border-radius: 8px;
+            border: 1px solid #8cc152;
+        """)
+        self.sync_status_indicator.setVisible(False)
+        
+        self.sync_status_text = QLabel("Syncing...")
+        self.sync_status_text.setStyleSheet("color: #3bafda; font-weight: bold;")
+        self.sync_status_text.setVisible(False)
+        
         status_layout.addWidget(status_label)
         status_layout.addWidget(self.connection_indicator)
         status_layout.addWidget(self.connection_status)
         status_layout.addWidget(self.reconnect_button)
+        
+        status_layout.addSpacing(10)
+        status_layout.addWidget(self.sync_spinner_label)
+        status_layout.addWidget(self.sync_status_indicator)
+        status_layout.addWidget(self.sync_status_text)
         status_layout.addStretch()
         
         container_layout.addLayout(status_layout)
@@ -190,31 +220,6 @@ class SyncStatusWidget(QWidget):
         
         container_layout.addWidget(self.completion_frame)
         
-        # Sync button with enhanced style
-        self.sync_button = QPushButton("Sync Now")
-        self.sync_button.setStyleSheet("""
-            QPushButton {
-                background-color: #3bafda;
-                color: white;
-                padding: 10px;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #4fc1e9;
-            }
-            QPushButton:pressed {
-                background-color: #3a9fbf;
-            }
-            QPushButton:disabled {
-                background-color: #aab2bd;
-            }
-        """)
-        self.sync_button.clicked.connect(self.request_sync)
-        container_layout.addWidget(self.sync_button)
-        
         layout.addWidget(container)
         
         # Set fixed width for the widget
@@ -230,8 +235,10 @@ class SyncStatusWidget(QWidget):
             """)
             self.connection_status.setText("Connected")
             self.connection_status.setStyleSheet("color: #8cc152; font-weight: bold;")
-            self.sync_button.setEnabled(True)
             self.reconnect_button.setVisible(False)
+            
+            # Hide sync indicators when connected
+            self.hide_sync_indicators()
         else:
             self.connection_indicator.setStyleSheet("""
                 background-color: #ed5565; 
@@ -240,8 +247,10 @@ class SyncStatusWidget(QWidget):
             """)
             self.connection_status.setText("Disconnected")
             self.connection_status.setStyleSheet("color: #ed5565; font-weight: bold;")
-            self.sync_button.setEnabled(False)
             self.reconnect_button.setVisible(True)
+            
+            # Hide sync indicators when disconnected
+            self.hide_sync_indicators()
     
     def update_pending_counts(self, counts):
         """Update the pending counts display."""
@@ -282,37 +291,63 @@ class SyncStatusWidget(QWidget):
     def set_sync_progress(self, entity_type, completed, total):
         """Update the sync progress display."""
         if total > 0:
+            # Show spinner and status text
+            if not self.sync_spinner_label.isVisible():
+                self.sync_spinner_label.setVisible(True)
+                try:
+                    if hasattr(self, 'spinner_movie'):
+                        self.spinner_movie.start()
+                except Exception as e:
+                    print(f"Failed to start spinner animation: {str(e)}")
+            
+            self.sync_status_text.setText("Syncing...")
+            self.sync_status_text.setVisible(True)
+            self.sync_status_indicator.setVisible(False)
+            
+            # Update progress bar
             progress = int((completed / total) * 100)
             self.progress_bar.setValue(progress)
             self.progress_bar.setVisible(True)
             
-            # Update status message and button text
-            self.sync_status_label.setText(f"Syncing {entity_type}... ({completed}/{total})")
-            self.sync_status_label.setVisible(True)
-            
-            self.sync_button.setText(f"Syncing... {progress}%")
-            self.sync_button.setEnabled(False)
+            # Clear completion frame
+            self.completion_frame.setVisible(False)
         else:
-            self.progress_bar.setVisible(False)
-            self.sync_status_label.setVisible(False)
+            self.hide_sync_indicators()
     
     def sync_completed(self, success=True):
         """Reset the UI after sync completes."""
         # Hide progress indicators
         self.progress_bar.setVisible(False)
         self.sync_status_label.setVisible(False)
-        self.sync_button.setText("Sync Now")
-        self.sync_button.setEnabled(True)
+        
+        # Stop loading spinner
+        try:
+            if hasattr(self, 'spinner_movie') and self.spinner_movie.state() == QMovie.Running:
+                self.spinner_movie.stop()
+        except Exception as e:
+            print(f"Failed to stop spinner animation: {str(e)}")
+        self.sync_spinner_label.setVisible(False)
         
         # Show completion message
         if success:
+            # Get the count of synced records
+            synced_count = self.pending_counts.get("total", 0)
+            self.sync_status_text.setText(f"Synced {synced_count} logs")
+            self.sync_status_text.setVisible(True)
+            self.sync_status_indicator.setVisible(True)
+            
             self.completion_frame.setStyleSheet("""
                 background-color: #a0d468;
                 border-radius: 4px;
                 padding: 4px;
             """)
-            self.completion_label.setText("Sync completed successfully!")
+            self.completion_label.setText(f"Synced {synced_count} logs")
         else:
+            self.sync_status_text.setText("Sync failed")
+            self.sync_status_text.setStyleSheet("color: #ed5565; font-weight: bold;")
+            self.sync_status_text.setVisible(True)
+            self.sync_status_indicator.setVisible(False)
+            
             self.completion_frame.setStyleSheet("""
                 background-color: #ed5565;
                 border-radius: 4px;
@@ -337,31 +372,41 @@ class SyncStatusWidget(QWidget):
         """Hide the completion message."""
         self.completion_frame.setVisible(False)
     
-    def request_sync(self):
-        """Emit the sync_requested signal when the button is clicked."""
-        self.sync_requested.emit()
-        self.sync_button.setText("Preparing sync...")
-        self.sync_button.setEnabled(False)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setVisible(True)
+    def hide_sync_indicators(self):
+        """Hide all sync-related indicators."""
+        try:
+            if hasattr(self, 'spinner_movie') and self.spinner_movie.state() == QMovie.Running:
+                self.spinner_movie.stop()
+        except Exception as e:
+            print(f"Failed to stop spinner animation: {str(e)}")
+        self.sync_spinner_label.setVisible(False)
+        self.sync_status_text.setVisible(False)
+        self.sync_status_indicator.setVisible(False)
+        self.progress_bar.setVisible(False)
         
-        # Clear any previous completion message
-        self.completion_frame.setVisible(False)
+        # Reset styles
+        self.sync_status_text.setStyleSheet("color: #3bafda; font-weight: bold;")
     
     def request_reconnect(self):
-        """Emit the reconnect_requested signal."""
+        """Emit the reconnect_requested signal when the button is clicked."""
         self.reconnect_requested.emit()
-        self.reconnect_button.setText("Reconnecting...")
         self.reconnect_button.setEnabled(False)
+        self.reconnect_button.setText("Reconnecting...")
     
     def reconnect_result(self, success):
         """Handle the result of a reconnection attempt."""
-        if success:
-            self.reconnect_button.setVisible(False)
-        else:
-            self.reconnect_button.setText("Reconnect")
-            self.reconnect_button.setEnabled(True)
+        self.reconnect_button.setEnabled(True)
+        self.reconnect_button.setText("Reconnect")
+        
+        if not success:
+            # Show temporary error message
+            self.sync_status_text.setText("Reconnect failed")
+            self.sync_status_text.setStyleSheet("color: #ed5565; font-weight: bold;")
+            self.sync_status_text.setVisible(True)
+            
+            # Auto-hide after 3 seconds
+            QTimer.singleShot(3000, self.hide_sync_indicators)
     
     def update_requested(self):
-        """Signal that we need updated counts."""
+        """Emit the refresh_requested signal."""
         self.refresh_requested.emit() 

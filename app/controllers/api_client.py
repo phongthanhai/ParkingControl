@@ -206,12 +206,13 @@ class ApiClient:
             if response.status_code == 200:
                 return True, response.json()
             elif response.status_code == 401 and auth_required and retry_on_auth_fail:
-                print(f"Authentication failed for {url} - attempting to refresh token and retry")
+                # Only attempt token refresh if explicitly enabled and authentication is required
+                print(f"Authentication failed for {url} - token might be expired")
                 if self._refresh_token():
                     # Retry the request with the new token (but don't allow further retries to prevent loops)
                     return self.get(endpoint, params, timeout, auth_required, False)
                 else:
-                    return False, "Authentication failed and token refresh failed"
+                    return False, "Authentication failed"
             else:
                 try:
                     error_data = response.json()

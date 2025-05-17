@@ -161,56 +161,84 @@ class SyncWorker(QThread):
                     files = None
                     if log['image_path'] and os.path.exists(log['image_path']):
                         # Read image and convert to bytes
-                        img = cv2.imread(log['image_path'])
-                        if img is not None:
-                            print(f"Found image for log {log['id']}, adding to sync")
-                            _, img_encoded = cv2.imencode('.png', img)
-                            img_bytes = img_encoded.tobytes()
-                            files = {
-                                'image': ('frame.png', img_bytes, 'image/png')
-                            }
-                        else:
-                            print(f"Image for log {log['id']} couldn't be read, sending without image")
+                        try:
+                            img = cv2.imread(log['image_path'])
+                            if img is not None:
+                                print(f"Found image for log {log['id']}, adding to sync")
+                                _, img_encoded = cv2.imencode('.png', img)
+                                img_bytes = img_encoded.tobytes()
+                                files = {
+                                    'image': ('frame.png', img_bytes, 'image/png')
+                                }
+                            else:
+                                print(f"Image for log {log['id']} couldn't be read, sending without image")
+                        except Exception as img_err:
+                            print(f"Error processing image for log {log['id']}: {str(img_err)}")
+                            # Continue without the image rather than failing the sync
                     
+                    # Check if API is still available before attempting the call
+                    if not self.sync_service.api_available:
+                        print("API became unavailable during sync, aborting batch")
+                        break
+                        
                     # Send to API - guard-control endpoint handles everything
                     print(f"Sending log {log['id']} to API...")
-                    success, response = self.api_client.post_with_files(
-                        'services/guard-control/',
-                        data=form_data,
-                        files=files,
-                        timeout=(5.0, 15.0)
-                    )
-                    
-                    if success:
-                        # Mark as synced in a separate transaction to ensure status is updated
-                        # even if other logs fail
-                        self.db_manager.mark_log_synced(log['id'])
-                        synced_count += 1
-                        print(f"Successfully synced log {log['id']}")
-                    else:
+                    try:
+                        success, response = self.api_client.post_with_files(
+                            'services/guard-control/',
+                            data=form_data,
+                            files=files,
+                            timeout=(5.0, 15.0)
+                        )
+                        
+                        if success:
+                            # Mark as synced in a separate transaction to ensure status is updated
+                            # even if other logs fail
+                            self.db_manager.mark_log_synced(log['id'])
+                            synced_count += 1
+                            print(f"Successfully synced log {log['id']}")
+                        else:
+                            # Log failure but continue with next entries
+                            failed_count += 1
+                            # Check if this is an auth failure
+                            if isinstance(response, str) and "Authentication failed" in response:
+                                print(f"Authentication failed during sync, need to refresh token")
+                                # Force API check to run in the main thread
+                                self.sync_service.api_available = False
+                                self.sync_service.api_status_changed.emit(False)
+                                break
+                            print(f"Failed to sync log {log['id']}: {response}")
+                    except Exception as api_err:
                         failed_count += 1
-                        print(f"Failed to sync log {log['id']}: {response}")
+                        print(f"API error syncing log {log['id']}: {str(api_err)}")
+                        # Check for connection errors that indicate API is unavailable
+                        if "Connection" in str(api_err) or "timeout" in str(api_err).lower():
+                            print("Connection error detected, stopping sync batch")
+                            self.sync_service.api_available = False
+                            self.sync_service.api_status_changed.emit(False)
+                            break
                     
                     # Update progress (ensure we report accurate progress)
                     progress = i + 1
                     self.sync_progress.emit("logs", progress, total_logs)
                     
-                    # Small delay to prevent UI freezing
-                    time.sleep(0.1)
+                    # Small delay to prevent UI freezing and avoid overwhelming the server
+                    time.sleep(0.2)
                     
                 except Exception as e:
                     failed_count += 1
                     print(f"Error syncing log {log['id']}: {str(e)}")
+                    # Don't mark as synced on error, it will be retried next time
             
-            # Always emit final progress at 100%
-            if total_logs > 0:
-                self.sync_progress.emit("logs", total_logs, total_logs)
+            # Always emit final progress with the actual count
+            self.sync_progress.emit("logs", synced_count + failed_count, total_logs)
                 
             # Show detailed summary
             result_message = f"Synced {synced_count}/{total_logs} log entries"
             if failed_count > 0:
                 result_message += f" ({failed_count} failed)"
                 
+            # Only report success if we actually synced something
             self.sync_complete.emit("logs", synced_count > 0, result_message)
                                    
         except Exception as e:
@@ -358,9 +386,23 @@ class SyncService(QObject):
                 else:
                     self.sync_status_changed.emit("blacklist", SyncStatus.FAILED)
                     print(f"Failed to retrieve blacklist data: {response}")
+                    
+                    # Check if this is an authentication issue
+                    if isinstance(response, str) and "Authentication failed" in response:
+                        print("Authentication failed during blacklist sync")
+                        self.api_available = False
+                        self.api_status_changed.emit(False)
+                        return False
             except Exception as e:
                 self.sync_status_changed.emit("blacklist", SyncStatus.FAILED)
                 print(f"Blacklist sync error: {str(e)}")
+                
+                # Check for connection errors
+                if "Connection" in str(e) or "timeout" in str(e).lower():
+                    print("Connection error detected during blacklist sync")
+                    self.api_available = False
+                    self.api_status_changed.emit(False)
+                    return False
             
         if entity_type is None or entity_type == "logs":
             print("Manually syncing logs...")
@@ -415,53 +457,85 @@ class SyncService(QObject):
                         # Handle image if available
                         files = None
                         if log.get('image_path') and os.path.exists(log['image_path']):
-                            # Read image and convert to bytes
-                            img = cv2.imread(log['image_path'])
-                            if img is not None:
-                                print(f"Found image for log {log['id']}, adding to sync")
-                                _, img_encoded = cv2.imencode('.png', img)
-                                img_bytes = img_encoded.tobytes()
-                                files = {
-                                    'image': ('frame.png', img_bytes, 'image/png')
-                                }
-                            else:
-                                print(f"Image for log {log['id']} couldn't be read, sending without image")
+                            try:
+                                # Read image and convert to bytes
+                                img = cv2.imread(log['image_path'])
+                                if img is not None:
+                                    print(f"Found image for log {log['id']}, adding to sync")
+                                    _, img_encoded = cv2.imencode('.png', img)
+                                    img_bytes = img_encoded.tobytes()
+                                    files = {
+                                        'image': ('frame.png', img_bytes, 'image/png')
+                                    }
+                                else:
+                                    print(f"Image for log {log['id']} couldn't be read, sending without image")
+                            except Exception as img_err:
+                                print(f"Error processing image for log {log['id']}: {str(img_err)}")
+                                # Continue without the image rather than failing the sync
+                        
+                        # Check if API is still available
+                        if not self.api_available:
+                            print("API became unavailable during sync, aborting batch")
+                            break
                         
                         # Send to API - guard-control endpoint handles everything
                         print(f"Sending log {log['id']} to API...")
-                        success, response = self.api_client.post_with_files(
-                            'services/guard-control/',
-                            data=form_data,
-                            files=files,
-                            timeout=(5.0, 15.0)
-                        )
-                        
-                        if success:
-                            # Mark as synced in a separate transaction
-                            self.db_manager.mark_log_synced(log['id'])
-                            synced_count += 1
-                            print(f"Successfully synced log {log['id']}")
-                        else:
+                        try:
+                            success, response = self.api_client.post_with_files(
+                                'services/guard-control/',
+                                data=form_data,
+                                files=files,
+                                timeout=(5.0, 15.0)
+                            )
+                            
+                            if success:
+                                # Mark as synced in a separate transaction
+                                self.db_manager.mark_log_synced(log['id'])
+                                synced_count += 1
+                                print(f"Successfully synced log {log['id']}")
+                            else:
+                                failed_count += 1
+                                print(f"Failed to sync log {log['id']}: {response}")
+                                
+                                # Check if it's an authentication failure
+                                if isinstance(response, str) and "Authentication failed" in response:
+                                    print("Authentication failed during sync, stopping batch")
+                                    self.api_available = False
+                                    self.api_status_changed.emit(False)
+                                    break
+                                
+                        except Exception as api_err:
                             failed_count += 1
-                            print(f"Failed to sync log {log['id']}: {response}")
+                            print(f"API error syncing log {log['id']}: {str(api_err)}")
+                            
+                            # Check for connection errors that indicate API is unavailable
+                            if "Connection" in str(api_err) or "timeout" in str(api_err).lower():
+                                print("Connection error detected, stopping sync batch")
+                                self.api_available = False
+                                self.api_status_changed.emit(False)
+                                break
                         
                         # Update progress
                         progress = i + 1
                         self.sync_progress.emit("logs", progress, total_logs)
                         
+                        # Small delay to prevent UI freezing and avoid overwhelming the server
+                        time.sleep(0.2)
+                        
                     except Exception as e:
                         failed_count += 1
                         print(f"Error syncing log {log['id']}: {str(e)}")
+                        # Don't mark as synced on error, so it can be retried next time
                 
-                # Always emit final progress at 100%
-                if total_logs > 0:
-                    self.sync_progress.emit("logs", total_logs, total_logs)
+                # Emit final progress with actual count, not total
+                self.sync_progress.emit("logs", synced_count + failed_count, total_logs)
                 
                 # Show detailed result
                 result_message = f"Synced {synced_count}/{total_logs} logs"
                 if failed_count > 0:
                     result_message += f" ({failed_count} failed)"
                 
+                # Only report success if we actually synced something
                 if synced_count > 0:
                     self.sync_status_changed.emit("logs", SyncStatus.SUCCESS)
                     print(f"Successfully {result_message}")
@@ -472,6 +546,12 @@ class SyncService(QObject):
             except Exception as e:
                 self.sync_status_changed.emit("logs", SyncStatus.FAILED)
                 print(f"Error in log sync process: {str(e)}")
+                
+                # Check for connection errors
+                if "Connection" in str(e) or "timeout" in str(e).lower():
+                    print("Connection error detected during log sync")
+                    self.api_available = False
+                    self.api_status_changed.emit(False)
         
         # Signal completion of entire sync process
         self.sync_all_complete.emit()

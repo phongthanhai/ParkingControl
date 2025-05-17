@@ -247,9 +247,6 @@ class ControlScreen(QWidget):
         # Setup refresh button
         self.add_refresh_button()
         
-        # Add sync status widget to the UI
-        self.add_sync_status_widget()
-        
         # Initial data load
         QTimer.singleShot(1000, self.refresh_data)
 
@@ -298,10 +295,14 @@ class ControlScreen(QWidget):
         self.api_reconnect_button.clicked.connect(self._reconnect_api)
         self.api_reconnect_button.setVisible(False)
         
+        # Add sync status widget next to API status
+        self.sync_status_widget = SyncStatusWidget()
+        
         api_status_layout.addWidget(api_status_label)
         api_status_layout.addWidget(self.api_status_indicator)
         api_status_layout.addWidget(self.api_status_label)
         api_status_layout.addWidget(self.api_reconnect_button)
+        api_status_layout.addWidget(self.sync_status_widget)
         api_status_layout.addStretch()
         
         main_layout.addLayout(api_status_layout)
@@ -1653,36 +1654,7 @@ class ControlScreen(QWidget):
         if occupancy_layout:
             occupancy_layout.addWidget(refresh_btn)
 
-    def add_sync_status_widget(self):
-        """Add the sync status widget to the UI"""
-        # Create the sync status widget
-        self.sync_status_widget = SyncStatusWidget()
-        
-        # Find the main container to add it to
-        main_layout = None
-        for i in range(self.layout().count()):
-            item = self.layout().itemAt(i)
-            if item.widget() and isinstance(item.widget(), QScrollArea):
-                scroll_widget = item.widget().widget()
-                if scroll_widget and scroll_widget.layout():
-                    main_layout = scroll_widget.layout()
-                    break
-        
-        if main_layout:
-            # Create a container for the sync widget
-            sync_container = QHBoxLayout()
-            sync_container.addStretch(1)
-            sync_container.addWidget(self.sync_status_widget)
-            
-            # Add to main layout before the log area
-            for i in range(main_layout.count()):
-                item = main_layout.itemAt(i)
-                if item.widget() and isinstance(item.widget(), QFrame):
-                    if "Parking Occupancy" in item.widget().findChildren(QLabel)[0].text():
-                        main_layout.insertLayout(i + 1, sync_container)
-                        break
-        else:
-            print("Could not find main layout to add sync widget")
+    
 
     def _check_workers_health(self):
         """Periodic check of worker thread health"""

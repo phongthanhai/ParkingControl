@@ -124,19 +124,21 @@ class ParkingSystem(QMainWindow):
         if self.control_screen is None:
             self.control_screen = ControlScreen()
             
-            # Connect sync service to control screen if it has a sync widget
+            # Connect sync service to control screen
             if hasattr(self.control_screen, 'sync_status_widget'):
                 # Connect signals
                 self.sync_service.api_status_changed.connect(
                     self.control_screen.sync_status_widget.set_connection_status)
                 self.sync_service.sync_progress.connect(
                     self.control_screen.sync_status_widget.set_sync_progress)
-                self.sync_service.sync_all_complete.connect(
-                    lambda: self.control_screen.sync_status_widget.sync_completed(True))
                 
-                # Connect manual reconnect
-                self.control_screen.sync_status_widget.reconnect_requested.connect(
-                    self.handle_reconnect_request)
+                # Get current counts before connecting complete signal to avoid initial appearance
+                pending_counts = self.sync_service.get_pending_sync_counts()
+                self.control_screen.sync_status_widget.update_pending_counts(pending_counts)
+                
+                # Connect complete signal with the count of synced items
+                self.sync_service.sync_all_complete.connect(
+                    lambda count: self.control_screen.sync_status_widget.sync_completed(True, count))
                 
                 # Connect refresh request
                 self.control_screen.sync_status_widget.refresh_requested.connect(
@@ -145,11 +147,6 @@ class ParkingSystem(QMainWindow):
                 # Connect log signal from control screen to handle log entries for sync
                 print("Connecting control_screen.log_signal to sync_service")
                 self.control_screen.log_signal.connect(self.handle_log_entry)
-                
-                # Initial status update
-                self.control_screen.sync_status_widget.set_connection_status(
-                    self.sync_service.api_available)
-                self.update_sync_counts()
             
             self.stack.addWidget(self.control_screen)
         

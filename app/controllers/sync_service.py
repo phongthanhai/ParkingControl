@@ -39,10 +39,11 @@ class SyncWorker(QThread):
                         print("Worker starting sync with fresh token")
                         # Sync in this order: vehicle blacklist, logs (which handles everything)
                         self._sync_blacklist()
-                        self._sync_logs()
+                        sync_count = self._sync_logs()
                         
-                        # Signal completion of entire sync process
-                        self.sync_service.sync_all_complete.emit()
+                        # Signal completion of entire sync process with count
+                        self.sync_service.last_sync_count = sync_count
+                        self.sync_service.sync_all_complete.emit(sync_count)
                     else:
                         print("Worker skipping sync cycle due to token refresh failure")
                 except Exception as e:
@@ -100,7 +101,7 @@ class SyncWorker(QThread):
     def _sync_logs(self):
         """Sync log entries from local to server using the comprehensive guard-control endpoint"""
         if not self.sync_service.can_sync():
-            return
+            return 0
         
         self.mutex.lock()
         self._current_operation = "logs"
@@ -115,7 +116,7 @@ class SyncWorker(QThread):
                 self.mutex.lock()
                 self._current_operation = None
                 self.mutex.unlock()
-                return
+                return 0
                 
             # Only sync auto and manual entries, not denied-blacklist or skipped
             filtered_logs = [log for log in unsynced_logs 
@@ -127,7 +128,7 @@ class SyncWorker(QThread):
                 self.mutex.lock()
                 self._current_operation = None
                 self.mutex.unlock()
-                return
+                return 0
                 
             total_logs = len(filtered_logs)
             self.sync_progress.emit("logs", 0, total_logs)
@@ -243,10 +244,13 @@ class SyncWorker(QThread):
                                    
         except Exception as e:
             self.sync_complete.emit("logs", False, f"Log sync error: {str(e)}")
+            synced_count = 0
         
         self.mutex.lock()
         self._current_operation = None
         self.mutex.unlock()
+        
+        return synced_count
 
 class SyncService(QObject):
     """
@@ -256,7 +260,7 @@ class SyncService(QObject):
     sync_status_changed = pyqtSignal(str, str)  # type, status
     sync_progress = pyqtSignal(str, int, int)   # entity_type, completed, total
     api_status_changed = pyqtSignal(bool)       # is_available
-    sync_all_complete = pyqtSignal()            # emitted when all sync is done
+    sync_all_complete = pyqtSignal(int)         # count of synced items
     
     def __init__(self):
         super().__init__()
@@ -267,7 +271,8 @@ class SyncService(QObject):
         self.max_api_retries = 3
         self.last_sync_attempt = 0
         self.sync_cooldown = 60  # seconds between sync attempts
-        self.auto_reconnect = True  # Automatically reconnect and sync when API is available
+        self.auto_reconnect = False  # Don't automatically reconnect
+        self.last_sync_count = 0  # Track number of items synced in last operation
         
         # Set up background sync worker
         self.sync_worker = SyncWorker(self)
@@ -314,12 +319,9 @@ class SyncService(QObject):
                 print("API connection restored, resuming sync operations")
                 self.sync_worker.resume()
                 
-                # Auto-sync when connection is restored
-                if self.auto_reconnect:
-                    print("Auto-syncing after connection restored...")
-                    # Use a slight delay to allow UI to update first
-                    QTimer.singleShot(1000, self.sync_now)
-                    
+                # Auto-trigger sync when connection is restored
+                QTimer.singleShot(1000, lambda: self.sync_now())
+                
             elif not success and self.api_available:
                 self.api_retry_count += 1
                 if self.api_retry_count >= self.max_api_retries:
@@ -560,9 +562,10 @@ class SyncService(QObject):
                     self.api_available = False
                     self.api_status_changed.emit(False)
         
-        # Signal completion of entire sync process
-        self.sync_all_complete.emit()
-        return True
+                        # Signal completion of entire sync process with synced count
+                self.last_sync_count = synced_count
+                self.sync_all_complete.emit(synced_count)
+                return True
     
     def _ensure_fresh_token(self):
         """Ensure we have a fresh authentication token by forcing a login"""

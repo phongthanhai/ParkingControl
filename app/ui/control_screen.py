@@ -15,6 +15,7 @@ from app.utils.image_storage import ImageStorage
 from app.controllers.sync_service import SyncService, SyncStatus
 from app.ui.sync_status_widget import SyncStatusWidget
 from app.utils.auth_manager import AuthManager
+import numpy as np
 
 class LaneWidget(QWidget):
     def __init__(self, title):
@@ -202,6 +203,9 @@ class ControlScreen(QWidget):
         self.api_retry_count = 0
         self.max_api_retries = 3
         
+        # Debug flags
+        self.debug_blacklist = False  # Set to True to enable extensive blacklist logging
+        
         self.local_blacklist_logs = []
         
         # Connect log_signal for sync service
@@ -245,7 +249,9 @@ class ControlScreen(QWidget):
             for pin in GPIO_PINS.values():
                 if pin is not None:
                     GPIO.setup(pin, GPIO.OUT)
-                    GPIO.output(pin, GPIO.LOW)
+                    # Set pins HIGH by default for relay modules (inactive state)
+                    GPIO.output(pin, GPIO.HIGH)
+                    print(f"GPIO pin {pin} initialized to HIGH (relay inactive)")
         except Exception as e:
             QMessageBox.warning(self, "GPIO Warning", f"Failed to initialize GPIO: {str(e)}")
 
@@ -567,12 +573,58 @@ class ControlScreen(QWidget):
                 
             # Convert frame to QImage
             rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Resize the image to fit the UI display area (which is 640x480)
+            display_width = 640
+            display_height = 480
+            
+            # Get the current frame dimensions
+            h, w, ch = rgb_image.shape
+            
+            # Check if we need to resize
+            if w != display_width or h != display_height:
+                # Resize the frame to fit the display area while maintaining aspect ratio
+                aspect_ratio = w / h
+                
+                if w > h:
+                    # Width is the constraining dimension
+                    new_width = display_width
+                    new_height = int(new_width / aspect_ratio)
+                    if new_height > display_height:
+                        new_height = display_height
+                        new_width = int(new_height * aspect_ratio)
+                else:
+                    # Height is the constraining dimension
+                    new_height = display_height
+                    new_width = int(new_height * aspect_ratio)
+                    if new_width > display_width:
+                        new_width = display_width
+                        new_height = int(new_width / aspect_ratio)
+                
+                # Resize the image
+                rgb_image = cv2.resize(rgb_image, (new_width, new_height))
+                
+                # If the resized image is smaller than the display area, create a black background
+                if new_width < display_width or new_height < display_height:
+                    background = np.zeros((display_height, display_width, 3), dtype=np.uint8)
+                    
+                    # Calculate position to center the image
+                    y_offset = (display_height - new_height) // 2
+                    x_offset = (display_width - new_width) // 2
+                    
+                    # Place the resized image on the background
+                    background[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = rgb_image
+                    rgb_image = background
+            
+            # Get the dimensions of the final image
             h, w, ch = rgb_image.shape
             bytes_per_line = ch * w
+            
+            # Create QImage and QPixmap
             q_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_img)
             
             # Update UI
-            pixmap = QPixmap.fromImage(q_img)
             if not pixmap.isNull():
                 widget.image_label.setPixmap(pixmap)
             
@@ -592,32 +644,46 @@ class ControlScreen(QWidget):
             
         try:
             if status == "success":
-                # Handle blacklisted vehicle - auto-skip after showing message
-                widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
-                widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
+                # Get plate text for blacklist checking
+                plate_text = data.get('text', '')
                 
-                # Hide all input controls, no skip button needed
-                widget.manual_input.setVisible(False)
-                widget.submit_btn.setVisible(False)
-                widget.skip_btn.setVisible(False)
+                # Check if detected text is blacklisted
+                if plate_text and self._is_blacklisted(plate_text):
+                    # Handle blacklisted vehicle - auto-skip after showing message
+                    widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
+                    widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
+                    
+                    # Hide all input controls, no skip button needed
+                    widget.manual_input.setVisible(False)
+                    widget.submit_btn.setVisible(False)
+                    widget.skip_btn.setVisible(False)
+                    
+                    # Change the plate text color to indicate blacklist status
+                    widget.plate_label.setText(f"BLACKLISTED: {plate_text}")
+                    widget.plate_label.setStyleSheet("color: white; background-color: #dc3545; font-weight: bold;")
+                    
+                    # Log the denial
+                    self._log_entry(lane, data, "denied-blacklist")
+                    
+                    # Set timer to auto-skip after showing message (5 seconds)
+                    if lane in self.active_timers and self.active_timers[lane].isActive():
+                        self.active_timers[lane].stop()
+                    
+                    denial_timer = QTimer(self)
+                    denial_timer.timeout.connect(lambda: self._reset_lane(lane))
+                    denial_timer.setSingleShot(True)
+                    denial_timer.start(5000)  # 5 seconds
+                    self.active_timers[lane] = denial_timer
+                    print(f"Blacklisted vehicle in {lane} lane, will skip automatically")
+                else:
+                    # Non-blacklisted vehicle - proceed normally
+                    self._activate_gate(lane)
+                    
+                    # Log the entry
+                    self._log_entry(lane, data, "auto")
+                    widget.status_label.setText("Access granted - automatic")
+                    widget.status_label.setStyleSheet("font-size: 14px; color: #28a745; font-weight: bold;")
                 
-                # Change the plate text color to indicate blacklist status
-                widget.plate_label.setText(f"BLACKLISTED: {data.get('text', '')}")
-                widget.plate_label.setStyleSheet("color: white; background-color: #dc3545; font-weight: bold;")
-                
-                # Log the denial
-                self._log_entry(lane, data, "denied-blacklist")
-                
-                # Set timer to auto-skip after showing message (5 seconds)
-                if lane in self.active_timers and self.active_timers[lane].isActive():
-                    self.active_timers[lane].stop()
-                
-                denial_timer = QTimer(self)
-                denial_timer.timeout.connect(lambda: self._reset_lane(lane))
-                denial_timer.setSingleShot(True)
-                denial_timer.start(5000)  # 5 seconds
-                self.active_timers[lane] = denial_timer
-                print(f"Blacklisted vehicle in {lane} lane, will skip automatically")
             elif status == "requires_manual":
                 reason = data.get('reason', 'unknown')
                 
@@ -691,10 +757,10 @@ class ControlScreen(QWidget):
 
     def _activate_gate(self, lane):
         try:
-            # Activate GPIO
+            # Activate GPIO - For relay modules, set LOW to activate
             if GPIO_PINS.get(lane):
-                GPIO.output(GPIO_PINS[lane], GPIO.HIGH)
-                print(f"GPIO {GPIO_PINS[lane]} set HIGH for {lane} lane")
+                GPIO.output(GPIO_PINS[lane], GPIO.LOW)
+                print(f"GPIO {GPIO_PINS[lane]} set LOW for {lane} lane (relay ACTIVE)")
             
             # Set reset timer - cancel existing timer if present
             if lane in self.active_timers and self.active_timers[lane].isActive():
@@ -711,10 +777,10 @@ class ControlScreen(QWidget):
 
     def _reset_lane(self, lane):
         try:
-            # Reset GPIO
+            # Reset GPIO - For relay modules, set HIGH to deactivate
             if GPIO_PINS.get(lane):
-                GPIO.output(GPIO_PINS[lane], GPIO.LOW)
-                print(f"GPIO {GPIO_PINS[lane]} set LOW for {lane} lane")
+                GPIO.output(GPIO_PINS[lane], GPIO.HIGH)
+                print(f"GPIO {GPIO_PINS[lane]} set HIGH for {lane} lane (relay INACTIVE)")
             
             # Reset UI
             widget = self.lane_widgets.get(lane)
@@ -1692,8 +1758,14 @@ class ControlScreen(QWidget):
 
     def _update_blacklist_cache(self):
         """Fetch and update the local blacklist cache asynchronously"""
+        # Log current blacklist state before update
+        print(f"Updating blacklist cache - current entries: {len(self.blacklisted_plates)}")
+        if self.debug_blacklist:
+            print(f"Current blacklist before update: {self.blacklisted_plates}")
+            
         # Define the API call function to use in the thread
         def fetch_blacklist():
+            print("Sending blacklist API request...")
             return self.api_client.get(
                 'vehicles/blacklisted/',
                 params={'skip': 0, 'limit': 1000},
@@ -1705,9 +1777,24 @@ class ControlScreen(QWidget):
 
     def _is_blacklisted(self, plate):
         """Check if a license plate is blacklisted using local cache"""
+        if not plate:
+            return False
+            
         # Normalize plate format for comparison
         normalized_plate = plate.upper().strip()
-        return normalized_plate in self.blacklisted_plates
+        
+        # Check if the plate is in the blacklist set
+        result = normalized_plate in self.blacklisted_plates
+        
+        # Add debug logging - only log when plate is actually found to avoid noise
+        if result:
+            print(f"BLACKLIST CHECK: Plate {normalized_plate} IS blacklisted")
+        
+        # Print current blacklist when making a check (for debugging purposes)
+        if hasattr(self, 'debug_blacklist') and self.debug_blacklist:
+            print(f"Current blacklist: {self.blacklisted_plates}")
+            
+        return result
 
     def force_refresh_blacklist(self):
         """Force an immediate refresh of the blacklist data"""
@@ -1794,19 +1881,36 @@ class ControlScreen(QWidget):
                     # The result contains a tuple of (success, data)
                     api_success, api_data = result
                     
+                    # Log the raw API response for debugging
+                    print(f"Blacklist API response - success: {api_success}, data: {api_data}")
+                    
                     if api_success:
-                        # Update the cache with the latest data
-                        new_blacklist = set()
-                        if api_data:  # Check if data is not empty
+                        # Only update the cache if we got a valid response
+                        if api_data is not None:
+                            # Create a new set for blacklisted plates
+                            new_blacklist = set()
+                            
                             for vehicle in api_data:
                                 if vehicle.get('is_blacklisted', False):
-                                    new_blacklist.add(vehicle.get('plate_id').upper())
-                        
-                        # Replace the cache atomically
-                        self.blacklisted_plates = new_blacklist
-                        self.last_blacklist_update = time.time()
-                        
-                        print(f"Blacklist updated: {len(self.blacklisted_plates)} vehicles")
+                                    plate = vehicle.get('plate_id', '').upper()
+                                    new_blacklist.add(plate)
+                                    print(f"Adding blacklisted plate: {plate}")
+                            
+                            # Before updating the blacklist, log the change
+                            old_count = len(self.blacklisted_plates)
+                            new_count = len(new_blacklist)
+                            print(f"Updating blacklist: old count={old_count}, new count={new_count}")
+                            
+                            # Only replace the cache if we have a confirmed response (empty array or with data)
+                            if new_count > 0 or api_data == []:
+                                # Replace the cache atomically
+                                self.blacklisted_plates = new_blacklist
+                                self.last_blacklist_update = time.time()
+                                print(f"Blacklist updated: {len(self.blacklisted_plates)} vehicles")
+                            else:
+                                print("Ignoring empty blacklist response - keeping current blacklist")
+                        else:
+                            print("Received None for blacklist data - keeping current blacklist")
                     else:
                         print(f"Failed to update blacklist: {api_data}")
                 else:

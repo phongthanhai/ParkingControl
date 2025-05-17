@@ -1901,30 +1901,49 @@ class ControlScreen(QWidget):
         # Create a worker thread for the API call
         class ApiWorker(QThread):
             finished = pyqtSignal(str, bool, object)
+            api_status_changed = pyqtSignal(bool)
             
-            def __init__(self, op_id, func, args, kwargs):
+            def __init__(self, op_id, func, args, kwargs, parent=None):
                 super().__init__()
                 self.op_id = op_id
                 self.func = func
                 self.args = args
                 self.kwargs = kwargs
                 self._running = True
+                self._parent = parent
                 
             def run(self):
                 try:
                     if self._running:
                         result = self.func(*self.args, **self.kwargs)
                         if self._running:  # Check again in case we were terminated
+                            # Check for API call errors
+                            if isinstance(result, tuple) and len(result) >= 2 and result[0] is False:
+                                # This is an (success, error_message) tuple indicating API failure
+                                error_msg = result[1]
+                                print(f"API call failed: {error_msg}")
+                                
+                                # Check if the parent has the API-related attributes
+                                if hasattr(self._parent, 'api_available'):
+                                    self._parent.api_available = False
+                                    if hasattr(self._parent, '_update_api_status'):
+                                        self._parent._update_api_status(False)
                             self.finished.emit(self.op_id, True, result)
                 except Exception as e:
                     if self._running:
+                        # Any exception also means API is down
+                        if hasattr(self._parent, 'api_available'):
+                            self._parent.api_available = False
+                            if hasattr(self._parent, '_update_api_status'):
+                                self._parent._update_api_status(False)
+                        print(f"API call exception: {str(e)}")
                         self.finished.emit(self.op_id, False, str(e))
                     
             def stop(self):
                 self._running = False
         
         # Create and start worker
-        worker = ApiWorker(operation_id, api_func, args, kwargs)
+        worker = ApiWorker(operation_id, api_func, args, kwargs, self)
         
         # Store reference to prevent garbage collection - do this before connecting signal
         if not hasattr(self, '_api_workers'):

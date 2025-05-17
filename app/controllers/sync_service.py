@@ -561,11 +561,12 @@ class SyncService(QObject):
                     print("Connection error detected during log sync")
                     self.api_available = False
                     self.api_status_changed.emit(False)
+                    return False
         
-                        # Signal completion of entire sync process with synced count
-                self.last_sync_count = synced_count
-                self.sync_all_complete.emit(synced_count)
-                return True
+            # Signal completion of entire sync process with synced count
+            self.last_sync_count = synced_count
+            self.sync_all_complete.emit(synced_count)
+            return True
     
     def _ensure_fresh_token(self):
         """Ensure we have a fresh authentication token by forcing a login"""

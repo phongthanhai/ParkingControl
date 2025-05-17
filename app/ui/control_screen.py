@@ -193,6 +193,7 @@ class ControlScreen(QWidget):
         self.lane_widgets = {}
         self.lane_workers = {}
         self.active_timers = {}
+        self.lanes_in_manual_mode = {}  # Track which lanes are in manual input mode
         self.worker_guard = threading.Lock()  # Protects worker creation/deletion
         
         # Initialize API client
@@ -225,7 +226,7 @@ class ControlScreen(QWidget):
         # Setup watchdog timer for worker health check
         self.watchdog_timer = QTimer(self)
         self.watchdog_timer.timeout.connect(self._check_workers_health)
-        self.watchdog_timer.start(10000)  # Check every 10 seconds
+        self.watchdog_timer.start(30000)  # Check every 30 seconds (increased from 10 to give more time for manual input)
         
         # Setup timer for occupancy updates
         self.occupancy_timer = QTimer(self)
@@ -688,6 +689,9 @@ class ControlScreen(QWidget):
                     # Standard manual verification needed - show all controls
                     widget.plate_label.setText(f"Manual input required: {reason}")
                     
+                    # Mark this lane as in manual input mode
+                    self.lanes_in_manual_mode[lane] = True
+                    
                     # Pre-populate with detected text if available
                     if 'text' in data:
                         widget.manual_input.setText(data['text'])
@@ -750,6 +754,9 @@ class ControlScreen(QWidget):
             if GPIO_PINS.get(lane):
                 GPIO.output(GPIO_PINS[lane], GPIO.HIGH)
                 print(f"GPIO {GPIO_PINS[lane]} set HIGH for {lane} lane (relay INACTIVE)")
+            
+            # Clear manual input mode flag
+            self.lanes_in_manual_mode.pop(lane, None)
             
             # Reset UI
             widget = self.lane_widgets.get(lane)
@@ -820,6 +827,9 @@ class ControlScreen(QWidget):
         if not widget:
             return
         
+        # Clear manual input mode flag
+        self.lanes_in_manual_mode.pop(lane, None)
+        
         plate_text = widget.manual_input.text().strip()
         if not plate_text:
             widget.status_label.setText("Please enter a license plate number")
@@ -884,6 +894,9 @@ class ControlScreen(QWidget):
         widget = self.lane_widgets.get(lane)
         if not widget:
             return
+        
+        # Clear manual input mode flag
+        self.lanes_in_manual_mode.pop(lane, None)
         
         # Display skip status briefly
         widget.status_label.setText("Vehicle skipped")
@@ -1594,7 +1607,15 @@ class ControlScreen(QWidget):
         """Periodic check of worker thread health"""
         with self.worker_guard:
             for lane, worker in list(self.lane_workers.items()):
-                if not worker.isRunning() or hasattr(worker, 'state') and worker.state == LaneState.ERROR:
+                # Only restart workers that are not running or in ERROR state
+                # IMPORTANT: Do NOT restart workers in PAUSED state (which happens during manual input)
+                if not worker.isRunning() or (hasattr(worker, 'state') and worker.state == LaneState.ERROR):
+                    # Check if this lane is waiting for manual input
+                    if lane in self.lanes_in_manual_mode:
+                        # If lane is flagged for manual input, don't restart the worker
+                        print(f"Worker for {lane} lane is in manual input mode - not restarting")
+                        continue
+                    
                     print(f"Worker for {lane} lane is in bad state, restarting...")
                     self._create_worker(lane)
                     
@@ -2030,6 +2051,9 @@ class ControlScreen(QWidget):
     def closeEvent(self, event):
         """Handle application close properly by cleaning up threads"""
         try:
+            # Clear manual input mode flags
+            self.lanes_in_manual_mode.clear()
+            
             # Stop all API worker threads first
             if hasattr(self, '_api_workers'):
                 for thread_id, worker in list(self._api_workers.items()):

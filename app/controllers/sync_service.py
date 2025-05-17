@@ -303,7 +303,7 @@ class SyncService(QObject):
         return True
     
     def check_api_connection(self):
-        """Check if the API server is available."""
+        """Check if the backend API server is available."""
         try:
             # Use a short timeout for connectivity checks
             api_check_timeout = (2.0, 3.0)
@@ -316,7 +316,7 @@ class SyncService(QObject):
                 self.api_available = True
                 self.api_retry_count = 0
                 self.api_status_changed.emit(True)
-                print("API connection restored, resuming sync operations")
+                print("Backend API connection restored, resuming sync operations")
                 self.sync_worker.resume()
                 
                 # Auto-trigger sync when connection is restored
@@ -327,7 +327,7 @@ class SyncService(QObject):
                 if self.api_retry_count >= self.max_api_retries:
                     self.api_available = False
                     self.api_status_changed.emit(False)
-                    print("API connection lost, pausing sync operations")
+                    print("Backend API connection lost, pausing sync operations")
                     self.sync_worker.pause()
             
         except Exception as e:
@@ -335,7 +335,7 @@ class SyncService(QObject):
             if self.api_retry_count >= self.max_api_retries:
                 self.api_available = False
                 self.api_status_changed.emit(False)
-                print(f"API connection check error: {str(e)}")
+                print(f"Backend API connection check error: {str(e)}")
                 self.sync_worker.pause()
     
     def _handle_sync_progress(self, entity_type, completed, total):

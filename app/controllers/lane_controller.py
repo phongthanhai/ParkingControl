@@ -232,11 +232,11 @@ class LaneWorker(QThread):
                         plate_text, confidence = result
                         self.last_api_call = time.time()
                     else:
-                        # API timeout or rate limit
+                        # API timeout or rate limit with the PlateRecognizer external API
                         api_timeout = True
                 except Exception as e:
                     api_timeout = True
-                    self.error_signal.emit(self.lane_type, f"API Error: {str(e)}")
+                    self.error_signal.emit(self.lane_type, f"PlateRecognizer API Error: {str(e)}")
             
             # Ensure we have valid data types for signal
             plate_text = plate_text if plate_text is not None else "Scanning..."

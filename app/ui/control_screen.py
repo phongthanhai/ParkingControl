@@ -1426,14 +1426,14 @@ class ControlScreen(QWidget):
                 print(f"API connection check error (attempt {self.consecutive_failures}): {str(e)}")
 
     def _update_api_status(self, is_connected):
-        """Update API status indicators"""
+        """Update backend API status indicators"""
         if is_connected:
             self.api_status_indicator.setStyleSheet("background-color: green; border-radius: 7px;")
-            self.api_status_label.setText("API: Connected")
+            self.api_status_label.setText("Server: Connected")
             self.api_reconnect_button.setVisible(False)
         else:
             self.api_status_indicator.setStyleSheet("background-color: red; border-radius: 7px;")
-            self.api_status_label.setText("API: Disconnected")
+            self.api_status_label.setText("Server: Disconnected")
             self.api_reconnect_button.setVisible(True)
 
     def _reconnect_api(self):
@@ -1917,26 +1917,35 @@ class ControlScreen(QWidget):
                     if self._running:
                         result = self.func(*self.args, **self.kwargs)
                         if self._running:  # Check again in case we were terminated
-                            # Check for API call errors
+                            # Check for backend API call errors
                             if isinstance(result, tuple) and len(result) >= 2 and result[0] is False:
                                 # This is an (success, error_message) tuple indicating API failure
                                 error_msg = result[1]
-                                print(f"API call failed: {error_msg}")
                                 
-                                # Check if the parent has the API-related attributes
-                                if hasattr(self._parent, 'api_available'):
-                                    self._parent.api_available = False
-                                    if hasattr(self._parent, '_update_api_status'):
-                                        self._parent._update_api_status(False)
+                                # Make sure this is a backend API failure, not PlateRecognizer API
+                                if not "PlateRecognizer" in str(error_msg):
+                                    print(f"Backend API call failed: {error_msg}")
+                                    
+                                    # Check if the parent has the API-related attributes
+                                    if hasattr(self._parent, 'api_available'):
+                                        self._parent.api_available = False
+                                        if hasattr(self._parent, '_update_api_status'):
+                                            self._parent._update_api_status(False)
+                                else:
+                                    print(f"PlateRecognizer API call failed: {error_msg} (not affecting backend API status)")
                             self.finished.emit(self.op_id, True, result)
                 except Exception as e:
                     if self._running:
-                        # Any exception also means API is down
-                        if hasattr(self._parent, 'api_available'):
-                            self._parent.api_available = False
-                            if hasattr(self._parent, '_update_api_status'):
-                                self._parent._update_api_status(False)
-                        print(f"API call exception: {str(e)}")
+                        # Check if this is a PlateRecognizer API exception
+                        if "PlateRecognizer" in str(e):
+                            print(f"PlateRecognizer API call exception: {str(e)} (not affecting backend API status)")
+                        else:
+                            # Backend API is down
+                            if hasattr(self._parent, 'api_available'):
+                                self._parent.api_available = False
+                                if hasattr(self._parent, '_update_api_status'):
+                                    self._parent._update_api_status(False)
+                            print(f"Backend API call exception: {str(e)}")
                         self.finished.emit(self.op_id, False, str(e))
                     
             def stop(self):

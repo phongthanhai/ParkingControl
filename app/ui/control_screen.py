@@ -574,47 +574,12 @@ class ControlScreen(QWidget):
             # Convert frame to QImage
             rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Resize the image to fit the UI display area (which is 640x480)
+            # Get the display dimensions
             display_width = 640
             display_height = 480
             
-            # Get the current frame dimensions
-            h, w, ch = rgb_image.shape
-            
-            # Check if we need to resize
-            if w != display_width or h != display_height:
-                # Resize the frame to fit the display area while maintaining aspect ratio
-                aspect_ratio = w / h
-                
-                if w > h:
-                    # Width is the constraining dimension
-                    new_width = display_width
-                    new_height = int(new_width / aspect_ratio)
-                    if new_height > display_height:
-                        new_height = display_height
-                        new_width = int(new_height * aspect_ratio)
-                else:
-                    # Height is the constraining dimension
-                    new_height = display_height
-                    new_width = int(new_height * aspect_ratio)
-                    if new_width > display_width:
-                        new_width = display_width
-                        new_height = int(new_width / aspect_ratio)
-                
-                # Resize the image
-                rgb_image = cv2.resize(rgb_image, (new_width, new_height))
-                
-                # If the resized image is smaller than the display area, create a black background
-                if new_width < display_width or new_height < display_height:
-                    background = np.zeros((display_height, display_width, 3), dtype=np.uint8)
-                    
-                    # Calculate position to center the image
-                    y_offset = (display_height - new_height) // 2
-                    x_offset = (display_width - new_width) // 2
-                    
-                    # Place the resized image on the background
-                    background[y_offset:y_offset+new_height, x_offset:x_offset+new_width] = rgb_image
-                    rgb_image = background
+            # Resize the image to exactly match the display dimensions, even if it changes aspect ratio
+            rgb_image = cv2.resize(rgb_image, (display_width, display_height), interpolation=cv2.INTER_AREA)
             
             # Get the dimensions of the final image
             h, w, ch = rgb_image.shape

@@ -16,6 +16,7 @@ from app.controllers.sync_service import SyncService, SyncStatus
 from app.ui.sync_status_widget import SyncStatusWidget
 from app.utils.auth_manager import AuthManager
 import numpy as np
+from app.controllers.db_worker import DBWorker, DBOperationType
 
 class LaneWidget(QWidget):
     def __init__(self, title):
@@ -195,6 +196,11 @@ class ControlScreen(QWidget):
         self.active_timers = {}
         self.lanes_in_manual_mode = {}  # Track which lanes are in manual input mode
         self.worker_guard = threading.Lock()  # Protects worker creation/deletion
+        
+        # Initialize database worker for async operations
+        self.db_worker = DBWorker()
+        self.db_worker.operation_complete.connect(self._handle_db_operation_complete)
+        self.pending_db_operations = {}  # Track pending operations
         
         # Initialize API client
         self.api_client = ApiClient(base_url=API_BASE_URL)
@@ -1103,93 +1109,168 @@ class ControlScreen(QWidget):
             print(f"Logging error: {str(e)}")
     
     def _create_or_update_parking_session(self, lane, plate_id, confidence, entry_type, image_path):
-        """Handle parking session logic (starting or ending a session)"""
+        """Handle parking session logic (starting or ending a session) using async DB worker"""
         try:
-            db_manager = DBManager()
+            # First ensure vehicle exists
+            vehicle_operation_id = self.db_worker.queue_operation(
+                DBOperationType.VEHICLE,
+                plate_id=plate_id,
+                is_blacklisted=False  # Default to not blacklisted
+            )
             
-            # Create or ensure vehicle exists
-            vehicle_id = db_manager.add_vehicle(plate_id, False)
+            # Don't need to track this operation
             
             # For entry lane, start a parking session
             if lane == 'entry':
-                session_id = db_manager.start_parking_session(
+                from config import LOT_ID
+                session_operation_id = self.db_worker.queue_operation(
+                    DBOperationType.PARKING_SESSION,
+                    action='create',
+                    lane=lane,
                     plate_id=plate_id,
                     lot_id=LOT_ID,
-                    entry_confidence=confidence,
-                    entry_img=image_path
+                    confidence=confidence,
+                    image_path=image_path
                 )
                 
-                # Record barrier action
-                if session_id:
-                    action_id = db_manager.add_barrier_action(
-                        session_id=session_id,
-                        action_type='entry',
-                        trigger_type=entry_type
-                    )
-                    print(f"Created local entry session {session_id} and action {action_id}")
+                # Track this operation for completion handling
+                self.pending_db_operations[session_operation_id] = {
+                    'operation_type': DBOperationType.PARKING_SESSION,
+                    'callback': lambda success, result: self._handle_session_complete(success, result, lane, entry_type, session_operation_id)
+                }
             
-            # For exit lane, end an existing parking session
+            # For exit lane, end an existing session
             elif lane == 'exit':
-                session_id = db_manager.end_parking_session(
+                from config import LOT_ID
+                session_operation_id = self.db_worker.queue_operation(
+                    DBOperationType.PARKING_SESSION,
+                    action='update',
+                    lane=lane,
                     plate_id=plate_id,
                     lot_id=LOT_ID,
-                    exit_confidence=confidence,
-                    exit_img=image_path
+                    confidence=confidence,
+                    image_path=image_path
                 )
                 
-                # Record barrier action
-                if session_id:
-                    action_id = db_manager.add_barrier_action(
-                        session_id=session_id,
-                        action_type='exit',
-                        trigger_type=entry_type
-                    )
-                    print(f"Completed local exit session {session_id} and action {action_id}")
+                # Track this operation for completion handling
+                self.pending_db_operations[session_operation_id] = {
+                    'operation_type': DBOperationType.PARKING_SESSION,
+                    'callback': lambda success, result: self._handle_session_complete(success, result, lane, entry_type, session_operation_id)
+                }
                     
         except Exception as e:
-            print(f"Error updating parking session: {str(e)}")
+            print(f"Error queueing parking session: {str(e)}")
 
     def _store_log_locally(self, lane, data, entry_type, existing_image_path=None):
-        """Store log locally when API fails"""
+        """Store log locally when API fails, using async DB worker"""
         try:
-            # Initialize managers
-            db_manager = DBManager()
-            image_storage = ImageStorage()
+            # Get image data
+            image = data.get('image')
+            plate_id = data.get('text', 'N/A')
+            confidence = data.get('confidence', 0.0)
             
-            # Save image if available and not already saved
-            image_path = existing_image_path
-            if image_path is None and data.get('image') is not None:
-                image_path = image_storage.save_image(
-                    data.get('image'), 
-                    lane, 
-                    data.get('text', 'N/A'), 
-                    entry_type
-                )
-            
-            # Store log in local database
-            log_id = db_manager.add_log_entry(
+            # Queue the log entry operation
+            operation_id = self.db_worker.queue_operation(
+                DBOperationType.LOG_ENTRY,
                 lane=lane,
-                plate_id=data.get('text', 'N/A'),
-                confidence=data.get('confidence', 0.0),
+                plate_id=plate_id,
+                confidence=confidence,
                 entry_type=entry_type,
-                image_path=image_path,
+                image_path=existing_image_path,
+                image=image if existing_image_path is None else None,  # Only send image if no path
                 synced=False
             )
             
-            print(f"Stored log entry locally with ID {log_id} (needs syncing)")
+            # Queue the parking session operation
+            from config import LOT_ID
             
-            # Handle parking session
-            self._create_or_update_parking_session(
-                lane, data.get('text', 'N/A'), 
-                data.get('confidence', 0.0), entry_type, image_path
-            )
+            # For entry lanes, create a new session
+            if lane == 'entry':
+                session_operation_id = self.db_worker.queue_operation(
+                    DBOperationType.PARKING_SESSION,
+                    action='create',
+                    lane=lane,
+                    plate_id=plate_id,
+                    lot_id=LOT_ID,
+                    confidence=confidence,
+                    image_path=existing_image_path  # Will be updated in callback when log completes
+                )
+                
+                # Track this operation for completion handling
+                self.pending_db_operations[session_operation_id] = {
+                    'operation_type': DBOperationType.PARKING_SESSION,
+                    'callback': lambda success, result: self._handle_session_complete(success, result, lane, entry_type, session_operation_id)
+                }
             
-            # Return the image path so it can be used by the caller
-            return image_path
+            # For exit lanes, update an existing session
+            elif lane == 'exit':
+                session_operation_id = self.db_worker.queue_operation(
+                    DBOperationType.PARKING_SESSION,
+                    action='update',
+                    lane=lane,
+                    plate_id=plate_id,
+                    lot_id=LOT_ID,
+                    confidence=confidence,
+                    image_path=existing_image_path  # Will be updated in callback when log completes
+                )
+                
+                # Track this operation for completion handling
+                self.pending_db_operations[session_operation_id] = {
+                    'operation_type': DBOperationType.PARKING_SESSION,
+                    'callback': lambda success, result: self._handle_session_complete(success, result, lane, entry_type, session_operation_id)
+                }
+            
+            # Track the log operation - we'll update the image path when it completes
+            log_data = {
+                'lane': lane,
+                'plate': plate_id,
+                'confidence': confidence,
+                'timestamp': time.time(),
+                'formatted_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'),
+                'type': entry_type,
+                'already_synced': False  # Not synced with the server yet
+            }
+            
+            self.pending_db_operations[operation_id] = {
+                'operation_type': DBOperationType.LOG_ENTRY,
+                'log_data': log_data,
+                'notify_sync': True  # Flag to emit log_signal when complete
+            }
+            
+            print(f"Queued log entry for async storage with ID {operation_id}")
+            
+            # Return placeholder - real path will be set in the operation complete handler
+            return existing_image_path
             
         except Exception as e:
-            print(f"Error storing log locally: {str(e)}")
+            print(f"Error queueing log for local storage: {str(e)}")
             return None
+    
+    def _handle_session_complete(self, success, result, lane, entry_type, operation_id):
+        """Handle completion of an async parking session operation"""
+        if not success:
+            print(f"Failed to create/update parking session: {result}")
+            return
+        
+        session_id = result.get('session_id')
+        if not session_id:
+            print("No session ID returned from operation")
+            return
+            
+        print(f"Successfully processed parking session {session_id} for {lane} lane")
+        
+        # Now create a barrier action record for this session
+        barrier_operation_id = self.db_worker.queue_operation(
+            DBOperationType.BARRIER_ACTION,
+            session_id=session_id,
+            action_type=lane,  # 'entry' or 'exit'
+            trigger_type=entry_type  # 'auto' or 'manual'
+        )
+        
+        # Track this operation
+        self.pending_db_operations[barrier_operation_id] = {
+            'operation_type': DBOperationType.BARRIER_ACTION
+        }
 
     def _add_log_entry(self, data):
         """Add a new entry to the log area"""
@@ -2061,6 +2142,13 @@ class ControlScreen(QWidget):
                         worker.stop()  # Signal the thread to stop
                         worker.wait(500)  # Wait up to 500ms for clean shutdown
             
+            # Stop the DB worker thread
+            if hasattr(self, 'db_worker'):
+                print("Stopping DB worker thread...")
+                self.db_worker.stop()
+                self.db_worker.wait(1000)  # Wait up to 1 second for clean shutdown
+                print("DB worker thread stopped")
+            
             # Now stop camera workers
             with self.worker_guard:
                 for lane, worker in list(self.lane_workers.items()):
@@ -2079,3 +2167,35 @@ class ControlScreen(QWidget):
         except Exception as e:
             print(f"Error during application shutdown: {str(e)}")
             event.accept()  # Accept anyway to ensure the app closes
+
+    def _handle_db_operation_complete(self, operation_id, success, result):
+        """Handle completion of asynchronous database operations"""
+        if operation_id not in self.pending_db_operations:
+            # Operation not tracked or already handled
+            return
+        
+        # Get the original operation data
+        operation_data = self.pending_db_operations.pop(operation_id)
+        operation_type = operation_data.get('operation_type')
+        callback = operation_data.get('callback')
+        
+        if not success:
+            print(f"Database operation {operation_id} failed: {result}")
+            if callback:
+                callback(False, result)
+            return
+        
+        print(f"Database operation {operation_id} completed successfully")
+        
+        # Call the callback function if provided
+        if callback:
+            callback(True, result)
+        
+        # Process specific operation results if needed
+        if operation_type == DBOperationType.LOG_ENTRY:
+            # For log entries, we might need to notify sync service
+            if operation_data.get('notify_sync', False):
+                log_data = operation_data.get('log_data', {}).copy()
+                log_data['stored_locally'] = True
+                log_data['image_path'] = result.get('image_path')
+                self.log_signal.emit(log_data)

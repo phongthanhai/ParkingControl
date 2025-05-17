@@ -41,3 +41,6 @@ UI_REFRESH_RATE = 100  # ms
 
 # Lot ID for this raspberry pi
 LOT_ID = 1
+
+# Lot capacity (replaces the need for parking_lot table)
+LOT_CAPACITY = 100  # Adjust to your actual lot capacity

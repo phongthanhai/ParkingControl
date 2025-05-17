@@ -45,18 +45,7 @@ class DBManager:
                     )
                 ''')
                 
-                # Create parking_lot table
-                cursor.execute('''
-                    CREATE TABLE parking_lot (
-                        id INTEGER PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        capacity INTEGER NOT NULL CHECK (capacity > 0),
-                        location TEXT NOT NULL,
-                        synced INTEGER DEFAULT 1
-                    )
-                ''')
-                
-                # Create parking_session table
+                # Create parking_session table - removed foreign key to parking_lot
                 cursor.execute('''
                     CREATE TABLE parking_session (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,8 +62,7 @@ class DBManager:
                         ),
                         synced INTEGER DEFAULT 0,
                         remote_id INTEGER DEFAULT NULL,
-                        FOREIGN KEY (plate_id) REFERENCES vehicle(plate_id),
-                        FOREIGN KEY (lot_id) REFERENCES parking_lot(id)
+                        FOREIGN KEY (plate_id) REFERENCES vehicle(plate_id)
                     )
                 ''')
                 
@@ -578,15 +566,9 @@ class DBManager:
             conn = self._get_connection()
             cursor = conn.cursor()
             
-            # Get lot capacity
-            cursor.execute('SELECT capacity FROM parking_lot WHERE id = ?', (lot_id,))
-            lot_result = cursor.fetchone()
-            
-            if not lot_result:
-                return None
+            # Try to get capacity from API first
+            capacity = self._get_lot_capacity_from_api(lot_id)
                 
-            capacity = lot_result['capacity']
-            
             # Count active sessions
             cursor.execute(
                 'SELECT COUNT(*) as occupied FROM parking_session WHERE lot_id = ? AND exit_time IS NULL',
@@ -609,23 +591,59 @@ class DBManager:
             print(f"Error getting lot occupancy: {str(e)}")
             return None
     
-    def save_lot_info(self, lot_id, name, capacity, location):
-        """Save parking lot information."""
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
+    def _get_lot_capacity_from_api(self, lot_id):
+        """Get lot capacity from API with caching and fallback to config"""
+        # Check if we have a recent cached value (cache for 1 hour)
+        cache_attr = f"_lot_{lot_id}_capacity_cache"
+        cache_time_attr = f"_lot_{lot_id}_capacity_cache_time"
+        
+        current_time = time.time()
+        cache_valid = (
+            hasattr(self, cache_time_attr) and 
+            hasattr(self, cache_attr) and
+            current_time - getattr(self, cache_time_attr) < 3600  # 1 hour cache
+        )
+        
+        if cache_valid:
+            return getattr(self, cache_attr)
             
-            cursor.execute(
-                'INSERT OR REPLACE INTO parking_lot (id, name, capacity, location) VALUES (?, ?, ?, ?)',
-                (lot_id, name, capacity, location)
-            )
-            conn.commit()
-            return True
+        try:
+            # Import API client
+            from app.controllers.api_client import ApiClient
+            from app.utils.auth_manager import AuthManager
+            from config import API_BASE_URL, LOT_CAPACITY
+            
+            # Create API client
+            api_client = ApiClient(base_url=API_BASE_URL)
+            auth_manager = AuthManager()
+            
+            # Only proceed if we have authentication
+            if auth_manager.access_token:
+                # Try to get lot capacity from API
+                success, data = api_client.get(f'parking-lots/{lot_id}', timeout=(2.0, 3.0))
+                
+                if success and 'capacity' in data:
+                    # Cache the result
+                    setattr(self, cache_attr, data['capacity'])
+                    setattr(self, cache_time_attr, current_time)
+                    print(f"Retrieved lot capacity from API: {data['capacity']}")
+                    return data['capacity']
+            else:
+                print("Not authenticated, using default lot capacity")
         except Exception as e:
-            print(f"Error saving lot info: {str(e)}")
-            if conn:
-                conn.rollback()
-            return False
+            print(f"Error fetching lot capacity from API: {str(e)}")
+        
+        # Fallback to config value if API fails or not authenticated
+        from config import LOT_CAPACITY
+        return LOT_CAPACITY
+    
+    def save_lot_info(self, lot_id, name, capacity, location):
+        """
+        This method is deprecated as parking_lot table is no longer created.
+        Information is now taken directly from config.
+        """
+        print("Warning: save_lot_info is deprecated as parking_lot table no longer exists")
+        return True
     
     # Utility methods
     def get_last_sync_time(self, table_name):

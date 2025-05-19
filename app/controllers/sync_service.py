@@ -67,11 +67,11 @@ class SyncWorker(QThread):
                         print("SyncWorker: Token refresh failed, aborting sync")
                         
                         # Reset sync flags
-                        self.mutex.lock()
+        self.mutex.lock()
                         self._sync_requested = False
                         self._sync_type = None
-                        self.mutex.unlock()
-                        
+        self.mutex.unlock()
+        
                         # Signal completion with error
                         self.sync_service.last_sync_count = 0
                         self.sync_service.sync_all_complete.emit(0, self.context)
@@ -84,11 +84,11 @@ class SyncWorker(QThread):
                         sync_count = self._sync_logs()
                         
                     # Mark sync as complete
-                    self.mutex.lock()
+        self.mutex.lock()
                     self._sync_requested = False
                     self._sync_type = None
-                    self.mutex.unlock()
-                    
+        self.mutex.unlock()
+    
                     # Signal completion with the context
                     sync_count = sync_count if sync_count is not None else 0
                     self.sync_service.last_sync_count = sync_count
@@ -99,11 +99,11 @@ class SyncWorker(QThread):
                     self.sync_service.sync_all_complete.emit(0, self.context)
                     
                     # Reset sync flags even on error
-                    self.mutex.lock()
+        self.mutex.lock()
                     self._sync_requested = False
                     self._sync_type = None
-                    self.mutex.unlock()
-            
+        self.mutex.unlock()
+    
             # Sleep a bit to avoid CPU spinning
             time.sleep(0.1)
             
@@ -137,7 +137,7 @@ class SyncWorker(QThread):
         self._paused = False
         self.mutex.unlock()
         print("SyncWorker resumed")
-
+    
     def _sync_logs(self):
         """Sync log entries from local to server using the comprehensive guard-control endpoint"""
         if not self.sync_service.can_sync():
@@ -164,7 +164,7 @@ class SyncWorker(QThread):
                 print("SYNC WORKER: No logs to sync")
                 self.sync_complete.emit("logs", True, "No logs to sync")
                 return 0
-            
+                
             print(f"SYNC WORKER: Found {len(unsynced_logs)} unsynced logs")
             
             # Filter only auto and manual entries (not blacklist or skipped)
@@ -227,24 +227,24 @@ class SyncWorker(QThread):
                             print(f"SYNC WORKER: Error processing image: {str(img_err)}")
                     
                     # Sync to API
-                    success, response = self.api_client.post_with_files(
-                        'services/guard-control/',
-                        data=form_data,
-                        files=files,
-                        timeout=(5.0, 15.0)
-                    )
-                    
-                    if success:
+                        success, response = self.api_client.post_with_files(
+                            'services/guard-control/',
+                            data=form_data,
+                            files=files,
+                            timeout=(5.0, 15.0)
+                        )
+                        
+                        if success:
                         # Mark as synced in local DB
-                        self.db_manager.mark_log_synced(log['id'])
-                        synced_count += 1
+                            self.db_manager.mark_log_synced(log['id'])
+                            synced_count += 1
                         print(f"SYNC WORKER: Successfully synced log {log['id']}")
                         
                         # Report progress
                         self.sync_progress.emit("logs", synced_count, total_count)
-                    else:
+                        else:
                         print(f"SYNC WORKER: Failed to sync log {log['id']}: {response}")
-                        
+                    
                 except Exception as e:
                     print(f"SYNC WORKER: Error syncing log: {str(e)}")
                     
@@ -268,9 +268,9 @@ class SyncWorker(QThread):
             self.sync_complete.emit("logs", False, f"Error: {str(e)}")
             return 0
         finally:
-            self.mutex.lock()
-            self._current_operation = None
-            self.mutex.unlock()
+        self.mutex.lock()
+        self._current_operation = None
+        self.mutex.unlock()
 
 class SyncService(QObject):
     """
@@ -422,9 +422,9 @@ class SyncService(QObject):
         # Still update state and resume worker
         if hasattr(self, 'sync_worker'):
             self.sync_worker.resume()
+            
+            return
         
-        return
-    
     def _attempt_token_refresh(self):
         """
         SIMPLIFIED: Only refresh token without triggering sync operations
@@ -465,18 +465,18 @@ class SyncService(QObject):
             # Attempt login to get fresh token
             try:
                 print(f"SyncService: Attempting login as {username}")
-                success, message, _ = self.api_client.login(
+            success, message, _ = self.api_client.login(
                     username,
                     password,
-                    timeout=(3.0, 5.0)
-                )
-                
+                timeout=(3.0, 5.0)
+            )
+            
                 # Just update connection status, no sync operations
-                if success:
+            if success:
                     print("SyncService: Login succeeded")
                     self.api_available = True
                     self.api_status_changed.emit(True)
-                else:
+            else:
                     print(f"SyncService: Login failed: {message}")
                 
                 return success
@@ -573,7 +573,7 @@ class SyncService(QObject):
             result["message"] = "Sync started"
             return result
             
-        except Exception as e:
+            except Exception as e:
             print(f"Error triggering sync: {str(e)}")
             # Emit completion with 0 count and context on error
             self.sync_all_complete.emit(0, context or "manual")
@@ -637,8 +637,8 @@ class SyncService(QObject):
             # Get unsynced logs
             unsynced_logs = self.db_manager.get_unsynced_logs(limit=50)
             filtered_logs = [log for log in unsynced_logs if log['type'] in ('auto', 'manual')]
-            
-            if not filtered_logs:
+                
+                if not filtered_logs:
                 print("No logs to sync before shutdown")
                 # Signal completion with 0 count and shutdown context
                 self.sync_all_complete.emit(0, "shutdown")
@@ -648,50 +648,50 @@ class SyncService(QObject):
             synced_count = 0
             
             # Update UI with progress information
-            total_logs = len(filtered_logs)
-            self.sync_progress.emit("logs", 0, total_logs)
-            
-            # Process each log
+                total_logs = len(filtered_logs)
+                self.sync_progress.emit("logs", 0, total_logs)
+                
+                # Process each log
             for idx, log in enumerate(filtered_logs):
-                try:
+                    try:
                     # Check if already synced
-                    if log.get('synced', 0) == 1:
-                        continue
+                        if log.get('synced', 0) == 1:
+                            continue
+                            
+                        # Prepare form data
+                        form_data = {
+                            'plate_id': log['plate_id'],
+                            'lot_id': LOT_ID,
+                            'lane': log['lane'],
+                            'type': log['type'],
+                            'timestamp': log['timestamp']
+                        }
                         
-                    # Prepare form data
-                    form_data = {
-                        'plate_id': log['plate_id'],
-                        'lot_id': LOT_ID,
-                        'lane': log['lane'],
-                        'type': log['type'],
-                        'timestamp': log['timestamp']
-                    }
-                    
-                    # Handle image if available
-                    files = None
+                        # Handle image if available
+                        files = None
                     if log.get('image_path') and os.path.exists(log.get('image_path')):
-                        try:
-                            img = cv2.imread(log['image_path'])
-                            if img is not None:
-                                _, img_encoded = cv2.imencode('.png', img)
-                                img_bytes = img_encoded.tobytes()
-                                files = {
-                                    'image': ('frame.png', img_bytes, 'image/png')
-                                }
-                        except Exception as img_err:
+                            try:
+                                img = cv2.imread(log['image_path'])
+                                if img is not None:
+                                    _, img_encoded = cv2.imencode('.png', img)
+                                    img_bytes = img_encoded.tobytes()
+                                    files = {
+                                        'image': ('frame.png', img_bytes, 'image/png')
+                                    }
+                            except Exception as img_err:
                             print(f"Error processing image for shutdown sync: {str(img_err)}")
                     
                     # Sync to API
-                    success, response = self.api_client.post_with_files(
-                        'services/guard-control/',
-                        data=form_data,
-                        files=files,
-                        timeout=(5.0, 15.0)
-                    )
-                    
-                    if success:
-                        self.db_manager.mark_log_synced(log['id'])
-                        synced_count += 1
+                            success, response = self.api_client.post_with_files(
+                                'services/guard-control/',
+                                data=form_data,
+                                files=files,
+                                timeout=(5.0, 15.0)
+                            )
+                            
+                            if success:
+                                self.db_manager.mark_log_synced(log['id'])
+                                synced_count += 1
                         print(f"Successfully synced log {log['id']} during shutdown")
                         
                         # Update progress
@@ -699,15 +699,15 @@ class SyncService(QObject):
                     else:
                         print(f"Failed to sync log {log['id']} during shutdown: {response}")
                         
-                except Exception as e:
+                    except Exception as e:
                     print(f"Error syncing log during shutdown: {str(e)}")
             
             print(f"Shutdown sync complete: {synced_count}/{len(filtered_logs)} logs synced")
             
             # Signal completion with synced count and shutdown context
             self.sync_all_complete.emit(synced_count, "shutdown")
-            
-        except Exception as e:
+                
+            except Exception as e:
             print(f"Error during shutdown sync: {str(e)}")
             # Signal completion with 0 count on error
             self.sync_all_complete.emit(0, "shutdown")
@@ -727,7 +727,7 @@ class SyncService(QObject):
         if not self.api_available:
             print("Can't sync: API not available")
             return False
-        
+
         # Remove the time-based throttling that was preventing immediate sync after reconnection
         # Now we'll just update the timestamp for metrics but allow the sync to proceed
         current_time = time.time()
@@ -756,23 +756,23 @@ class SyncService(QObject):
         token_refreshed = False
         
         # First try to use refresh token if available
-        if auth_manager.has_refresh_token():
+                if auth_manager.has_refresh_token():
             print("Using refresh token for pre-sync token refresh")
             token_refreshed = self.api_client._refresh_token()
             if token_refreshed:
                 print("Token refreshed successfully using refresh token before sync")
                 self.last_token_refresh_time = current_time
-                return True
-            print("Refresh token failed, falling back to credentials")
-        
+                        return True
+                    print("Refresh token failed, falling back to credentials")
+                
         # Fall back to credentials if refresh token not available or failed
         if not token_refreshed and (auth_manager.username and auth_manager.password):
             print(f"Using credentials for pre-sync token refresh ({auth_manager.username})")
             
             # Attempt login to get fresh token
             success, message, _ = self.api_client.login(
-                auth_manager.username,
-                auth_manager.password,
+                        auth_manager.username,
+                        auth_manager.password,
                 timeout=(3.0, 5.0)
             )
             

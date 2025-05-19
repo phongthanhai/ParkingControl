@@ -889,7 +889,8 @@ class ApiClient(QObject):
 
     def check_health(self, timeout=None):
         """
-        Non-blocking health check with duplicate prevention
+        Check if the API server is available with direct health check.
+        This is a blocking version used for direct checks.
         
         Args:
             timeout (tuple, optional): Custom timeout for health check
@@ -897,43 +898,32 @@ class ApiClient(QObject):
         Returns:
             bool: True if health check is successful, False otherwise
         """
-        # Check if there's already an active health check to avoid duplicates
-        self._health_check_mutex.lock()
-        if self._health_check_active:
-            self._health_check_mutex.unlock()
-            return False  # Skip this check
-        
-        # Mark as active and unlock
-        self._health_check_active = True
-        self._health_check_mutex.unlock()
-        
-        # Use very short timeouts
+        # Use very short timeouts to avoid blocking for too long
         if timeout is None:
             timeout = (self.health_connect_timeout, self.health_read_timeout)
         
         try:
-            # Use GET instead of HEAD since HEAD is not allowed
-            response = self.session.get(
+            # Use a direct GET request instead of session to avoid any session state issues
+            response = requests.get(
                 f"{self.base_url}/services/health", 
                 timeout=timeout
             )
             
-            # Reset the active flag
-            self._health_check_mutex.lock()
-            self._health_check_active = False
-            self._health_check_mutex.unlock()
-            
             return response.status_code == 200
             
+        except requests.exceptions.ConnectTimeout:
+            print("Health check connect timeout")
+            return False
+        except requests.exceptions.ReadTimeout:
+            print("Health check read timeout")
+            return False
+        except requests.exceptions.ConnectionError:
+            print("Health check connection error")
+            return False
         except Exception as e:
-            # Make sure to reset active flag even on error
-            self._health_check_mutex.lock()
-            self._health_check_active = False
-            self._health_check_mutex.unlock()
-            
             print(f"Health check error: {str(e)}")
             return False
-    
+
     def check_health_async(self, callback=None, timeout=None):
         """
         Non-blocking health check that runs in a separate thread and calls back when done.

@@ -411,8 +411,13 @@ class ParkingSystem(QMainWindow):
                         
                         # Connect signals if API is available
                         if api_available:
-                            self.sync_service.sync_progress.connect(sync_dialog.update_progress)
-                            self.sync_service.sync_all_complete.connect(sync_dialog.sync_complete)
+                            try:
+                                self.sync_service.sync_progress.connect(sync_dialog.update_progress)
+                                self.sync_service.sync_all_complete.connect(sync_dialog.sync_complete)
+                            except Exception as signal_err:
+                                print(f"DEBUG: Error connecting signals: {str(signal_err)}")
+                                # Don't proceed with sync if signals can't be connected
+                                api_available = False
                         
                         # Center the dialog on screen for maximum visibility
                         try:
@@ -445,17 +450,37 @@ class ParkingSystem(QMainWindow):
                         
                         # Show the shutdown sync indicator in the main window as well
                         if hasattr(self, 'control_screen') and self.control_screen and hasattr(self.control_screen, 'sync_status_widget'):
-                            self.control_screen.sync_status_widget.show_shutdown_sync()
+                            try:
+                                self.control_screen.sync_status_widget.show_shutdown_sync()
+                            except Exception as ui_err:
+                                print(f"DEBUG: Error showing shutdown sync in UI: {str(ui_err)}")
                         
                         # Start the sync operation with shutdown context if API is available
                         if api_available:
-                            print("DEBUG: Starting final exit sync operation")
-                            self.sync_service.sync_now(context="shutdown")
+                            try:
+                                print("DEBUG: Starting final exit sync operation")
+                                self.sync_service.sync_now(context="shutdown")
+                            except Exception as sync_err:
+                                print(f"DEBUG: Error starting sync: {str(sync_err)}")
+                                # Handle error case - don't leave dialog hanging
+                                try:
+                                    sync_dialog.status_label.setText("Sync Error")
+                                    sync_dialog.detail_label.setText(f"Error: {str(sync_err)}")
+                                    sync_dialog.progress_bar.setValue(0)
+                                    if hasattr(sync_dialog, 'force_exit_button'):
+                                        sync_dialog.force_exit_button.setEnabled(True)
+                                except Exception:
+                                    pass
                         else:
                             # If API is not available, emit completion signal with 0 count
                             # to ensure dialog handles offline state properly
                             print("DEBUG: Cannot sync - API not available")
-                            self.sync_service.sync_all_complete.emit(0, "shutdown")
+                            # CRITICAL FIX: Make sure sync service exists before calling emit
+                            try:
+                                if hasattr(self, 'sync_service') and self.sync_service is not None:
+                                    self.sync_service.sync_all_complete.emit(0, "shutdown")
+                            except Exception as emit_err:
+                                print(f"DEBUG: Error emitting sync completion: {str(emit_err)}")
                         
                         # Wait for sync to complete or user to force exit
                         # The dialog will block until sync completes or user cancels
@@ -467,11 +492,12 @@ class ParkingSystem(QMainWindow):
                         # Disconnect signals to prevent callbacks during shutdown
                         try:
                             if api_available:
-                                self.sync_service.sync_progress.disconnect(sync_dialog.update_progress)
-                                self.sync_service.sync_all_complete.disconnect(sync_dialog.sync_complete)
-                        except TypeError:
+                                if hasattr(self, 'sync_service') and self.sync_service is not None:
+                                    self.sync_service.sync_progress.disconnect(sync_dialog.update_progress)
+                                    self.sync_service.sync_all_complete.disconnect(sync_dialog.sync_complete)
+                        except (TypeError, RuntimeError) as disconnect_err:
                             # Ignore disconnect errors if signals were already disconnected
-                            pass
+                            print(f"DEBUG: Signal disconnect error (non-critical): {str(disconnect_err)}")
                         
                         # If user forced exit, still need to continue with shutdown
                         if result == QDialog.Rejected and not sync_dialog.is_complete:
@@ -489,12 +515,15 @@ class ParkingSystem(QMainWindow):
                     try:
                         # Don't disconnect signals that are already being used by exit dialog
                         if not self.sync_dialog_active:
-                            self.sync_service.api_status_changed.disconnect()
-                            self.sync_service.sync_progress.disconnect()
-                            self.sync_service.sync_all_complete.disconnect()
-                    except (TypeError, RuntimeError):
+                            if hasattr(self.sync_service, 'api_status_changed'):
+                                self.sync_service.api_status_changed.disconnect()
+                            if hasattr(self.sync_service, 'sync_progress'):
+                                self.sync_service.sync_progress.disconnect()
+                            if hasattr(self.sync_service, 'sync_all_complete'):
+                                self.sync_service.sync_all_complete.disconnect()
+                    except (TypeError, RuntimeError) as e:
                         # Ignore errors if signals were already disconnected
-                        print("Note: Some signals were already disconnected")
+                        print(f"Note: Some signals were already disconnected: {str(e)}")
                     
                 if hasattr(self.control_screen, 'log_signal'):
                     try:
@@ -515,19 +544,27 @@ class ParkingSystem(QMainWindow):
                     self.control_screen.local_blacklist_logs = []
                     print("Cleared temporary blacklist logs")
             
+            # CRITICAL FIX: Protect against trying to access deleted C++ objects
+            # by using a copy of the sync_service reference and handling possible exceptions
+            sync_service = None
+            if hasattr(self, 'sync_service'):
+                sync_service = self.sync_service
+                # Clear the reference early to prevent later access to potentially deleted object
+                self.sync_service = None
+                
             # Stop sync service after control screen is closed
-            if hasattr(self, 'sync_service') and self.sync_service:
+            if sync_service:
                 print("Stopping sync service...")
                 try:
                     # Only call stop() if we didn't already do a sync in the exit dialog
                     # This avoids duplicating the sync operation
                     if not self.sync_dialog_active:
-                        self.sync_service.stop()  # This would perform a final sync with shutdown context
+                        sync_service.stop()  # This would perform a final sync with shutdown context
                     print("Sync service stopped")
                 except Exception as e:
                     print(f"Error stopping sync service: {str(e)}")
                 # Clear reference
-                self.sync_service = None
+                sync_service = None
             
             # Close database connection - do this last as other components might need database access
             print("Closing database connection...")

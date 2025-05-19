@@ -628,6 +628,19 @@ class SyncService(QObject):
             import cv2
             from config import LOT_ID
             
+            # CRITICAL FIX: Database connectivity check before proceeding
+            try:
+                # Verify that database is accessible before attempting sync
+                db_test = self.db_manager._get_connection()
+                if db_test is None:
+                    print("DEBUG: Database not accessible for shutdown sync, aborting")
+                    self.sync_all_complete.emit(0, "shutdown")
+                    return
+            except Exception as db_err:
+                print(f"DEBUG: Database error during shutdown sync: {str(db_err)}")
+                self.sync_all_complete.emit(0, "shutdown") 
+                return
+            
             # First check if API is available - don't proceed if not connected
             if not self.api_available:
                 print("DEBUG: API not available for shutdown sync, aborting")
@@ -636,10 +649,28 @@ class SyncService(QObject):
                 self.sync_all_complete.emit(0, "shutdown")
                 return
             
+            # CRITICAL FIX: Double-check API with a direct health check before proceeding
+            try:
+                print("DEBUG: Performing quick API health check before shutdown sync")
+                is_api_healthy = self.api_client.check_health(timeout=(2.0, 3.0))
+                if not is_api_healthy:
+                    print("DEBUG: API health check failed before shutdown sync")
+                    self.api_available = False
+                    self.sync_all_complete.emit(0, "shutdown")
+                    return
+                print("DEBUG: API health check passed for shutdown sync")
+            except Exception as health_err:
+                print(f"DEBUG: API health check error: {str(health_err)}")
+                self.api_available = False
+                self.sync_all_complete.emit(0, "shutdown")
+                return
+            
             # Ensure token is valid
             print("DEBUG: Checking token validity for shutdown sync")
             if not self._ensure_fresh_token():
                 print("DEBUG: Failed to refresh token for shutdown sync")
+                # CRITICAL FIX: Double-check API availability was updated by _ensure_fresh_token
+                self.api_available = False
                 self.sync_all_complete.emit(0, "shutdown")
                 return
             print("DEBUG: Token is valid for shutdown sync")    
@@ -674,7 +705,7 @@ class SyncService(QObject):
                         print(f"DEBUG: Log {log['id']} is already synced, skipping")
                         continue
                     
-                    # Check if API is still available before each sync attempt
+                    # CRITICAL FIX: Ensure API is still available before each attempt
                     if not self.api_available:
                         print(f"DEBUG: API connection lost during shutdown sync, aborting at log {idx+1}/{total_logs}")
                         break
@@ -710,32 +741,43 @@ class SyncService(QObject):
                     else:
                         print(f"DEBUG: No image path or file not found: {log.get('image_path', 'None')}")
                     
-                    # Sync to API
+                    # Sync to API with expanded error handling
                     print(f"DEBUG: Sending API request for log {log['id']}")
-                    success, response = self.api_client.post_with_files(
-                        'services/guard-control/',
-                        data=form_data,
-                        files=files,
-                        timeout=(5.0, 15.0)
-                    )
+                    try:
+                        success, response = self.api_client.post_with_files(
+                            'services/guard-control/',
+                            data=form_data,
+                            files=files,
+                            timeout=(5.0, 15.0)
+                        )
                             
-                    if success:
-                        print(f"DEBUG: Marking log {log['id']} as synced in database")
-                        self.db_manager.mark_log_synced(log['id'])
-                        synced_count += 1
-                        print(f"DEBUG: Successfully synced log {log['id']} during shutdown")
-                        
-                        # Update progress
-                        print(f"DEBUG: Emitting progress signal: {synced_count}/{total_logs}")
-                        self.sync_progress.emit("logs", synced_count, total_logs)
-                    else:
-                        # Handle API failure - check if it's a connection issue
-                        print(f"DEBUG: Failed to sync log {log['id']} during shutdown: {response}")
-                        if "Connection" in str(response) or "timeout" in str(response).lower():
-                            print("DEBUG: Connection issue detected, API may be unavailable")
+                        if success:
+                            print(f"DEBUG: Marking log {log['id']} as synced in database")
+                            # CRITICAL FIX: Double verification of success before marking as synced
+                            if isinstance(response, dict) and response.get('id'):
+                                self.db_manager.mark_log_synced(log['id'])
+                                synced_count += 1
+                                print(f"DEBUG: Successfully synced log {log['id']} during shutdown")
+                                
+                                # Update progress
+                                print(f"DEBUG: Emitting progress signal: {synced_count}/{total_logs}")
+                                self.sync_progress.emit("logs", synced_count, total_logs)
+                            else:
+                                print(f"DEBUG: API returned success but no valid response data, not marking as synced")
+                        else:
+                            # Handle API failure - check if it's a connection issue
+                            print(f"DEBUG: Failed to sync log {log['id']} during shutdown: {response}")
+                            if "Connection" in str(response) or "timeout" in str(response).lower():
+                                print("DEBUG: Connection issue detected, API may be unavailable")
+                                self.api_available = False
+                                break
+                    except Exception as api_err:
+                        print(f"DEBUG: Exception during API call: {str(api_err)}")
+                        if "Connection" in str(api_err) or "timeout" in str(api_err).lower():
+                            print("DEBUG: Connection exception detected, API may be unavailable")
                             self.api_available = False
                             break
-                        
+                    
                 except Exception as e:
                     print(f"DEBUG: Error syncing log during shutdown: {str(e)}")
                     if "Connection" in str(e) or "timeout" in str(e).lower():
@@ -804,27 +846,41 @@ class SyncService(QObject):
             if token_refreshed:
                 print("Token refreshed successfully using refresh token before sync")
                 self.last_token_refresh_time = current_time
-                return True
-            print("Refresh token failed, falling back to credentials")
-                
+                # CRITICAL FIX: Update API availability status when refresh token fails
+                self.api_available = False
+            
         # Fall back to credentials if refresh token not available or failed
         if not token_refreshed and (auth_manager.username and auth_manager.password):
             print(f"Using credentials for pre-sync token refresh ({auth_manager.username})")
             
             # Attempt login to get fresh token
-            success, message, _ = self.api_client.login(
-                auth_manager.username,
-                auth_manager.password,
-                timeout=(3.0, 5.0)
-            )
-            
-            if success:
-                print("Token refreshed successfully before sync using credentials")
-                self.last_token_refresh_time = current_time
-                return True
-            else:
-                print(f"Failed to refresh token before sync: {message}")
+            try:
+                success, message, _ = self.api_client.login(
+                    auth_manager.username,
+                    auth_manager.password,
+                    timeout=(3.0, 5.0)
+                )
+                
+                if success:
+                    print("Token refreshed successfully before sync using credentials")
+                    self.last_token_refresh_time = current_time
+                    # CRITICAL FIX: Update API availability status when credentials succeed
+                    self.api_available = True
+                    return True
+                else:
+                    print(f"Failed to refresh token before sync: {message}")
+                    # CRITICAL FIX: Update API availability status when credentials fail
+                    self.api_available = False
+                    return False
+            except Exception as e:
+                print(f"Login error during token refresh: {str(e)}")
+                # CRITICAL FIX: Update API availability status on exception
+                self.api_available = False
                 return False
+        
+        # CRITICAL FIX: If we got here with no success, ensure API is marked unavailable
+        if not token_refreshed:
+            self.api_available = False
         
         return token_refreshed
     

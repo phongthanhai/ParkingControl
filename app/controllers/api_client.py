@@ -77,8 +77,11 @@ class ApiClient:
         self.user_role = None
         self.assigned_lots = []
         # Default timeout values (in seconds)
-        self.connect_timeout = 5.0
-        self.read_timeout = 10.0
+        self.connect_timeout = 3.0
+        self.read_timeout = 7.0
+        # Special timeout for health checks
+        self.health_connect_timeout = 1.0
+        self.health_read_timeout = 2.0
 
     def login(self, username, password, timeout=None):
         """
@@ -454,7 +457,7 @@ class ApiClient:
         print(f"Attempting automatic token refresh for {self.auth_manager.username}")
         
         # Use a quick timeout for login - we don't want to hang here too long
-        timeout = (3.0, 5.0)
+        timeout = (self.health_connect_timeout, self.health_read_timeout)
         
         # Attempt login to get fresh token
         success, message, _ = self.login(

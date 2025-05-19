@@ -1,6 +1,7 @@
 import threading
 import time
 import queue
+import sqlite3
 from PyQt5.QtCore import QThread, pyqtSignal
 from app.utils.db_manager import DBManager
 from app.utils.image_storage import ImageStorage
@@ -26,6 +27,10 @@ class DBWorker(QThread):
         self.db_manager = DBManager()
         self.image_storage = ImageStorage()
         
+        # Connection retry settings
+        self.max_retries = 3
+        self.retry_delay = 1.0  # seconds
+        
         # Start the worker thread
         self.start()
 
@@ -45,35 +50,53 @@ class DBWorker(QThread):
                 operation_type = operation.get('type')
                 params = operation.get('params', {})
                 
-                try:
-                    # Perform the appropriate database operation based on type
-                    if operation_type == DBOperationType.LOG_ENTRY:
-                        result = self._handle_log_entry(params)
-                        self.operation_complete.emit(operation_id, True, result)
+                retry_count = 0
+                while retry_count <= self.max_retries:
+                    try:
+                        # Perform the appropriate database operation based on type
+                        if operation_type == DBOperationType.LOG_ENTRY:
+                            result = self._handle_log_entry(params)
+                            self.operation_complete.emit(operation_id, True, result)
+                        
+                        elif operation_type == DBOperationType.PARKING_SESSION:
+                            result = self._handle_parking_session(params)
+                            self.operation_complete.emit(operation_id, True, result)
+                        
+                        elif operation_type == DBOperationType.BARRIER_ACTION:
+                            result = self._handle_barrier_action(params)
+                            self.operation_complete.emit(operation_id, True, result)
+                        
+                        elif operation_type == DBOperationType.VEHICLE:
+                            result = self._handle_vehicle(params)
+                            self.operation_complete.emit(operation_id, True, result)
+                        
+                        else:
+                            print(f"Unknown operation type: {operation_type}")
+                            self.operation_complete.emit(operation_id, False, f"Unknown operation type: {operation_type}")
+                            
+                        # If we get here, the operation succeeded, so break the retry loop
+                        break
                     
-                    elif operation_type == DBOperationType.PARKING_SESSION:
-                        result = self._handle_parking_session(params)
-                        self.operation_complete.emit(operation_id, True, result)
-                    
-                    elif operation_type == DBOperationType.BARRIER_ACTION:
-                        result = self._handle_barrier_action(params)
-                        self.operation_complete.emit(operation_id, True, result)
-                    
-                    elif operation_type == DBOperationType.VEHICLE:
-                        result = self._handle_vehicle(params)
-                        self.operation_complete.emit(operation_id, True, result)
-                    
-                    else:
-                        print(f"Unknown operation type: {operation_type}")
-                        self.operation_complete.emit(operation_id, False, f"Unknown operation type: {operation_type}")
+                    except sqlite3.OperationalError as e:
+                        # Specific handling for database locked errors
+                        if "database is locked" in str(e) and retry_count < self.max_retries:
+                            retry_count += 1
+                            print(f"Database locked, retrying operation {operation_id} (attempt {retry_count}/{self.max_retries})")
+                            time.sleep(self.retry_delay * retry_count)  # Exponential backoff
+                            continue
+                        else:
+                            # Either not a locking error or max retries exceeded
+                            print(f"Database error in operation {operation_id}: {str(e)}")
+                            self.operation_complete.emit(operation_id, False, f"Database error: {str(e)}")
+                            break
+                            
+                    except Exception as e:
+                        print(f"Error processing database operation {operation_id}: {str(e)}")
+                        self.operation_complete.emit(operation_id, False, str(e))
+                        break
                 
-                except Exception as e:
-                    print(f"Error processing database operation: {str(e)}")
-                    self.operation_complete.emit(operation_id, False, str(e))
-                
-                finally:
-                    # Mark the task as done
-                    self.queue.task_done()
+                # Mark the task as done
+                self.queue.task_done()
                 
             except Exception as e:
                 print(f"Error in DB worker thread: {str(e)}")

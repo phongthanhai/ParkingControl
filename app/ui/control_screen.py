@@ -1,6 +1,6 @@
 from PyQt5.QtGui import QPixmap, QImage, QFont, QColor, QPalette
 from PyQt5.QtWidgets import QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSpacerItem, QWidget, QComboBox, QMessageBox
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG, QPropertyAnimation, QEasingCurve, QRect, QThread
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG, QPropertyAnimation, QEasingCurve, QRect, QThread, QElapsedTimer
 import RPi.GPIO as GPIO
 import time
 import threading
@@ -196,6 +196,14 @@ class ControlScreen(QWidget):
         self.active_timers = {}
         self.lanes_in_manual_mode = {}  # Track which lanes are in manual input mode
         self.worker_guard = threading.Lock()  # Protects worker creation/deletion
+        
+        # Initialize UI responsiveness monitor
+        self.ui_monitor_timer = QTimer(self)
+        self.ui_monitor_timer.timeout.connect(self._check_ui_responsiveness)
+        self.ui_monitor_timer.start(1000)  # Check every second
+        self.last_ui_check = QElapsedTimer()
+        self.last_ui_check.start()
+        self.ui_blocked_threshold = 500  # ms
         
         # Initialize database worker for async operations
         self.db_worker = DBWorker()
@@ -1896,7 +1904,7 @@ class ControlScreen(QWidget):
         operation_id = f"{operation_type}_{time.time()}"
         
         # Show loading indicator if needed
-        self._show_loading_indicator(operation_type, True)
+        self._safe_update_ui(lambda: self._show_loading_indicator(operation_type, True))
         
         # Create a worker thread for the API call
         class ApiWorker(QThread):
@@ -1930,7 +1938,12 @@ class ControlScreen(QWidget):
                                     if hasattr(self._parent, 'api_available'):
                                         self._parent.api_available = False
                                         if hasattr(self._parent, '_update_api_status'):
-                                            self._parent._update_api_status(False)
+                                            QMetaObject.invokeMethod(
+                                                self._parent, 
+                                                "_update_api_status", 
+                                                Qt.QueuedConnection,
+                                                Q_ARG(bool, False)
+                                            )
                                 else:
                                     print(f"PlateRecognizer API call failed: {error_msg} (not affecting backend API status)")
                             self.finished.emit(self.op_id, True, result)
@@ -1944,7 +1957,12 @@ class ControlScreen(QWidget):
                             if hasattr(self._parent, 'api_available'):
                                 self._parent.api_available = False
                                 if hasattr(self._parent, '_update_api_status'):
-                                    self._parent._update_api_status(False)
+                                    QMetaObject.invokeMethod(
+                                        self._parent, 
+                                        "_update_api_status", 
+                                        Qt.QueuedConnection,
+                                        Q_ARG(bool, False)
+                                    )
                             print(f"Backend API call exception: {str(e)}")
                         self.finished.emit(self.op_id, False, str(e))
                     
@@ -1988,7 +2006,7 @@ class ControlScreen(QWidget):
         operation_type = operation_id.split('_')[0]
         
         # Hide loading indicator
-        self._show_loading_indicator(operation_type, False)
+        self._safe_update_ui(lambda: self._show_loading_indicator(operation_type, False))
         
         # Process result based on operation type
         try:
@@ -2199,3 +2217,29 @@ class ControlScreen(QWidget):
                 log_data['stored_locally'] = True
                 log_data['image_path'] = result.get('image_path')
                 self.log_signal.emit(log_data)
+
+    def _check_ui_responsiveness(self):
+        """Check UI responsiveness and update status"""
+        elapsed_ms = self.last_ui_check.elapsed()
+        if elapsed_ms > self.ui_blocked_threshold:
+            print(f"UI blocked for {elapsed_ms} ms")
+            # Don't try to update UI from here as it could make things worse
+        self.last_ui_check.restart()
+
+    def _safe_update_ui(self, update_func):
+        """Thread-safe way to update UI elements"""
+        if threading.current_thread() is threading.main_thread():
+            # If we're already on the main thread, just call the function
+            update_func()
+        else:
+            # Otherwise use invokeMethod to execute on the main thread
+            # We'll use a lambda that takes no arguments since we're capturing our function
+            QMetaObject.invokeMethod(self, "_execute_ui_update", Qt.QueuedConnection,
+                                  Q_ARG(object, update_func))
+    
+    def _execute_ui_update(self, func):
+        """Execute the UI update function on the main thread"""
+        try:
+            func()
+        except Exception as e:
+            print(f"Error updating UI: {str(e)}")

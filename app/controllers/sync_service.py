@@ -42,6 +42,7 @@ class SyncWorker(QThread):
                         sync_count = self._sync_logs()
                         
                         # Signal completion of entire sync process with count
+                        sync_count = sync_count if sync_count is not None else 0
                         self.sync_service.last_sync_count = sync_count
                         self.sync_service.sync_all_complete.emit(sync_count)
                     else:
@@ -279,10 +280,10 @@ class SyncService(QObject):
         self.sync_worker.sync_progress.connect(self._handle_sync_progress)
         self.sync_worker.sync_complete.connect(self._handle_sync_complete)
         
-        # Set up API check timer
+        # Set up API check timer with more frequent checks
         self.api_check_timer = QTimer()
         self.api_check_timer.timeout.connect(self.check_api_connection)
-        self.api_check_timer.start(10000)  # Check API status every 10 seconds
+        self.api_check_timer.start(3000)  # Check API status every 3 seconds for faster disconnection detection
         
         # Initial API check
         self.check_api_connection()
@@ -305,8 +306,8 @@ class SyncService(QObject):
     def check_api_connection(self):
         """Check if the backend API server is available."""
         try:
-            # Use a short timeout for connectivity checks
-            api_check_timeout = (2.0, 3.0)
+            # Use the special health check timeouts for faster response
+            api_check_timeout = (self.api_client.health_connect_timeout, self.api_client.health_read_timeout)
             
             # Use the dedicated health check endpoint
             success, _ = self.api_client.get('services/health', timeout=api_check_timeout, auth_required=False)
@@ -323,20 +324,24 @@ class SyncService(QObject):
                 QTimer.singleShot(1000, lambda: self.sync_now())
                 
             elif not success and self.api_available:
-                self.api_retry_count += 1
-                if self.api_retry_count >= self.max_api_retries:
-                    self.api_available = False
-                    self.api_status_changed.emit(False)
-                    print("Backend API connection lost, pausing sync operations")
-                    self.sync_worker.pause()
-            
-        except Exception as e:
-            self.api_retry_count += 1
-            if self.api_retry_count >= self.max_api_retries:
+                # Mark as disconnected immediately after the first failure for faster UI feedback
                 self.api_available = False
                 self.api_status_changed.emit(False)
-                print(f"Backend API connection check error: {str(e)}")
+                print("Backend API connection lost, pausing sync operations")
                 self.sync_worker.pause()
+                
+                # Continue incrementing retry count for logging purposes
+                self.api_retry_count += 1
+            
+        except Exception as e:
+            # Immediately mark as disconnected on any exception
+            self.api_available = False
+            self.api_status_changed.emit(False)
+            print(f"Backend API connection check error: {str(e)}")
+            self.sync_worker.pause()
+            
+            # Continue incrementing retry count for logging
+            self.api_retry_count += 1
     
     def _handle_sync_progress(self, entity_type, completed, total):
         """Handle progress updates from the sync worker."""
@@ -425,7 +430,8 @@ class SyncService(QObject):
                 if not unsynced_logs:
                     print("No logs to sync")
                     self.sync_status_changed.emit("logs", SyncStatus.SUCCESS)
-                    self.sync_all_complete.emit()
+                    self.last_sync_count = 0
+                    self.sync_all_complete.emit(0)
                     return True
                     
                 # Only sync auto and manual entries, not denied-blacklist or skipped
@@ -435,7 +441,8 @@ class SyncService(QObject):
                 if not filtered_logs:
                     print("No valid logs to sync after filtering")
                     self.sync_status_changed.emit("logs", SyncStatus.SUCCESS)
-                    self.sync_all_complete.emit()
+                    self.last_sync_count = 0
+                    self.sync_all_complete.emit(0)
                     return True
                     
                 total_logs = len(filtered_logs)
@@ -566,7 +573,7 @@ class SyncService(QObject):
             # Signal completion of entire sync process with synced count
             self.last_sync_count = synced_count
             self.sync_all_complete.emit(synced_count)
-            return True
+        return True
     
     def _ensure_fresh_token(self):
         """Ensure we have a fresh authentication token by forcing a login"""

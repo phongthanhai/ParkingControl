@@ -51,60 +51,25 @@ class ParkingSystem(QMainWindow):
         # Cleanup any existing corrupted logs (one-time fix)
         self.cleanup_unsynced_logs()
         
-        # Status bar with database indicator
+        # Status bar without database indicator
         self.statusBar().showMessage("")
-        self.db_status_layout = QHBoxLayout()
-        self.db_status_layout.setContentsMargins(5, 0, 5, 0)
-        self.db_status_layout.setSpacing(5)
-        
-        self.db_indicator = QLabel()
-        self.db_indicator.setFixedSize(12, 12)
-        self.db_indicator.setStyleSheet("background-color: gray; border-radius: 6px;")
-        self.db_status_text = QLabel("Database: Not checked")
-        
-        self.db_status_layout.addWidget(self.db_indicator)
-        self.db_status_layout.addWidget(self.db_status_text)
-        self.db_status_layout.addStretch()
-        
-        db_status_widget = QLabel()
-        db_status_widget.setLayout(self.db_status_layout)
-        self.statusBar().addPermanentWidget(db_status_widget)
         
         # Initialize sync service
         self.sync_service = SyncService()
             
         self.setup_ui()
         
-        # Check database connectivity
-        self.check_db_connection()
+        # We'll still check the database connectivity, but not display it
+        self.check_db_connection_silently()
         
-        # Set up timer to periodically check database
+        # Set up timer to periodically check database (silently)
         self.db_check_timer = QTimer(self)
-        self.db_check_timer.timeout.connect(self.check_db_connection)
+        self.db_check_timer.timeout.connect(self.check_db_connection_silently)
         self.db_check_timer.start(30000)  # Check every 30 seconds
 
     def check_db_connection(self):
-        """Check if the SQLite database is accessible"""
-        try:
-            db_manager = DBManager()
-            # Try to execute a simple query
-            conn = db_manager._get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1")
-            cursor.fetchone()
-            
-            # Database is connected
-            self.db_indicator.setStyleSheet("background-color: #a0d468; border-radius: 6px; border: 1px solid #8cc152;")
-            self.db_status_text.setText("Database: Connected")
-            self.db_status_text.setStyleSheet("color: #8cc152;")
-            return True
-        except (sqlite3.Error, Exception) as e:
-            # Database connection failed
-            self.db_indicator.setStyleSheet("background-color: #ed5565; border-radius: 6px; border: 1px solid #da4453;")
-            self.db_status_text.setText("Database: Error")
-            self.db_status_text.setStyleSheet("color: #ed5565;")
-            print(f"Database error: {str(e)}")
-            return False
+        """Check if the SQLite database is accessible - DEPRECATED (KEPT FOR COMPATIBILITY)"""
+        return self.check_db_connection_silently()
 
     def setup_ui(self):
         self.stack = QStackedWidget()
@@ -255,6 +220,23 @@ class ParkingSystem(QMainWindow):
             print(f"Error during log cleanup: {str(e)}")
             # Show error in status bar
             self.statusBar().showMessage(f"Error fixing corrupted logs: {str(e)}", 5000)
+
+    def check_db_connection_silently(self):
+        """Check if the SQLite database is accessible without displaying status"""
+        try:
+            db_manager = DBManager()
+            # Try to execute a simple query
+            conn = db_manager._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            
+            # Database is connected
+            return True
+        except (sqlite3.Error, Exception) as e:
+            # Database connection failed
+            print(f"Database error: {str(e)}")
+            return False
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

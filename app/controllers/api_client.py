@@ -23,6 +23,9 @@ class PlateRecognizer(QObject):
         
         # Keep track of workers
         self._active_workers = []
+        
+        # Add a flag to indicate destruction
+        self._shutting_down = False
 
     def process(self, image, timeout=None):
         """
@@ -33,20 +36,27 @@ class PlateRecognizer(QObject):
             timeout (float or tuple): Connection and read timeout in seconds
         """
         try:
+            # Don't start new workers if shutting down
+            if self._shutting_down:
+                print("PlateRecognizer is shutting down, rejecting new process request")
+                return None
+                
             # Rate limiting check with proper locking
             self.rate_limit_mutex.lock()
-            if time.time() - self.last_call < OCR_RATE_LIMIT:
+            try:
+                if time.time() - self.last_call < OCR_RATE_LIMIT:
+                    return None
+                else:
+                    # Mark the time immediately to prevent multiple calls getting through
+                    self.last_call = time.time()
+            finally:
                 self.rate_limit_mutex.unlock()
-                return None
-            else:
-                # Mark the time immediately to prevent multiple calls getting through
-                self.last_call = time.time()
-            self.rate_limit_mutex.unlock()
             
             # Start worker thread for API call
             worker = PlateRecognizerWorker(image, timeout or (self.connect_timeout, self.read_timeout))
             worker.error_signal.connect(self.error_signal)
             worker.result_signal.connect(self._handle_result)
+            worker.finished.connect(lambda: self._cleanup_worker(worker))
             
             # Track worker to prevent garbage collection
             self._active_workers.append(worker)
@@ -69,9 +79,51 @@ class PlateRecognizer(QObject):
         # Forward to any listeners
         self.result_signal.emit(result)
     
+    def _cleanup_worker(self, worker):
+        """Remove a specific worker when it's finished"""
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
+    
     def _cleanup_workers(self):
         """Remove completed workers"""
         self._active_workers = [w for w in self._active_workers if w.isRunning()]
+    
+    def stop_all_workers(self):
+        """Stop all running workers with proper cleanup"""
+        self._shutting_down = True
+        
+        # Make a copy of the list to avoid modification during iteration
+        workers = self._active_workers.copy()
+        for worker in workers:
+            try:
+                if worker.isRunning():
+                    worker.requestInterruption()  # Signal the thread to stop
+                    if not worker.wait(300):  # Wait up to 300ms
+                        print("Worker thread could not be terminated gracefully")
+                        worker.terminate()  # Force termination as last resort
+                        worker.wait(100)  # Give it a chance to terminate
+            except Exception as e:
+                print(f"Error stopping worker thread: {str(e)}")
+        
+        # Clear the list
+        self._active_workers.clear()
+    
+    def __del__(self):
+        """Clean up properly when object is destroyed"""
+        try:
+            # Set the shutdown flag first to prevent new workers from starting
+            self._shutting_down = True
+            
+            # Explicitly stop all workers with proper cleanup
+            if hasattr(self, '_active_workers') and self._active_workers:
+                self.stop_all_workers()
+                
+            # Clear any circular references that might prevent garbage collection
+            if hasattr(self, '_active_workers'):
+                self._active_workers.clear()
+                
+        except Exception as e:
+            print(f"Error cleaning up PlateRecognizer: {str(e)}")
 
 class PlateRecognizerWorker(QThread):
     """Worker thread for making plate recognition API calls"""
@@ -85,10 +137,18 @@ class PlateRecognizerWorker(QThread):
     
     def run(self):
         try:
+            # Check for interruption request
+            if self.isInterruptionRequested():
+                return
+                
             # Convert image to bytes
             _, img_encoded = cv2.imencode('.jpg', self.image)
             img_bytes = BytesIO(img_encoded.tobytes())
             
+            # Check for interruption again before network call
+            if self.isInterruptionRequested():
+                return
+                
             # Make API request with timeout
             response = requests.post(
                 PLATE_RECOGNIZER_URL,
@@ -97,6 +157,10 @@ class PlateRecognizerWorker(QThread):
                 timeout=self.timeout
             )
             
+            # Check for interruption after network call
+            if self.isInterruptionRequested():
+                return
+                
             if response.status_code == 429:
                 self.error_signal.emit("API rate limit exceeded")
                 self.result_signal.emit((None, None))

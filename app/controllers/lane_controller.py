@@ -347,21 +347,52 @@ class LaneWorker(QThread):
     
     def stop(self):
         """Clean shutdown of the worker thread"""
-        self.mutex.lock()
-        self._running = False
-        self._paused = False
-        self.condition.wakeAll()
-        self.mutex.unlock()
+        print(f"Stopping {self.lane_type} lane worker thread...")
         
-        # Release camera resources
-        with self.camera_lock:
-            if self._cap is not None and self._cap.isOpened():
-                self._cap.release()
-                self._cap = None
-        
-        # Wait for thread to finish
-        if self.isRunning():
-            self.quit()
-            if not self.wait(3000):  # Wait up to 3 seconds
+        try:
+            # Stop any active cooldown timer
+            if self.cooldown_timer is not None and self.cooldown_timer.isActive():
+                self.cooldown_timer.stop()
+            
+            # Signal thread to stop
+            self.mutex.lock()
+            self._running = False
+            self._paused = False
+            self.condition.wakeAll()
+            self.mutex.unlock()
+            
+            # Release camera resources
+            with self.camera_lock:
+                if self._cap is not None and self._cap.isOpened():
+                    self._cap.release()
+                    self._cap = None
+            
+            # Safe cleanup of detector and recognizer
+            if hasattr(self, 'recognizer') and self.recognizer is not None:
+                try:
+                    # Disconnect any signals
+                    self.recognizer.error_signal.disconnect()
+                    self.recognizer.result_signal.disconnect()
+                    # Stop recognizer threads
+                    self.recognizer.stop_all_workers()
+                    self.recognizer = None
+                except Exception as e:
+                    print(f"Error cleaning up recognizer in {self.lane_type} lane: {str(e)}")
+            
+            self.detector = None
+            
+            # Wait for thread to finish with timeout
+            if self.isRunning():
+                print(f"Waiting for {self.lane_type} lane thread to finish...")
+                if not self.wait(3000):  # Wait up to 3 seconds
+                    print(f"WARNING: {self.lane_type} lane thread did not stop gracefully, forcing termination")
+                    self.terminate()
+                    self.wait(500)  # Give it 500ms to terminate
+                
+            print(f"{self.lane_type} lane worker thread stopped")
+        except Exception as e:
+            print(f"Error stopping {self.lane_type} lane thread: {str(e)}")
+            # Try to force termination as a last resort
+            if self.isRunning():
                 self.terminate()
                 self.wait()

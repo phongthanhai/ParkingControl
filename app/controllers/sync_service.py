@@ -54,9 +54,19 @@ class SyncWorker(QThread):
             time.sleep(10)  # 10 second sleep between sync cycles
     
     def stop(self):
+        print("Stopping sync worker thread...")
         self.mutex.lock()
         self._running = False
         self.mutex.unlock()
+        
+        # Wait for the thread to finish with a timeout
+        if self.isRunning():
+            if not self.wait(5000):  # Wait up to 5 seconds
+                print("WARNING: Sync worker thread did not stop gracefully, forcing termination")
+                self.terminate()
+                self.wait(500)  # Give it 500ms to terminate
+            
+        print("Sync worker thread stopped")
     
     def pause(self):
         self.mutex.lock()
@@ -705,13 +715,35 @@ class SyncService(QObject):
     
     def stop(self):
         """Stop the sync service."""
-        if self.sync_worker and self.sync_worker.isRunning():
-            self.sync_worker.stop()
-            self.sync_worker.wait(1000)  # Wait up to 1 second
-        
-        if self.api_check_timer and self.api_check_timer.isActive():
-            self.api_check_timer.stop()
+        print("Stopping sync service and worker threads...")
+        try:
+            # Stop the API check timer
+            if hasattr(self, 'api_check_timer') and self.api_check_timer.isActive():
+                self.api_check_timer.stop()
+                print("API check timer stopped")
+            
+            # Signal the worker to stop first
+            if self.sync_worker and self.sync_worker.isRunning():
+                print("Signaling sync worker thread to stop...")
+                self.sync_worker.stop()
+                print("Sync worker thread stopped")
+                
+            # Clear any references that could cause circular dependencies
+            self.sync_worker = None
+            
+        except Exception as e:
+            print(f"Error during sync service shutdown: {str(e)}")
+            # Try to force termination as a last resort
+            if hasattr(self, 'sync_worker') and self.sync_worker and self.sync_worker.isRunning():
+                try:
+                    self.sync_worker.terminate()
+                    self.sync_worker.wait()
+                except:
+                    pass
     
     def __del__(self):
         """Clean up resources."""
-        self.stop() 
+        try:
+            self.stop()
+        except Exception as e:
+            print(f"Error during sync service cleanup: {str(e)}") 

@@ -170,25 +170,71 @@ class ParkingSystem(QMainWindow):
     def closeEvent(self, event):
         """Handle application close properly"""
         try:
-            # Stop sync service
-            if hasattr(self, 'sync_service'):
-                self.sync_service.stop()
+            print("Starting main application shutdown...")
             
-            # Close database connection
-            db_manager = DBManager()
-            db_manager.close()
-            
-            # Clear blacklist logs if control screen exists
+            # Stop timers first to prevent any new operations
+            if hasattr(self, 'db_check_timer') and self.db_check_timer.isActive():
+                self.db_check_timer.stop()
+                print("Database check timer stopped")
+                
+            # If control screen exists, close it first to handle thread cleanup
             if hasattr(self, 'control_screen') and self.control_screen:
+                print("Closing control screen and its threads...")
+                # Disconnect signals to prevent callbacks during shutdown
+                if hasattr(self, 'sync_service'):
+                    try:
+                        self.sync_service.api_status_changed.disconnect()
+                        self.sync_service.sync_progress.disconnect()
+                        self.sync_service.sync_all_complete.disconnect()
+                    except:
+                        pass
+                    
+                if hasattr(self.control_screen, 'log_signal'):
+                    try:
+                        self.control_screen.log_signal.disconnect()
+                    except:
+                        pass
+                
+                # Let the control screen clean up its threads
+                try:
+                    # Simulate a close event to trigger thread cleanup
+                    close_event = QCloseEvent()
+                    self.control_screen.closeEvent(close_event)
+                    print("Control screen threads cleaned up")
+                except Exception as e:
+                    print(f"Error cleaning up control screen threads: {str(e)}")
+                
+                # Clear blacklist logs
                 if hasattr(self.control_screen, 'local_blacklist_logs'):
                     self.control_screen.local_blacklist_logs = []
-                    print("Cleared temporary blacklist logs on application close")
+                    print("Cleared temporary blacklist logs")
             
-            # Stop timers
-            if hasattr(self, 'db_check_timer'):
-                self.db_check_timer.stop()
+            # Stop sync service after control screen is closed
+            if hasattr(self, 'sync_service'):
+                print("Stopping sync service...")
+                try:
+                    self.sync_service.stop()
+                    print("Sync service stopped")
+                except Exception as e:
+                    print(f"Error stopping sync service: {str(e)}")
+                # Clear reference
+                self.sync_service = None
+            
+            # Close database connection - do this last as other components might need database access
+            print("Closing database connection...")
+            try:
+                db_manager = DBManager()
+                db_manager.close()
+                print("Database connection closed")
+            except Exception as e:
+                print(f"Error closing database: {str(e)}")
+            
+            print("Application shutdown complete")
+            
         except Exception as e:
             print(f"Error during application shutdown: {str(e)}")
+        
+        # Always accept the close event
         event.accept()
 
     def cleanup_unsynced_logs(self):

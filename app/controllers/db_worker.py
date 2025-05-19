@@ -103,8 +103,28 @@ class DBWorker(QThread):
     
     def stop(self):
         """Stop the worker thread"""
+        print("Stopping DB worker thread...")
         self._running = False
-        self.wait()
+        
+        # Wake up the thread if it's waiting on the queue
+        try:
+            # Put a sentinel value in the queue to wake up the thread
+            self.queue.put(None, block=False)
+        except queue.Full:
+            pass
+        
+        # Wait for the thread to finish with a timeout
+        if self.isRunning():
+            if not self.wait(5000):  # Wait up to 5 seconds
+                print("WARNING: DB worker thread did not stop gracefully, forcing termination")
+                self.terminate()
+                self.wait(500)  # Give it 500ms to terminate
+            
+        print("DB worker thread stopped")
+        
+        # Clean up resources
+        self.db_manager = None
+        self.image_storage = None
     
     def queue_operation(self, operation_type, **kwargs):
         """

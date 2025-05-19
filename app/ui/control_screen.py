@@ -1940,9 +1940,9 @@ class ControlScreen(QWidget):
                 
             def run(self):
                 try:
-                    if self._running:
+                    if self._running and not self.isInterruptionRequested():
                         result = self.func(*self.args, **self.kwargs)
-                        if self._running:  # Check again in case we were terminated
+                        if self._running and not self.isInterruptionRequested():
                             # Check for backend API call errors
                             if isinstance(result, tuple) and len(result) >= 2 and result[0] is False:
                                 # This is an (success, error_message) tuple indicating API failure
@@ -1964,7 +1964,7 @@ class ControlScreen(QWidget):
                                     print(f"PlateRecognizer API call failed: {error_msg} (not affecting backend API status)")
                             self.finished.emit(self.op_id, True, result)
                 except Exception as e:
-                    if self._running:
+                    if self._running and not self.isInterruptionRequested():
                         # Check if this is a PlateRecognizer API exception
                         if "PlateRecognizer" in str(e):
                             print(f"PlateRecognizer API call exception: {str(e)} (not affecting backend API status)")
@@ -1982,6 +1982,8 @@ class ControlScreen(QWidget):
                     
             def stop(self):
                 self._running = False
+                # Request interruption to allow safe early termination
+                self.requestInterruption()
         
         # Create and start worker
         worker = ApiWorker(operation_id, api_func, args, kwargs, self)
@@ -2007,12 +2009,41 @@ class ControlScreen(QWidget):
         worker.finished.connect(lambda op_id, success, result: 
                                self._handle_async_result(op_id, success, result))
         
+        # Add worker cleanup when finished
+        worker.finished.connect(lambda op_id, success, result: 
+                               self._cleanup_api_worker(operation_id))
+        
         self._api_workers[operation_id] = worker
         
         # Start the worker
         worker.start()
         
         return operation_id
+    
+    def _cleanup_api_worker(self, worker_id):
+        """Clean up a worker thread after it's finished"""
+        if not hasattr(self, '_api_workers'):
+            return
+        
+        try:
+            if worker_id in self._api_workers:
+                worker = self._api_workers[worker_id]
+                # Only remove after thread has stopped
+                if not worker.isRunning():
+                    # Disconnect signals before removal to prevent any late callbacks
+                    try:
+                        worker.finished.disconnect()
+                    except:
+                        pass
+                    # Wait a brief moment to ensure any pending callbacks are processed
+                    QTimer.singleShot(100, lambda: self._api_workers.pop(worker_id, None))
+                else:
+                    # Thread is still running - don't remove, but schedule a check later
+                    print(f"Worker {worker_id} is still running, postponing cleanup")
+                    # Schedule a later check on the thread to clean it up
+                    QTimer.singleShot(500, lambda: self._cleanup_api_worker(worker_id))
+        except Exception as e:
+            print(f"Error cleaning up API worker {worker_id}: {str(e)}")
 
     def _handle_async_result(self, operation_id, success, result):
         """Handle the result from an async API call"""
@@ -2164,36 +2195,106 @@ class ControlScreen(QWidget):
     def closeEvent(self, event):
         """Handle application close properly by cleaning up threads"""
         try:
-            # Stop UI monitor and API check timers
+            print("Starting application shutdown and thread cleanup...")
+            
+            # Disable timers and status checks first
             if hasattr(self, 'ui_monitor_timer') and self.ui_monitor_timer.isActive():
                 self.ui_monitor_timer.stop()
+                print("UI monitor timer stopped")
                 
             if hasattr(self, 'ui_api_check_timer') and self.ui_api_check_timer.isActive():
                 self.ui_api_check_timer.stop()
+                print("API check timer stopped")
             
             # Clear manual input mode flags
             self.lanes_in_manual_mode.clear()
             
-            # Stop all API worker threads first
+            # Stop all API workers first - use a more robust approach
+            api_workers_stopped = True
             if hasattr(self, '_api_workers'):
+                worker_count = len(self._api_workers)
+                print(f"Stopping {worker_count} API worker threads...")
+                
+                # First pass: request stop on all workers
                 for thread_id, worker in list(self._api_workers.items()):
                     if worker and worker.isRunning():
+                        print(f"  Requesting stop for {thread_id}")
+                        try:
+                            # Disconnect any signals first to prevent callbacks during shutdown
+                            worker.finished.disconnect()
+                        except:
+                            pass
                         worker.stop()  # Signal the thread to stop
-                        worker.wait(500)  # Wait up to 500ms for clean shutdown
+                
+                # Second pass: wait for workers to stop
+                for thread_id, worker in list(self._api_workers.items()):
+                    if worker and worker.isRunning():
+                        if not worker.wait(1500):  # Wait up to 1.5 seconds for clean shutdown
+                            print(f"  Warning: Thread {thread_id} did not stop gracefully")
+                            try:
+                                worker.terminate()  # Force termination as last resort
+                                worker.wait(500)    # Give it 500ms to terminate
+                                if worker.isRunning():
+                                    print(f"  Critical: Thread {thread_id} could not be terminated")
+                                    api_workers_stopped = False
+                            except Exception as e:
+                                print(f"  Error terminating thread {thread_id}: {str(e)}")
+                                api_workers_stopped = False
+                
+                # Clear references
+                self._api_workers.clear()
+                if api_workers_stopped:
+                    print("All API workers stopped successfully")
+                else:
+                    print("WARNING: Some API workers could not be stopped properly")
             
             # Stop the DB worker thread
             if hasattr(self, 'db_worker'):
                 print("Stopping DB worker thread...")
+                try:
+                    self.db_worker.operation_complete.disconnect()
+                except:
+                    pass
                 self.db_worker.stop()
-                self.db_worker.wait(1000)  # Wait up to 1 second for clean shutdown
                 print("DB worker thread stopped")
+                # Clear reference
+                self.db_worker = None
             
             # Now stop camera workers
             with self.worker_guard:
+                camera_workers_stopped = True
                 for lane, worker in list(self.lane_workers.items()):
                     if worker and worker.isRunning():
+                        print(f"Stopping {lane} camera worker...")
+                        try:
+                            # Disconnect signals to prevent callbacks during shutdown
+                            worker.detection_signal.disconnect()
+                            worker.status_signal.disconnect()
+                            worker.error_signal.disconnect()
+                        except:
+                            pass
                         worker.stop()
-                        worker.wait(1000)  # Wait up to 1 second for clean shutdown
+                        if not worker.wait(2000):  # Wait up to 2 seconds for clean shutdown
+                            print(f"Warning: {lane} camera worker did not stop gracefully, forcing termination")
+                            try:
+                                worker.terminate()
+                                if not worker.wait(500):
+                                    print(f"Critical: {lane} camera worker could not be terminated")
+                                    camera_workers_stopped = False
+                            except Exception as e:
+                                print(f"Error terminating {lane} camera worker: {str(e)}")
+                                camera_workers_stopped = False
+                
+                # Clear references            
+                self.lane_workers.clear()
+                
+                if camera_workers_stopped:
+                    print("All camera workers stopped successfully")
+                else:
+                    print("WARNING: Some camera workers could not be stopped properly")
+            
+            # Clear all other references that might hold thread objects
+            self.pending_db_operations.clear()
             
             # Clean GPIO
             try:
@@ -2203,6 +2304,8 @@ class ControlScreen(QWidget):
             
             # Accept the close event
             event.accept()
+            print("Application shutdown complete")
+            
         except Exception as e:
             print(f"Error during application shutdown: {str(e)}")
             event.accept()  # Accept anyway to ensure the app closes

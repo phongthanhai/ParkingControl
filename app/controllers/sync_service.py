@@ -597,47 +597,39 @@ class SyncService(QObject):
         return True
     
     def _ensure_fresh_token(self):
-        """Ensure we have a fresh authentication token by forcing a login"""
+        """Ensure we have a fresh authentication token by using refresh token"""
         from app.utils.auth_manager import AuthManager
         auth_manager = AuthManager()
         
-        # If this is an initial login, we should just let the login screen handle it
-        if auth_manager.is_initial_login():
-            print("Sync service detected initial login state - deferring to login screen")
-            return False
-            
-        # Use AuthManager's cooldown system to determine if refresh needed
-        if not auth_manager.should_refresh_token():
-            # Either refresh is in progress or token is fresh enough
-            return auth_manager.is_authenticated()
+        print("Pre-sync token refresh check")
         
-        # Check if we have stored credentials
-        if not auth_manager.has_stored_credentials():
-            print("No stored credentials available for token refresh")
-            auth_manager.finish_token_refresh(success=False)
-            return False
-            
-        print(f"Pre-sync token refresh for {auth_manager.username}")
-        
-        try:
-            # Attempt login to get fresh token
-            success, message, _ = self.api_client.login(
-                auth_manager.username,
-                auth_manager.password,
-                timeout=(3.0, 5.0)
-            )
-            
-            if success:
-                print("Token refreshed successfully before sync")
-                auth_manager.finish_token_refresh(success=True)
+        # First try to use refresh token if available
+        if auth_manager.has_refresh_token():
+            print("Using refresh token for pre-sync token refresh")
+            if self.api_client._refresh_token():
+                print("Token refreshed successfully using refresh token before sync")
                 return True
-            else:
-                print(f"Failed to refresh token before sync: {message}")
-                auth_manager.finish_token_refresh(success=False)
-                return False
-        except Exception as e:
-            print(f"Error refreshing token: {str(e)}")
-            auth_manager.finish_token_refresh(success=False)
+            print("Refresh token failed, falling back to credentials")
+        
+        # Fall back to credentials if refresh token not available or failed
+        if not (auth_manager.username and auth_manager.password):
+            print("No stored credentials available for token refresh")
+            return False
+            
+        print(f"Using credentials for pre-sync token refresh ({auth_manager.username})")
+        
+        # Attempt login to get fresh token
+        success, message, _ = self.api_client.login(
+            auth_manager.username,
+            auth_manager.password,
+            timeout=(3.0, 5.0)
+        )
+        
+        if success:
+            print("Token refreshed successfully before sync using credentials")
+            return True
+        else:
+            print(f"Failed to refresh token before sync: {message}")
             return False
     
     def reconnect(self):
@@ -720,24 +712,8 @@ class SyncService(QObject):
             # If auth failed but server is up, we need to refresh token
             if not success:
                 print("Authentication failed, attempting to refresh token...")
-                # Check if auth_manager has stored credentials
-                from app.utils.auth_manager import AuthManager
-                auth_manager = AuthManager()
-                
-                # If we have stored credentials, try to login again
-                if auth_manager.username and auth_manager.password:
-                    print(f"Attempting to refresh authentication token for user {auth_manager.username}...")
-                    
-                    # Use the async API call
-                    self._perform_async_login(
-                        auth_manager.username, 
-                        auth_manager.password,
-                        timeout=(3.0, 5.0)
-                    )
-                else:
-                    print("No stored credentials available for token refresh")
-                    self.api_available = False
-                    self.api_status_changed.emit(False)
+                # Use the new token refresh method
+                self._attempt_token_refresh()
             else:
                 print("Authentication is valid")
                 self.api_available = True
@@ -747,6 +723,39 @@ class SyncService(QObject):
             print(f"Error handling reconnect auth check: {str(e)}")
             self.api_available = False
             self.api_status_changed.emit(False)
+
+    def _attempt_token_refresh(self, timeout=(3.0, 5.0)):
+        """Attempt to refresh token using refresh token or credentials as fallback"""
+        print("Attempting to refresh authentication token")
+        
+        # First try refresh token
+        from app.utils.auth_manager import AuthManager
+        auth_manager = AuthManager()
+        
+        if auth_manager.has_refresh_token():
+            print("Using refresh token for authentication refresh")
+            if self.api_client._refresh_token():
+                print("Token refreshed successfully using refresh token")
+                self.api_available = True
+                self.api_status_changed.emit(True)
+                self.sync_worker.resume()
+                return True
+            print("Refresh token failed, falling back to credentials")
+            
+        # Fall back to credentials
+        if auth_manager.username and auth_manager.password:
+            print(f"Attempting credential login for {auth_manager.username}")
+            self._perform_async_login(
+                auth_manager.username,
+                auth_manager.password,
+                timeout=timeout
+            )
+            return True
+        else:
+            print("No stored credentials available for token refresh")
+            self.api_available = False
+            self.api_status_changed.emit(False)
+            return False
 
     def _perform_async_login(self, username, password, timeout):
         """Perform login asynchronously"""

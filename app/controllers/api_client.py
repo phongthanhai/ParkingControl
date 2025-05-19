@@ -287,30 +287,6 @@ class ApiClient(QObject):
         Returns:
             tuple: (success, message, data) - success is a boolean, message is a string, data contains user info
         """
-        # Get the auth manager
-        auth_manager = self.auth_manager
-        
-        # Skip cooldown checks for initial login attempts from the login screen
-        start_login = True
-        if auth_manager.is_authenticated():
-            # Only apply refresh coordination if we already have a token
-            # (this means it's a refresh, not an initial login)
-            if hasattr(auth_manager, 'should_refresh_token') and not auth_manager.should_refresh_token():
-                print("Login attempt blocked - token refresh already in progress or on cooldown")
-                return False, "Login attempt currently blocked due to rate limiting", None
-            
-            # Mark refresh as starting
-            if hasattr(auth_manager, 'should_refresh_token'):
-                start_login = auth_manager.should_refresh_token()  # This will set refresh in progress
-                if not start_login:
-                    print("Failed to initiate login process - another login already in progress")
-                    return False, "Login already in progress", None
-        else:
-            # For initial login, always allow and set refresh flag
-            if hasattr(auth_manager, 'should_refresh_token'):
-                start_login = auth_manager.should_refresh_token()
-            print("Initial login attempt detected")
-        
         login_url = f"{self.base_url}/login/access-token"
         print(f"Attempting login at URL: {login_url}")
         
@@ -335,7 +311,7 @@ class ApiClient(QObject):
         
         try:
             # Clear any existing token before attempting a new login
-            auth_manager.clear()
+            self.auth_manager.clear()
             
             # Send POST request with timeout using session
             response = self.session.post(login_url, data=form_data, headers=headers, timeout=timeout)
@@ -345,60 +321,46 @@ class ApiClient(QObject):
                 # Parse the JSON response
                 data = response.json()
                 
-                # Store token information
-                auth_manager.access_token = data['access_token']
-                auth_manager.token_type = data['token_type']
-                
-                # Store credentials for reconnection
-                auth_manager.username = username
-                auth_manager.password = password
-                
-                # Store user information
-                self.user_id = data.get('user_id')
-                self.user_role = data.get('user_role')
-                self.assigned_lots = data.get('assigned_lots', [])
+                # Thread-safe token storage
+                self.auth_mutex.lock()
+                try:
+                    # Store token information
+                    self.auth_manager.access_token = data['access_token']
+                    self.auth_manager.token_type = data['token_type']
+                    self.auth_manager.refresh_token = data.get('refresh_token')
+                    
+                    # Store credentials for reconnection
+                    self.auth_manager.username = username
+                    self.auth_manager.password = password
+                    
+                    # Store user information
+                    self.user_id = data.get('user_id')
+                    self.user_role = data.get('user_role')
+                    self.assigned_lots = data.get('assigned_lots', [])
+                finally:
+                    self.auth_mutex.unlock()
                 
                 # Clear cached headers after login
                 self._cached_headers = {}
                 
-                print(f"Login successful. Token type: {auth_manager.token_type}")
-                
-                # Mark token refresh as completed successfully
-                if hasattr(auth_manager, 'finish_token_refresh'):
-                    auth_manager.finish_token_refresh(success=True)
-                    
+                print(f"Login successful. Token type: {self.auth_manager.token_type}")
                 return True, "Login successful", data
             else:
                 # Handle error responses
-                error_message = "Unknown error"
                 try:
                     error_data = response.json()
                     if 'detail' in error_data:
-                        error_message = error_data['detail']
+                        return False, error_data['detail'], None
                 except:
-                    error_message = f"HTTP Error: {response.status_code}"
-                
-                # Mark token refresh as failed
-                if hasattr(auth_manager, 'finish_token_refresh'):
-                    auth_manager.finish_token_refresh(success=False)
-                    
-                return False, error_message, None
+                    return False, f"HTTP Error: {response.status_code}", None
                 
         except requests.exceptions.ConnectTimeout:
-            if hasattr(auth_manager, 'finish_token_refresh'):
-                auth_manager.finish_token_refresh(success=False)
             return False, "Connection timeout. The server is not responding.", None
         except requests.exceptions.ReadTimeout:
-            if hasattr(auth_manager, 'finish_token_refresh'):
-                auth_manager.finish_token_refresh(success=False)
             return False, "Read timeout. The server took too long to respond.", None
         except requests.exceptions.ConnectionError:
-            if hasattr(auth_manager, 'finish_token_refresh'):
-                auth_manager.finish_token_refresh(success=False)
             return False, "Could not connect to the server. Please check if the server is running.", None
         except Exception as e:
-            if hasattr(auth_manager, 'finish_token_refresh'):
-                auth_manager.finish_token_refresh(success=False)
             return False, f"An error occurred: {str(e)}", None
 
     def is_lot_assigned(self, lot_id):
@@ -463,25 +425,13 @@ class ApiClient(QObject):
             elif response.status_code == 401 and auth_required and retry_on_auth_fail:
                 # Only attempt token refresh if explicitly enabled and authentication is required
                 print(f"Authentication failed for {url} - token might be expired")
-                
-                # Check if we can attempt a token refresh using AuthManager
-                auth_manager = self.auth_manager
-                if hasattr(auth_manager, 'should_refresh_token') and auth_manager.should_refresh_token():
-                    # Attempt to refresh the token
-                    refresh_success = self._refresh_token()
-                    if refresh_success:
-                        # Update headers with new token
-                        headers = self._get_auth_header()
-                        # Retry the request with the new token (but don't allow further retries to prevent loops)
-                        return self.get(endpoint, params, timeout, auth_required, False)
-                    else:
-                        # Make sure to finish the token refresh process
-                        if hasattr(auth_manager, 'finish_token_refresh'):
-                            auth_manager.finish_token_refresh(success=False)
+                if self._refresh_token():
+                    # Update headers with new token
+                    headers = self._get_auth_header()
+                    # Retry the request with the new token (but don't allow further retries to prevent loops)
+                    return self.get(endpoint, params, timeout, auth_required, False)
                 else:
-                    print("Token refresh blocked by cooldown or another refresh in progress")
-                    
-                return False, "Authentication failed"
+                    return False, "Authentication failed"
             else:
                 try:
                     error_data = response.json()
@@ -531,25 +481,13 @@ class ApiClient(QObject):
                 return True, response.json()
             elif response.status_code == 401 and retry_on_auth_fail:
                 print(f"Authentication failed for {url} - attempting to refresh token and retry")
-                
-                # Check if we can attempt a token refresh using AuthManager
-                auth_manager = self.auth_manager
-                if hasattr(auth_manager, 'should_refresh_token') and auth_manager.should_refresh_token():
-                    # Attempt to refresh the token
-                    refresh_success = self._refresh_token()
-                    if refresh_success:
-                        # Update headers with new token
-                        headers = self._get_auth_header()
-                        # Retry the request with the new token (but don't allow further retries to prevent loops)
-                        return self.post(endpoint, data, json_data, timeout, False)
-                    else:
-                        # Make sure to finish the token refresh process
-                        if hasattr(auth_manager, 'finish_token_refresh'):
-                            auth_manager.finish_token_refresh(success=False)
+                if self._refresh_token():
+                    # Update headers with new token
+                    headers = self._get_auth_header()
+                    # Retry the request with the new token (but don't allow further retries to prevent loops)
+                    return self.post(endpoint, data, json_data, timeout, False)
                 else:
-                    print("Token refresh blocked by cooldown or another refresh in progress")
-                
-                return False, "Authentication failed and token refresh failed"
+                    return False, "Authentication failed and token refresh failed"
             else:
                 try:
                     error_data = response.json()
@@ -601,23 +539,11 @@ class ApiClient(QObject):
                 return True, {}
             elif response.status_code == 401 and retry_on_auth_fail:
                 print(f"Authentication failed for {url} - attempting to refresh token and retry")
-                
-                # Check if we can attempt a token refresh using AuthManager
-                auth_manager = self.auth_manager
-                if hasattr(auth_manager, 'should_refresh_token') and auth_manager.should_refresh_token():
-                    # Attempt to refresh the token
-                    refresh_success = self._refresh_token()
-                    if refresh_success:
-                        # Retry the request with the new token (but don't allow further retries to prevent loops)
-                        return self.put(endpoint, data, json_data, timeout, False)
-                    else:
-                        # Make sure to finish the token refresh process
-                        if hasattr(auth_manager, 'finish_token_refresh'):
-                            auth_manager.finish_token_refresh(success=False)
+                if self._refresh_token():
+                    # Retry the request with the new token (but don't allow further retries to prevent loops)
+                    return self.put(endpoint, data, json_data, timeout, False)
                 else:
-                    print("Token refresh blocked by cooldown or another refresh in progress")
-                
-                return False, "Authentication failed and token refresh failed"
+                    return False, "Authentication failed and token refresh failed"
             else:
                 try:
                     error_data = response.json()
@@ -663,23 +589,11 @@ class ApiClient(QObject):
                 return True, {}
             elif response.status_code == 401 and retry_on_auth_fail:
                 print(f"Authentication failed for {url} - attempting to refresh token and retry")
-                
-                # Check if we can attempt a token refresh using AuthManager
-                auth_manager = self.auth_manager
-                if hasattr(auth_manager, 'should_refresh_token') and auth_manager.should_refresh_token():
-                    # Attempt to refresh the token
-                    refresh_success = self._refresh_token()
-                    if refresh_success:
-                        # Retry the request with the new token (but don't allow further retries to prevent loops)
-                        return self.delete(endpoint, timeout, False)
-                    else:
-                        # Make sure to finish the token refresh process
-                        if hasattr(auth_manager, 'finish_token_refresh'):
-                            auth_manager.finish_token_refresh(success=False)
+                if self._refresh_token():
+                    # Retry the request with the new token (but don't allow further retries to prevent loops)
+                    return self.delete(endpoint, timeout, False)
                 else:
-                    print("Token refresh blocked by cooldown or another refresh in progress")
-                
-                return False, "Authentication failed and token refresh failed"
+                    return False, "Authentication failed and token refresh failed"
             else:
                 try:
                     error_data = response.json()
@@ -726,25 +640,13 @@ class ApiClient(QObject):
                 return True, response.json()
             elif response.status_code == 401 and retry_on_auth_fail:
                 print(f"Authentication failed for {url} - attempting to refresh token and retry")
-                
-                # Check if we can attempt a token refresh using AuthManager
-                auth_manager = self.auth_manager
-                if hasattr(auth_manager, 'should_refresh_token') and auth_manager.should_refresh_token():
-                    # Attempt to refresh the token
-                    refresh_success = self._refresh_token()
-                    if refresh_success:
-                        # Update headers with new token
-                        headers = self._get_auth_header()
-                        # Retry the request with the new token (but don't allow further retries to prevent loops)
-                        return self.post_with_files(endpoint, data, files, timeout, False)
-                    else:
-                        # Make sure to finish the token refresh process
-                        if hasattr(auth_manager, 'finish_token_refresh'):
-                            auth_manager.finish_token_refresh(success=False)
+                if self._refresh_token():
+                    # Update headers with new token
+                    headers = self._get_auth_header()
+                    # Retry the request with the new token (but don't allow further retries to prevent loops)
+                    return self.post_with_files(endpoint, data, files, timeout, False)
                 else:
-                    print("Token refresh blocked by cooldown or another refresh in progress")
-                
-                return False, "Authentication failed and token refresh failed"
+                    return False, "Authentication failed and token refresh failed"
             else:
                 try:
                     error_data = response.json()
@@ -762,75 +664,96 @@ class ApiClient(QObject):
     
     def _refresh_token(self):
         """
-        Internal method to refresh the authentication token using stored credentials.
-        Uses AuthManager's coordination to prevent multiple parallel refresh attempts.
+        Refresh the authentication token using the stored refresh token.
+        If refresh token fails, falls back to stored credentials if available.
         
         Returns:
             bool: True if token refresh was successful, False otherwise
         """
-        # Get auth manager instance
-        auth_manager = self.auth_manager
-        
-        # Initial login is handled differently - let regular login handle it
-        if auth_manager.is_initial_login():
-            print("Token refresh skipped - this is an initial login")
-            auth_manager.finish_token_refresh(success=False)
-            return False
-            
-        # Use AuthManager to determine if we should attempt a refresh
-        if not auth_manager.should_refresh_token():
-            # Refresh already in progress or on cooldown
-            return False
-            
+        # Thread-safe access to refresh token
+        self.auth_mutex.lock()
         try:
-            # Check if we have stored credentials
-            username = auth_manager.username
-            password = auth_manager.password
-            if not (username and password):
-                print("No stored credentials available for token refresh")
-                auth_manager.finish_token_refresh(success=False)
-                return False
-                
-            print(f"Attempting automatic token refresh for {username}")
+            # Check if we have a refresh token
+            refresh_token = self.auth_manager.refresh_token
+            if not refresh_token:
+                print("No refresh token available for token refresh")
+                # Fall back to credentials if available
+                username = self.auth_manager.username
+                password = self.auth_manager.password
+                if not (username and password):
+                    print("No stored credentials available for token refresh fallback")
+                    return False
+                else:
+                    print(f"No refresh token available, falling back to credentials for {username}")
+                    self.auth_mutex.unlock()  # Unlock before calling login
+                    success, _, _ = self.login(username, password)
+                    return success
+        finally:
+            if self.auth_mutex.locked():
+                self.auth_mutex.unlock()
             
-            # Use a quick timeout for login - we don't want to hang here too long
-            timeout = (self.health_connect_timeout, self.health_read_timeout)
+        print("Attempting token refresh using refresh token")
+        
+        # Create refresh token request
+        refresh_url = f"{self.base_url}/refresh-token"
+        json_data = {
+            "refresh_token": refresh_token
+        }
+        
+        headers = {
+            'Content-Type': 'application/json',
+            'accept': 'application/json'
+        }
+        
+        # Use a quick timeout for refresh - we don't want to hang here too long
+        timeout = (self.health_connect_timeout, self.health_read_timeout)
+        
+        try:
+            # Clear existing access token but keep refresh token
+            self.auth_manager.access_token = None
             
-            # Use direct login with lowest possible timeout
-            login_url = f"{self.base_url}/login/access-token"
-            form_data = {
-                'grant_type': 'password',
-                'username': username,
-                'password': password,
-                'scope': '',
-                'client_id': '',
-                'client_secret': ''
-            }
-            
-            headers = {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'accept': 'application/json'
-            }
-            
-            # Clear any existing token before the new attempt
-            auth_manager.clear()
-            
-            # Login with minimal timeout
-            response = self.session.post(login_url, data=form_data, 
-                                      headers=headers, timeout=timeout)
+            # Send refresh token request
+            response = self.session.post(refresh_url, json=json_data, 
+                                       headers=headers, timeout=timeout)
             
             if response.status_code == 200:
                 data = response.json()
                 
-                auth_manager.access_token = data['access_token']
-                auth_manager.token_type = data['token_type']
-                
-                # Clear cached headers to force regeneration
-                self._cached_headers = {}
+                # Thread-safe token update
+                self.auth_mutex.lock()
+                try:
+                    self.auth_manager.access_token = data['access_token']
+                    self.auth_manager.token_type = data['token_type']
                     
-                print("Token refreshed successfully")
-                auth_manager.finish_token_refresh(success=True)
+                    # Update refresh token if a new one is provided
+                    if 'refresh_token' in data:
+                        self.auth_manager.refresh_token = data['refresh_token']
+                    
+                    # Update user information if provided
+                    if 'user_id' in data:
+                        self.user_id = data['user_id']
+                    if 'user_role' in data:
+                        self.user_role = data['user_role']
+                    if 'assigned_lots' in data:
+                        self.assigned_lots = data['assigned_lots']
+                    
+                    # Clear cached headers to force regeneration
+                    self._cached_headers = {}
+                finally:
+                    self.auth_mutex.unlock()
+                    
+                print("Token refreshed successfully using refresh token")
                 return True
+            elif response.status_code == 401:
+                print("Refresh token expired or invalid")
+                # Fall back to credentials if available
+                username = self.auth_manager.username
+                password = self.auth_manager.password
+                if username and password:
+                    print(f"Falling back to credential login for {username}")
+                    success, _, _ = self.login(username, password)
+                    return success
+                return False
             else:
                 error_msg = "Unknown error"
                 try:
@@ -841,12 +764,31 @@ class ApiClient(QObject):
                     error_msg = f"HTTP Error {response.status_code}"
                     
                 print(f"Failed to refresh token: {error_msg}")
-                auth_manager.finish_token_refresh(success=False)
+                
+                # Fall back to credentials if available
+                username = self.auth_manager.username
+                password = self.auth_manager.password
+                if username and password:
+                    print(f"Falling back to credential login for {username}")
+                    success, _, _ = self.login(username, password)
+                    return success
+                
                 return False
                 
         except Exception as e:
             print(f"Token refresh error: {str(e)}")
-            auth_manager.finish_token_refresh(success=False)
+            
+            # Fall back to credentials if available
+            username = self.auth_manager.username
+            password = self.auth_manager.password
+            if username and password:
+                print(f"Error during token refresh, falling back to credential login for {username}")
+                try:
+                    success, _, _ = self.login(username, password)
+                    return success
+                except Exception as login_e:
+                    print(f"Login fallback also failed: {str(login_e)}")
+            
             return False
 
     def check_health(self, timeout=None):

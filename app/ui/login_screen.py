@@ -1,9 +1,32 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, 
-                            QPushButton, QLabel, QSpacerItem, QSizePolicy)
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+                            QPushButton, QLabel, QSpacerItem, QSizePolicy, QMessageBox)
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QThread
 from PyQt5.QtGui import QPixmap, QPalette, QBrush
 from app.controllers.api_client import ApiClient
 from app.utils.auth_manager import AuthManager
+
+# Add LoginThread class to handle asynchronous login
+class LoginThread(QThread):
+    login_result = pyqtSignal(bool, str, object)  # success, message, data
+    
+    def __init__(self, api_client, username, password):
+        super().__init__()
+        self.api_client = api_client
+        self.username = username
+        self.password = password
+        
+    def run(self):
+        try:
+            # Use a reasonable timeout for login
+            login_timeout = (5.0, 10.0)  # 5s connect, 10s read
+            success, message, data = self.api_client.login(
+                self.username, self.password, timeout=login_timeout
+            )
+            # Emit result signal with all data including potential refresh token
+            self.login_result.emit(success, message, data)
+        except Exception as e:
+            # Handle any exceptions during login
+            self.login_result.emit(False, str(e), None)
 
 class LoginScreen(QWidget):
     login_success = pyqtSignal()  # Signal for screen navigation
@@ -24,7 +47,7 @@ class LoginScreen(QWidget):
         
         # Create a container widget for the login form
         login_container = QWidget()
-        login_container.setFixedSize(420, 380)
+        login_container.setFixedSize(420, 420)  # Increased height for server input
         login_container.setObjectName("loginContainer")
         
         # Create login form layout
@@ -53,6 +76,18 @@ class LoginScreen(QWidget):
         self.password.setProperty("class", "loginInput")
         self.password.setMinimumHeight(45)  # Increased height
         
+        # Server URL input
+        self.server_input = QLineEdit()
+        self.server_input.setPlaceholderText("Server URL (e.g., http://192.168.1.100:8000/api/v1)")
+        self.server_input.setProperty("class", "loginInput")
+        self.server_input.setMinimumHeight(45)
+        # Set default API URL from config
+        try:
+            from config import API_BASE_URL
+            self.server_input.setText(API_BASE_URL)
+        except ImportError:
+            pass
+        
         # Login button
         login_btn = QPushButton("Log in")
         login_btn.setObjectName("loginButton")
@@ -71,6 +106,7 @@ class LoginScreen(QWidget):
         form_layout.addWidget(login_header)
         form_layout.addWidget(self.username)
         form_layout.addWidget(self.password)
+        form_layout.addWidget(self.server_input)
         form_layout.addWidget(login_btn)
         form_layout.addWidget(self.status_label)
         form_layout.addStretch()
@@ -170,8 +206,10 @@ class LoginScreen(QWidget):
         timeout_timer.timeout.connect(self.handle_login_timeout)
         timeout_timer.start(8000)  # 8 second visual timeout
         
-        username = self.username.text()
+        # Get input values
+        username = self.username.text().strip()
         password = self.password.text()
+        server_url = self.server_input.text().strip()
         
         # Validate input
         if not username or not password:
@@ -181,21 +219,48 @@ class LoginScreen(QWidget):
             timeout_timer.stop()
             return
         
+        if not server_url:
+            self.status_label.setText("Server URL is required")
+            self.status_label.setStyleSheet("color: #dc3545") # Red color for error
+            self.update_ui_state(is_loading=False)
+            timeout_timer.stop()
+            return
+            
         # Import LOT_ID from config
         from config import LOT_ID
         
         # Use a more aggressive timeout for login to avoid UI freezing
         login_timeout = (5, 10)  # 5s connect, 10s read
         
-        # Use the ApiClient to handle login
-        success, message, user_data = self.api_client.login(username, password, timeout=login_timeout)
+        # Create API client with the specified server URL
+        self.api_client = ApiClient(base_url=server_url)
         
-        # Stop the visual timeout timer
-        timeout_timer.stop()
+        # Create and start the login thread
+        self.login_thread = LoginThread(self.api_client, username, password)
+        self.login_thread.login_result.connect(self._handle_login_result)
+        self.login_thread.start()
+        
+        # We'll use this to properly handle the timeout
+        self.login_timeout_timer = timeout_timer
+    
+    def _handle_login_result(self, success, message, data):
+        # Stop the timeout timer if it's still running
+        if hasattr(self, 'login_timeout_timer') and self.login_timeout_timer.isActive():
+            self.login_timeout_timer.stop()
+        
+        self.update_ui_state(is_loading=False)
         
         if success:
+            # Store the refresh token if provided in the response
+            if data and 'refresh_token' in data:
+                self.auth_manager.refresh_token = data['refresh_token']
+                print("Refresh token stored successfully for future authentication")
+            
             # Debug log the assigned lots
             print(f"User assigned lots: {self.api_client.assigned_lots}")
+            
+            # Import LOT_ID from config
+            from config import LOT_ID
             print(f"Configured lot ID: {LOT_ID}")
             
             # Check if the user has access to this parking lot
@@ -204,7 +269,6 @@ class LoginScreen(QWidget):
                 self.status_label.setStyleSheet("color: #dc3545") # Red color for error
                 self.api_client.auth_manager.clear()  # Clear auth since user can't use this lot
                 self.login_failed.emit(f"Not assigned to Lot #{LOT_ID}")
-                self.update_ui_state(is_loading=False)
                 return
             
             # Login successful, emit signal for navigation
@@ -214,7 +278,6 @@ class LoginScreen(QWidget):
             self.status_label.setText(message)
             self.status_label.setStyleSheet("color: #dc3545") # Red color for error
             self.login_failed.emit(message)
-            self.update_ui_state(is_loading=False)
     
     def handle_login_timeout(self):
         """Visual indication that login is taking longer than expected"""

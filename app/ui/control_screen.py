@@ -1500,7 +1500,7 @@ class ControlScreen(QWidget):
                     # Define the callback for auth check
                     def handle_auth_check(auth_success, auth_result):
                         if auth_success:
-                            # Authentication is valid, just update status
+                            # Authentication is already valid!
                             print("Authentication is already valid!")
                             self.api_available = True
                             self._update_api_status(True)
@@ -1513,19 +1513,9 @@ class ControlScreen(QWidget):
                             self.api_reconnect_button.setVisible(False)
                             return
                         else:
-                            # Authentication failed, try to log in again if not on cooldown
-                            from app.utils.auth_manager import AuthManager
-                            auth_manager = AuthManager()
-                            
-                            if hasattr(auth_manager, 'should_refresh_token') and auth_manager.should_refresh_token():
-                                print("Authentication is invalid, attempting to re-login...")
-                                self._attempt_relogin(api_check_timeout)
-                            else:
-                                print("Authentication refresh blocked by cooldown, try again later")
-                                QMessageBox.warning(self, "Connection Error", 
-                                                "Authentication refresh on cooldown. Please try again in a minute.")
-                                self.api_reconnect_button.setText("Reconnect")
-                                self.api_reconnect_button.setEnabled(True)
+                            # Authentication failed, try to refresh token
+                            print("Authentication is invalid, attempting to refresh token...")
+                            self._attempt_token_refresh(api_check_timeout)
                     
                     # Check if current auth token is still valid with a simple request
                     self._perform_async_api_call(
@@ -1561,8 +1551,37 @@ class ControlScreen(QWidget):
             self.api_reconnect_button.setText("Reconnect")
             self.api_reconnect_button.setEnabled(True)
 
+    def _attempt_token_refresh(self, timeout):
+        """Attempt to refresh token or re-login if necessary"""
+        print("Attempting to refresh the authentication token")
+        
+        # Define token refresh callback
+        def handle_refresh_result(refresh_success, refresh_result):
+            if refresh_success:
+                print("Authentication refreshed successfully")
+                self.api_available = True
+                self.last_successful_connection = time.time()
+                self._update_api_status(True)
+                # Update data after reconnection
+                self._update_occupancy()
+                self._fetch_logs()
+                self.api_reconnect_button.setText("Reconnect")
+                self.api_reconnect_button.setEnabled(True)
+                self.api_reconnect_button.setVisible(False)
+            else:
+                print(f"Token refresh failed: {refresh_result}")
+                # Fall back to credential login if refresh token fails
+                self._attempt_relogin(timeout)
+        
+        # Attempt token refresh directly through API client
+        self._perform_async_api_call(
+            "token_refresh",
+            lambda: (self.api_client._refresh_token(), "Token refresh completed"),
+            callback=handle_refresh_result
+        )
+
     def _attempt_relogin(self, timeout):
-        """Attempt to re-login with stored credentials"""
+        """Attempt to re-login with stored credentials as fallback"""
         auth_manager = AuthManager()
         
         if auth_manager.username and auth_manager.password:
@@ -1576,7 +1595,7 @@ class ControlScreen(QWidget):
                     login_success, login_msg = login_success, "Unknown error"
                     
                 if login_success:
-                    print("Authentication refreshed successfully")
+                    print("Authentication refreshed successfully via credentials")
                     self.api_available = True
                     self.last_successful_connection = time.time()
                     self._update_api_status(True)

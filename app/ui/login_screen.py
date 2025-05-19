@@ -47,7 +47,7 @@ class LoginScreen(QWidget):
         
         # Create a container widget for the login form
         login_container = QWidget()
-        login_container.setFixedSize(420, 420)  # Increased height for server input
+        login_container.setFixedSize(420, 350)  # Reduced height after removing server input
         login_container.setObjectName("loginContainer")
         
         # Create login form layout
@@ -76,17 +76,7 @@ class LoginScreen(QWidget):
         self.password.setProperty("class", "loginInput")
         self.password.setMinimumHeight(45)  # Increased height
         
-        # Server URL input
-        self.server_input = QLineEdit()
-        self.server_input.setPlaceholderText("Server URL (e.g., http://192.168.1.100:8000/api/v1)")
-        self.server_input.setProperty("class", "loginInput")
-        self.server_input.setMinimumHeight(45)
-        # Set default API URL from config
-        try:
-            from config import API_BASE_URL
-            self.server_input.setText(API_BASE_URL)
-        except ImportError:
-            pass
+        # Server URL input removed
         
         # Login button
         login_btn = QPushButton("Log in")
@@ -106,7 +96,7 @@ class LoginScreen(QWidget):
         form_layout.addWidget(login_header)
         form_layout.addWidget(self.username)
         form_layout.addWidget(self.password)
-        form_layout.addWidget(self.server_input)
+        # Server input field removed
         form_layout.addWidget(login_btn)
         form_layout.addWidget(self.status_label)
         form_layout.addStretch()
@@ -209,18 +199,10 @@ class LoginScreen(QWidget):
         # Get input values
         username = self.username.text().strip()
         password = self.password.text()
-        server_url = self.server_input.text().strip()
         
         # Validate input
         if not username or not password:
             self.status_label.setText("Username and password are required")
-            self.status_label.setStyleSheet("color: #dc3545") # Red color for error
-            self.update_ui_state(is_loading=False)
-            timeout_timer.stop()
-            return
-        
-        if not server_url:
-            self.status_label.setText("Server URL is required")
             self.status_label.setStyleSheet("color: #dc3545") # Red color for error
             self.update_ui_state(is_loading=False)
             timeout_timer.stop()
@@ -233,7 +215,7 @@ class LoginScreen(QWidget):
         login_timeout = (5, 10)  # 5s connect, 10s read
         
         # Create API client with the specified server URL
-        self.api_client = ApiClient(base_url=server_url)
+        self.api_client = ApiClient()
         
         # Create and start the login thread
         self.login_thread = LoginThread(self.api_client, username, password)

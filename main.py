@@ -304,46 +304,18 @@ class ParkingSystem(QMainWindow):
                 
                 # Use a direct thread for more reliable syncing
                 def initial_login_sync():
-                    # Give UI time to initialize and API client to establish connection
+                    # Give UI time to initialize
                     import time
-                    
-                    # IMPROVED: Longer cooldown before initial sync (5 seconds instead of 2)
-                    print("Waiting for API client to initialize fully (5 seconds)...")
-                    time.sleep(5)
-                    
+                    time.sleep(2)
                     print("\n=== INITIAL SYNC AFTER LOGIN STARTED ===")
-                    
-                    # IMPROVED: Double check API status before attempting sync
-                    if self.sync_service and hasattr(self.sync_service, 'api_available'):
-                        # Force an API check to ensure accurate status
-                        api_status = self.sync_service.check_api_connection()
-                        print(f"API status before initial sync: {'Available' if api_status else 'Unavailable'}")
-                        
-                        # Only proceed with sync if API is truly available
-                        if api_status:
-                            self.sync_service.sync_now(context="startup")
-                        else:
-                            print("Initial sync postponed - API not available yet")
-                            # Schedule another attempt with longer delay (10 seconds)
-                            def retry_sync():
-                                print("\n=== RETRYING INITIAL SYNC ===")
-                                if self.sync_service and self.sync_service.api_available:
-                                    self.sync_service.sync_now(context="startup")
-                                else:
-                                    print("API still not available, no initial sync performed")
-                            
-                            retry_timer = threading.Timer(10.0, retry_sync)
-                            retry_timer.daemon = True
-                            retry_timer.start()
-                    else:
-                        print("Cannot perform initial sync - sync service not available")
+                    self.sync_service.sync_now(context="startup")
                     
                 # Start thread for initial sync
                 import threading
                 sync_thread = threading.Thread(target=initial_login_sync)
                 sync_thread.daemon = True
                 sync_thread.start()
-                print("Initial sync scheduled in background thread with improved cooldown")
+                print("Initial sync scheduled in background thread")
             
             self.stack.addWidget(self.control_screen)
         

@@ -7,6 +7,7 @@ from PyQt5.QtCore import QObject, pyqtSignal, QThread, QTimer, QMutex
 from app.utils.db_manager import DBManager
 from app.controllers.api_client import ApiClient
 from config import LOT_ID, API_BASE_URL
+from app.utils.image_storage import ImageStorage
 
 class SyncStatus:
     """Enum-like class for sync status values"""
@@ -398,6 +399,10 @@ class SyncService(QObject):
                 print("Authentication is still valid after reconnect")
                 # Resume sync operations
                 self.sync_worker.resume()
+                
+                # Force an immediate sync to upload any pending logs
+                print("Triggering immediate sync after reconnection with valid token")
+                QTimer.singleShot(1000, lambda: self.sync_now())
             else:
                 print("Authentication is invalid after reconnect, refreshing token")
                 # Refresh token before resuming operations
@@ -831,6 +836,11 @@ class SyncService(QObject):
                 self.api_status_changed.emit(True)
                 if hasattr(self, 'sync_worker'):
                     self.sync_worker.resume()
+                    
+                    # If we were previously offline, force an immediate sync
+                    # This ensures any local logs are synced right after reconnection
+                    print("Triggering immediate sync after reconnection")
+                    QTimer.singleShot(1000, lambda: self.sync_now())
             else:
                 print("Token refresh thread failed")
                 self.api_available = False

@@ -336,6 +336,10 @@ class SyncService(QObject):
         # The last count of items synced in a cycle
         self.last_sync_count = 0
         
+        # Create a signal for thread-safe sync triggering
+        self.sync_requested_signal = pyqtSignal(str)
+        self.sync_requested_signal.connect(self._handle_sync_request)
+        
         # Create and start the worker thread (now only acts on explicit requests)
         self.sync_worker = SyncWorker(self)
         self.sync_worker.sync_progress.connect(self._handle_sync_progress)
@@ -443,8 +447,9 @@ class SyncService(QObject):
             # Check if we have unsynced logs to sync
             counts = self.get_pending_sync_counts()
             if counts["total"] > 0:
-                print(f"Found {counts['total']} unsynced items after reconnection, triggering sync")
-                self.sync_now()
+                print(f"Found {counts['total']} unsynced items after reconnection, requesting sync")
+                # Use thread-safe method instead of direct call
+                self.request_sync_from_thread()
             else:
                 print("No unsynced items after reconnection, skipping sync")
             return
@@ -460,8 +465,9 @@ class SyncService(QObject):
                 # Check if we have unsynced logs to sync
                 counts = self.get_pending_sync_counts()
                 if counts["total"] > 0:
-                    print(f"Found {counts['total']} unsynced items after reconnection, triggering sync")
-                    self.sync_now()
+                    print(f"Found {counts['total']} unsynced items after reconnection, requesting sync")
+                    # Use thread-safe method instead of direct call
+                    self.request_sync_from_thread()
                 else:
                     print("No unsynced items after reconnection, skipping sync")
                 return
@@ -481,8 +487,9 @@ class SyncService(QObject):
                 # Check if we have unsynced logs to sync
                 counts = self.get_pending_sync_counts()
                 if counts["total"] > 0:
-                    print(f"Found {counts['total']} unsynced items after reconnection, triggering sync")
-                    self.sync_now()
+                    print(f"Found {counts['total']} unsynced items after reconnection, requesting sync")
+                    # Use thread-safe method instead of direct call
+                    self.request_sync_from_thread()
                 else:
                     print("No unsynced items after reconnection, skipping sync")
             else:
@@ -780,4 +787,46 @@ class SyncService(QObject):
         try:
             self.stop()
         except Exception as e:
-            print(f"Error during sync service cleanup: {str(e)}") 
+            print(f"Error during sync service cleanup: {str(e)}")
+    
+    def _handle_sync_request(self, entity_type=None):
+        """Thread-safe handler for sync requests from other threads"""
+        # This method runs on the main thread because it's connected to a signal
+        print(f"Handling sync request on main thread: {entity_type}")
+        self.sync_now(entity_type)
+        
+    def request_sync_from_thread(self, entity_type=None):
+        """Thread-safe method to request sync from any thread"""
+        print(f"Requesting sync from thread: {entity_type or 'all'}")
+        # Use the signal to safely trigger sync on the main thread
+        self.sync_requested_signal.emit(entity_type or "all")
+
+    def _handle_refresh_thread_result(self, success):
+        """Handle the result from the token refresh thread"""
+        try:
+            if success:
+                print("Token refresh thread completed successfully")
+                self.api_available = True
+                self.api_status_changed.emit(True)
+                if hasattr(self, 'sync_worker'):
+                    self.sync_worker.resume()
+                    
+                    # If we were previously offline, check for unsynced items
+                    print("Checking for unsynced items after token refresh")
+                    
+                    # Check counts on this thread (background) first
+                    counts = self.get_pending_sync_counts()
+                    if counts["total"] > 0:
+                        print(f"Found {counts['total']} unsynced items after token refresh")
+                        # Request sync safely through signal
+                        self.request_sync_from_thread()
+                    else:
+                        print("No unsynced items after token refresh")
+            else:
+                print("Token refresh thread failed")
+                self.api_available = False
+                self.api_status_changed.emit(False)
+        except Exception as e:
+            print(f"Error handling refresh thread result: {str(e)}")
+            self.api_available = False
+            self.api_status_changed.emit(False) 

@@ -1,18 +1,19 @@
 import sys
 import os
 import time
-import sqlite3
+from datetime import datetime
 from PyQt5.QtWidgets import QApplication, QMainWindow, QStackedWidget, QMessageBox, QLabel, QHBoxLayout
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QCloseEvent, pyqtSlot
+import atexit
+
 from app.ui.login_screen import LoginScreen
 from app.ui.control_screen import ControlScreen
 from app.utils.db_manager import DBManager
 from app.utils.image_storage import ImageStorage
 from app.controllers.sync_service import SyncService
 
-# Initialize database folder
 def initialize_local_storage():
-    """Create necessary folders for local storage"""
+    """Initialize local storage directories and database"""
     try:
         # Create DB directory if it doesn't exist
         db_path = os.path.join(os.path.dirname(__file__), 'local_data.db')
@@ -29,9 +30,12 @@ def initialize_local_storage():
         # Clean up old images
         image_storage.cleanup_old_images()
         
+        # Register cleanup handler
+        atexit.register(db_manager.close)
+        
         return True
     except Exception as e:
-        print(f"Error initializing local storage: {str(e)}")
+        print(f"Failed to initialize local storage: {str(e)}")
         return False
 
 class ParkingSystem(QMainWindow):

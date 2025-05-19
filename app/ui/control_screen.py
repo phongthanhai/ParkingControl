@@ -1606,6 +1606,13 @@ class ControlScreen(QWidget):
                 super().__init__()
                 self.api_client = api_client
                 self.callback = callback
+                # Create a QTimer that will execute on the main thread
+                self.timer = QTimer()
+                self.timer.setSingleShot(True)
+                self.timer.timeout.connect(self._execute_callback)
+                # Store main thread results
+                self.success = False
+                self.result_message = ""
                 
             def run(self):
                 try:
@@ -1613,17 +1620,23 @@ class ControlScreen(QWidget):
                     self.api_client._cached_headers = {}
                     
                     # Direct call to refresh token - this may block but it's in a separate thread
-                    success = self.api_client._refresh_token()
+                    self.success = self.api_client._refresh_token()
+                    self.result_message = "Token refresh completed"
                     
-                    # Call back on the main thread 
-                    QMetaObject.invokeMethod(QApplication.instance(), 
-                                            lambda: self.callback(success, "Token refresh completed"),
-                                            Qt.ConnectionType.QueuedConnection)
+                    # Schedule callback on main thread using a timer
+                    # This is safer than QMetaObject.invokeMethod
+                    self.timer.start(0)  # Execute as soon as possible on main thread
                 except Exception as e:
-                    # Handle any exceptions
-                    QMetaObject.invokeMethod(QApplication.instance(), 
-                                            lambda: self.callback(False, str(e)),
-                                            Qt.ConnectionType.QueuedConnection)
+                    self.success = False
+                    self.result_message = str(e)
+                    # Schedule error callback on main thread
+                    self.timer.start(0)
+            
+            def _execute_callback(self):
+                try:
+                    self.callback(self.success, self.result_message)
+                except Exception as e:
+                    print(f"Error in refresh callback: {str(e)}")
         
         # Create and start the worker
         worker = RefreshWorker(self.api_client, handle_refresh_result)

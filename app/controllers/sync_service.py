@@ -1,6 +1,5 @@
 import os
 import time
-import threading
 import cv2
 from datetime import datetime
 from PyQt5.QtCore import QObject, pyqtSignal, QThread, QTimer, QMutex
@@ -842,4 +841,80 @@ class SyncService(QObject):
         except Exception as e:
             print(f"Error handling refresh thread result: {str(e)}")
             self.api_available = False
-            self.api_status_changed.emit(False) 
+            self.api_status_changed.emit(False)
+
+    def _attempt_token_refresh(self):
+        """Attempt to refresh token or re-login if necessary, in a thread-safe way"""
+        print("SyncService: Attempting to refresh the authentication token")
+        from app.utils.auth_manager import AuthManager
+        auth_manager = AuthManager()
+        
+        # Check if we have refresh token or credentials
+        if not (auth_manager.has_refresh_token() or auth_manager.has_stored_credentials()):
+            print("SyncService: No refresh token or credentials available")
+            return False
+        
+        # Function to handle refresh result - MUST be thread-safe
+        def handle_refresh_complete(success):
+            try:
+                print(f"SyncService: Token refresh {'succeeded' if success else 'failed'}")
+                if success:
+                    self.api_available = True
+                    self.api_status_changed.emit(True)
+                    
+                    # Resume worker and check for pending operations but do it safely
+                    if hasattr(self, 'sync_worker'):
+                        self.sync_worker.resume()
+                    
+                    # Check for unsynced items using thread-safe method
+                    counts = self.get_pending_sync_counts()
+                    if counts["total"] > 0:
+                        print(f"SyncService: Found {counts['total']} unsynced items after token refresh")
+                        # CRITICAL: Use thread-safe method to avoid QObject::startTimer errors
+                        self.request_sync_from_thread()
+                    else:
+                        print("SyncService: No unsynced items after token refresh")
+                else:
+                    self.api_available = False
+                    self.api_status_changed.emit(False)
+            except Exception as e:
+                print(f"SyncService: Error in refresh completion handler: {str(e)}")
+                self.api_available = False
+                self.api_status_changed.emit(False)
+        
+        # First try a direct token refresh which is already thread-safe
+        if auth_manager.has_refresh_token():
+            print("SyncService: Using refresh token")
+            # This is safe because _refresh_token doesn't use Qt classes directly
+            refresh_success = self.api_client._refresh_token()
+            
+            # Handle the result through our thread-safe handler
+            handle_refresh_complete(refresh_success)
+            return refresh_success
+            
+        # Fall back to credential login if available
+        if auth_manager.has_stored_credentials():
+            print(f"SyncService: Using stored credentials for token refresh")
+            # Try login with stored credentials
+            username = auth_manager.username
+            password = auth_manager.password
+            
+            # Attempt login to get fresh token
+            try:
+                print(f"SyncService: Attempting login as {username}")
+                success, message, _ = self.api_client.login(
+                    username,
+                    password,
+                    timeout=(3.0, 5.0)
+                )
+                
+                # Handle the result through our thread-safe handler
+                handle_refresh_complete(success)
+                return success
+                
+            except Exception as e:
+                print(f"SyncService: Login error: {str(e)}")
+                return False
+        
+        # If we got here, we had no refresh token or credentials
+        return False 

@@ -19,6 +19,7 @@ class AuthManager:
             # Import needed only during initialization to avoid circular imports
             from PyQt5.QtCore import QMutex
             cls._instance._auth_mutex = QMutex()
+            cls._instance._initial_login = True  # Flag to indicate if this is the first login
             print("AuthManager instance created")
         return cls._instance
     
@@ -33,6 +34,7 @@ class AuthManager:
         if value:
             import time
             self._last_token_refresh = time.time()
+            self._initial_login = False  # Once we get a token, it's no longer the initial login
         print(f"Access token set: {'present' if value else 'empty'}")
     
     @property
@@ -111,6 +113,12 @@ class AuthManager:
         # Lock for thread safety
         self._auth_mutex.lock()
         try:
+            # If this is the initial login, always allow it
+            if self._initial_login:
+                print("Initial login detected - allowing authentication")
+                self._token_refresh_in_progress = True
+                return True
+                
             # Check if refresh is already in progress
             if self._token_refresh_in_progress:
                 print("Token refresh already in progress, skipping")
@@ -127,6 +135,15 @@ class AuthManager:
             return True
         finally:
             self._auth_mutex.unlock()
+    
+    def is_initial_login(self):
+        """
+        Check if this is the initial login attempt (no token has been set yet).
+        
+        Returns:
+            bool: True if this is the first login attempt, False otherwise
+        """
+        return self._initial_login
             
     def finish_token_refresh(self, success=True):
         """
@@ -141,6 +158,7 @@ class AuthManager:
         try:
             if success:
                 self._last_token_refresh = time.time()
+                self._initial_login = False  # No longer the initial login after successful refresh
             self._token_refresh_in_progress = False
             print(f"Token refresh completed with {'success' if success else 'failure'}")
         finally:

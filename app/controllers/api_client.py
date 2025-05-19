@@ -290,17 +290,26 @@ class ApiClient(QObject):
         # Get the auth manager
         auth_manager = self.auth_manager
         
-        # Check if refresh is already in progress
-        if hasattr(auth_manager, 'should_refresh_token') and not auth_manager.should_refresh_token():
-            print("Login attempt blocked - token refresh already in progress or on cooldown")
-            return False, "Login attempt currently blocked due to rate limiting", None
-        
-        # Mark refresh as starting
-        if hasattr(auth_manager, 'should_refresh_token'):
-            refresh_started = auth_manager.should_refresh_token()  # This will set refresh in progress
-            if not refresh_started:
-                print("Failed to initiate login process - another login already in progress")
-                return False, "Login already in progress", None
+        # Skip cooldown checks for initial login attempts from the login screen
+        start_login = True
+        if auth_manager.is_authenticated():
+            # Only apply refresh coordination if we already have a token
+            # (this means it's a refresh, not an initial login)
+            if hasattr(auth_manager, 'should_refresh_token') and not auth_manager.should_refresh_token():
+                print("Login attempt blocked - token refresh already in progress or on cooldown")
+                return False, "Login attempt currently blocked due to rate limiting", None
+            
+            # Mark refresh as starting
+            if hasattr(auth_manager, 'should_refresh_token'):
+                start_login = auth_manager.should_refresh_token()  # This will set refresh in progress
+                if not start_login:
+                    print("Failed to initiate login process - another login already in progress")
+                    return False, "Login already in progress", None
+        else:
+            # For initial login, always allow and set refresh flag
+            if hasattr(auth_manager, 'should_refresh_token'):
+                start_login = auth_manager.should_refresh_token()
+            print("Initial login attempt detected")
         
         login_url = f"{self.base_url}/login/access-token"
         print(f"Attempting login at URL: {login_url}")
@@ -762,6 +771,12 @@ class ApiClient(QObject):
         # Get auth manager instance
         auth_manager = self.auth_manager
         
+        # Initial login is handled differently - let regular login handle it
+        if auth_manager.is_initial_login():
+            print("Token refresh skipped - this is an initial login")
+            auth_manager.finish_token_refresh(success=False)
+            return False
+            
         # Use AuthManager to determine if we should attempt a refresh
         if not auth_manager.should_refresh_token():
             # Refresh already in progress or on cooldown

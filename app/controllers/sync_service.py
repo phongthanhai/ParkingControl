@@ -601,6 +601,11 @@ class SyncService(QObject):
         from app.utils.auth_manager import AuthManager
         auth_manager = AuthManager()
         
+        # If this is an initial login, we should just let the login screen handle it
+        if auth_manager.is_initial_login():
+            print("Sync service detected initial login state - deferring to login screen")
+            return False
+            
         # Use AuthManager's cooldown system to determine if refresh needed
         if not auth_manager.should_refresh_token():
             # Either refresh is in progress or token is fresh enough

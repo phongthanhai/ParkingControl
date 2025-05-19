@@ -13,6 +13,7 @@ class AuthManager:
             cls._instance._username = None
             cls._instance._password = None
             cls._instance._refresh_token = None
+            cls._instance._last_updated = 0
             print("AuthManager instance created")
         return cls._instance
     
@@ -23,6 +24,9 @@ class AuthManager:
     @access_token.setter
     def access_token(self, value):
         self._access_token = value
+        if value:
+            import time
+            self._last_updated = time.time()
         print(f"Access token set: {'present' if value else 'empty'}")
     
     @property
@@ -61,7 +65,15 @@ class AuthManager:
     @refresh_token.setter
     def refresh_token(self, value):
         self._refresh_token = value
+        if value:
+            import time
+            self._last_updated = time.time()
         print(f"Refresh token set: {'present' if value else 'empty'}")
+    
+    @property
+    def last_updated(self):
+        """Return timestamp of last token update"""
+        return self._last_updated
     
     @property
     def auth_header(self):
@@ -103,3 +115,18 @@ class AuthManager:
         Check if credentials are stored for potential reconnection.
         """
         return bool(self._username and self._password)
+        
+    def auth_debug_info(self):
+        """
+        Return debug information about auth state.
+        """
+        import time
+        current_time = time.time()
+        last_update_age = current_time - self._last_updated if self._last_updated > 0 else -1
+        
+        return {
+            "has_access_token": self._access_token is not None,
+            "has_refresh_token": self._refresh_token is not None,
+            "has_credentials": bool(self._username and self._password),
+            "last_updated_seconds_ago": int(last_update_age) if last_update_age >= 0 else "never",
+        }

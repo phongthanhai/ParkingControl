@@ -735,6 +735,13 @@ class ApiClient(QObject):
             if ApiClient._refresh_in_progress:
                 print("Token refresh already in progress, skipping...")
                 return False
+            
+            # Check if the token was recently refreshed by checking AuthManager's timestamp
+            auth_manager = self.auth_manager
+            last_token_update = auth_manager.last_updated
+            if last_token_update > 0 and current_time - last_token_update < 5:
+                print(f"Token was recently updated ({int(current_time - last_token_update)}s ago), skipping refresh")
+                return True
                 
             if current_time - ApiClient._refresh_timestamp < 3:
                 print("Token was just refreshed, skipping duplicate refresh...")

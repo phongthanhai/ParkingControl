@@ -368,6 +368,8 @@ class SyncService(QObject):
                 self.api_status_changed.emit(True)
                 # Resume background sync
                 self.sync_worker.resume()
+                # Force a sync check in case we have pending items
+                QTimer.singleShot(1500, self.sync_now)
         else:
             # If we get consecutive failures, mark as unavailable
             self.consecutive_failures += 1
@@ -387,8 +389,40 @@ class SyncService(QObject):
         
         print("SyncService validating authentication after offline->online transition")
         
-        # Use a fast, authenticated request to check if our token is still valid
+        # Just check if our current token looks valid by checking lastUpdated time
+        from app.utils.auth_manager import AuthManager
+        auth_manager = AuthManager()
+        
+        # Get token age in seconds
+        current_time = time.time()
+        token_age = current_time - auth_manager.last_updated if auth_manager.last_updated > 0 else float('inf')
+        
+        # If token was updated in the last 5 minutes, assume it's valid
+        if auth_manager.is_authenticated() and token_age < 300:
+            print(f"Token appears valid (updated {token_age:.1f}s ago), resuming sync")
+            # Resume sync operations
+            self.sync_worker.resume()
+            
+            # Force an immediate sync to upload any pending logs
+            print("Triggering immediate sync after reconnection with valid token")
+            # Use a short delay to ensure UI is ready
+            QTimer.singleShot(1000, lambda: self.sync_now())
+            return
+        
+        # Otherwise do an API check
         try:
+            # First try to refresh the token
+            if self._ensure_fresh_token():
+                print("Token refreshed successfully after reconnect")
+                # Resume sync operations
+                self.sync_worker.resume()
+                
+                # Force an immediate sync to upload any pending logs
+                print("Triggering immediate sync after reconnection with refreshed token")
+                QTimer.singleShot(1000, lambda: self.sync_now())
+                return
+                
+            # If token refresh failed, try an API call to check token validity
             auth_result = self.api_client.get(
                 'services/lot-occupancy/1', 
                 timeout=(2.0, 3.0),
@@ -789,6 +823,18 @@ class SyncService(QObject):
         # Get auth_manager reference
         from app.utils.auth_manager import AuthManager
         auth_manager = AuthManager()
+        
+        # Check if token was refreshed very recently
+        current_time = time.time()
+        token_age = current_time - auth_manager.last_updated if auth_manager.last_updated > 0 else float('inf')
+        if token_age < 10:  # If token is less than 10 seconds old
+            print(f"Token was just updated {token_age:.1f}s ago, skipping refresh")
+            # Still mark as successful to avoid unnecessary retries
+            self._handle_refresh_thread_result(True)
+            return True
+            
+        # Track when we started the refresh to avoid duplicate attempts
+        self.last_token_refresh_time = current_time
         
         # Define a function to handle the token refresh in a separate thread
         def do_token_refresh():

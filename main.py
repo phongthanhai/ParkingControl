@@ -117,11 +117,15 @@ class ParkingSystem(QMainWindow):
                 # Connect log signal from control screen to handle log entries for sync
                 print("Connecting control_screen.log_signal to sync_service")
                 self.control_screen.log_signal.connect(self.handle_log_entry)
+                
+                # Trigger an immediate sync attempt after authentication
+                print("Triggering initial sync after successful login")
+                QTimer.singleShot(1500, lambda: self.sync_service.sync_now())
             
             self.stack.addWidget(self.control_screen)
         
         self.stack.setCurrentWidget(self.control_screen)
-    
+
     def handle_reconnect_request(self):
         """Handle manual reconnection request from sync widget"""
         success = self.sync_service.reconnect()

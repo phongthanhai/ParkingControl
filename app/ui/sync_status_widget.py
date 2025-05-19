@@ -118,8 +118,8 @@ class SyncStatusWidget(QWidget):
         if self.hide_timer.isActive():
             self.hide_timer.stop()
     
-    def show_sync_complete(self, message):
-        """Show completion message"""
+    def show_sync_complete(self, count):
+        """Show completion message with count of synced items"""
         self.spinner_timer.stop()
         self.loading_label.setVisible(False)
         
@@ -128,7 +128,7 @@ class SyncStatusWidget(QWidget):
         self.check_icon.setVisible(True)
         
         # Show completion message
-        self.status_label.setText(message)
+        self.status_label.setText(f"Synced {count} logs")
         
         # Start auto-hide timer
         self.hide_timer.start(5000)  # Hide after 5 seconds
@@ -162,12 +162,9 @@ class SyncStatusWidget(QWidget):
     def sync_completed(self, success=True, count=None):
         """Show completion status"""
         if success:
-            if count is None or count == 0:
-                # If no count is provided, or it's zero, just show "Synced" without a count
-                self.show_sync_complete("Synced")
-            else:
-                # Show the count of synced logs
-                self.show_sync_complete(f"Synced {count} logs")
+            if count is None:
+                count = self.pending_counts.get("total", 0)
+            self.show_sync_complete(count)
         else:
             self.show_sync_failed()
         

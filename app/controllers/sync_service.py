@@ -621,7 +621,7 @@ class SyncService(QObject):
     
     def _perform_shutdown_sync(self):
         """Perform a synchronous sync operation during shutdown"""
-        print("Performing final sync before shutdown...")
+        print("\n=== STARTING SHUTDOWN SYNC OPERATION ===")
         try:
             # This method directly syncs logs during shutdown
             import os
@@ -629,26 +629,33 @@ class SyncService(QObject):
             from config import LOT_ID
             
             # Ensure token is valid
+            print("DEBUG: Checking token validity for shutdown sync")
             if not self._ensure_fresh_token():
-                print("Failed to refresh token for shutdown sync")
+                print("DEBUG: Failed to refresh token for shutdown sync")
                 self.sync_all_complete.emit(0, "shutdown")
                 return
+            print("DEBUG: Token is valid for shutdown sync")    
                 
             # Get unsynced logs
+            print("DEBUG: Getting unsynced logs")
             unsynced_logs = self.db_manager.get_unsynced_logs(limit=50)
+            print(f"DEBUG: Found {len(unsynced_logs)} raw unsynced logs")
+            
             filtered_logs = [log for log in unsynced_logs if log['type'] in ('auto', 'manual')]
+            print(f"DEBUG: Found {len(filtered_logs)} filtered logs for sync")
                 
             if not filtered_logs:
-                print("No logs to sync before shutdown")
+                print("DEBUG: No logs to sync before shutdown")
                 # Signal completion with 0 count and shutdown context
                 self.sync_all_complete.emit(0, "shutdown")
                 return
                 
-            print(f"Syncing {len(filtered_logs)} logs before shutdown")
+            print(f"DEBUG: Syncing {len(filtered_logs)} logs before shutdown")
             synced_count = 0
             
             # Update UI with progress information
             total_logs = len(filtered_logs)
+            print(f"DEBUG: Emitting initial progress signal: 0/{total_logs}")
             self.sync_progress.emit("logs", 0, total_logs)
                 
             # Process each log
@@ -656,8 +663,11 @@ class SyncService(QObject):
                 try:
                     # Check if already synced
                     if log.get('synced', 0) == 1:
+                        print(f"DEBUG: Log {log['id']} is already synced, skipping")
                         continue
                             
+                    print(f"DEBUG: Processing log {idx+1}/{total_logs}, ID={log['id']}")
+                    
                     # Prepare form data
                     form_data = {
                         'plate_id': log['plate_id'],
@@ -671,6 +681,7 @@ class SyncService(QObject):
                     files = None
                     if log.get('image_path') and os.path.exists(log.get('image_path')):
                         try:
+                            print(f"DEBUG: Loading image from {log['image_path']}")
                             img = cv2.imread(log['image_path'])
                             if img is not None:
                                 _, img_encoded = cv2.imencode('.png', img)
@@ -678,10 +689,16 @@ class SyncService(QObject):
                                 files = {
                                     'image': ('frame.png', img_bytes, 'image/png')
                                 }
+                                print(f"DEBUG: Image successfully encoded")
+                            else:
+                                print(f"DEBUG: Image load failed - img is None")
                         except Exception as img_err:
-                            print(f"Error processing image for shutdown sync: {str(img_err)}")
+                            print(f"DEBUG: Error processing image for shutdown sync: {str(img_err)}")
+                    else:
+                        print(f"DEBUG: No image path or file not found: {log.get('image_path', 'None')}")
                     
                     # Sync to API
+                    print(f"DEBUG: Sending API request for log {log['id']}")
                     success, response = self.api_client.post_with_files(
                         'services/guard-control/',
                         data=form_data,
@@ -690,25 +707,28 @@ class SyncService(QObject):
                     )
                             
                     if success:
+                        print(f"DEBUG: Marking log {log['id']} as synced in database")
                         self.db_manager.mark_log_synced(log['id'])
                         synced_count += 1
-                        print(f"Successfully synced log {log['id']} during shutdown")
+                        print(f"DEBUG: Successfully synced log {log['id']} during shutdown")
                         
                         # Update progress
+                        print(f"DEBUG: Emitting progress signal: {synced_count}/{total_logs}")
                         self.sync_progress.emit("logs", synced_count, total_logs)
                     else:
-                        print(f"Failed to sync log {log['id']} during shutdown: {response}")
+                        print(f"DEBUG: Failed to sync log {log['id']} during shutdown: {response}")
                         
                 except Exception as e:
-                    print(f"Error syncing log during shutdown: {str(e)}")
+                    print(f"DEBUG: Error syncing log during shutdown: {str(e)}")
             
-            print(f"Shutdown sync complete: {synced_count}/{len(filtered_logs)} logs synced")
+            print(f"\n=== SHUTDOWN SYNC COMPLETE: {synced_count}/{len(filtered_logs)} logs synced ===")
             
             # Signal completion with synced count and shutdown context
+            print(f"DEBUG: Emitting sync_all_complete signal with count={synced_count}")
             self.sync_all_complete.emit(synced_count, "shutdown")
                 
         except Exception as e:
-            print(f"Error during shutdown sync: {str(e)}")
+            print(f"DEBUG: Error during shutdown sync: {str(e)}")
             # Signal completion with 0 count on error
             self.sync_all_complete.emit(0, "shutdown")
     

@@ -19,94 +19,69 @@ class ExitSyncDialog(QDialog):
     """Dialog that shows sync progress during application exit"""
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
-        self.setWindowTitle("Syncing Before Exit")
+        self.setWindowTitle("Syncing Data")
         self.setWindowModality(Qt.ApplicationModal)
-        self.setFixedSize(450, 200)
+        self.setFixedSize(400, 150)
         
-        # Apply modern styling
+        # Apply simple styling
         self.setStyleSheet("""
             QDialog {
                 background-color: white;
                 border: 1px solid #ddd;
-                border-radius: 8px;
             }
             QLabel {
                 font-family: Arial, sans-serif;
             }
             QProgressBar {
-                border: 1px solid #bdbdbd;
-                border-radius: 5px;
+                border: 1px solid #ddd;
                 background-color: #f5f5f5;
                 text-align: center;
                 height: 20px;
-                margin: 10px 0px;
             }
             QProgressBar::chunk {
                 background-color: #3498db;
-                border-radius: 5px;
             }
-        """)
-        
-        # Set up layout
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        
-        # Add header
-        header_label = QLabel("Parking Control System")
-        header_label.setAlignment(Qt.AlignCenter)
-        header_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #2c3e50; margin-bottom: 5px;")
-        layout.addWidget(header_label)
-        
-        # Add status label
-        self.status_label = QLabel("Syncing data before exit...")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet("font-size: 14px; font-weight: bold; margin-bottom: 10px; color: #3498db;")
-        layout.addWidget(self.status_label)
-        
-        # Add progress bar
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(True)
-        self.progress_bar.setFormat("%v/%m logs synced")
-        layout.addWidget(self.progress_bar)
-        
-        # Add detail label
-        self.detail_label = QLabel("Please wait while unsaved data is synced to the server...")
-        self.detail_label.setAlignment(Qt.AlignCenter)
-        self.detail_label.setStyleSheet("color: #666; margin-top: 5px; margin-bottom: 15px;")
-        layout.addWidget(self.detail_label)
-        
-        # Add warning
-        self.warning_label = QLabel("Do not turn off your computer until this process completes.")
-        self.warning_label.setAlignment(Qt.AlignCenter)
-        self.warning_label.setStyleSheet("color: #e74c3c; font-style: italic;")
-        layout.addWidget(self.warning_label)
-        
-        # Add spacer
-        layout.addSpacing(10)
-        
-        # Add buttons in a horizontal layout
-        button_layout = QHBoxLayout()
-        
-        # Exit button
-        self.force_exit_button = QPushButton("Force Exit")
-        self.force_exit_button.setFixedHeight(30)
-        self.force_exit_button.setStyleSheet("""
             QPushButton {
-                background-color: #e74c3c; 
+                background-color: #e74c3c;
                 color: white;
                 border: none;
-                border-radius: 5px;
-                padding: 5px 15px;
-                font-weight: bold;
+                border-radius: 4px;
+                padding: 6px 12px;
             }
             QPushButton:hover {
                 background-color: #c0392b;
             }
         """)
         
+        # Set up layout
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(10)
+        
+        # Status label
+        self.status_label = QLabel("Syncing data before exit")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        layout.addWidget(self.status_label)
+        
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("%v/%m")
+        layout.addWidget(self.progress_bar)
+        
+        # Detail label
+        self.detail_label = QLabel("Please wait...")
+        self.detail_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.detail_label)
+        
+        # Force exit button
+        button_layout = QHBoxLayout()
         button_layout.addStretch()
+        
+        self.force_exit_button = QPushButton("Force Exit")
         button_layout.addWidget(self.force_exit_button)
         layout.addLayout(button_layout)
         
@@ -115,141 +90,55 @@ class ExitSyncDialog(QDialog):
         
         # State
         self.is_complete = False
-        self.was_forced = False
         self.progress_received = False
         
-        # Create animation effects
-        self.pulse_timer = QTimer(self)
-        self.pulse_timer.timeout.connect(self._pulse_warning)
-        self.pulse_timer.start(1000)  # Pulse every second
-        self.pulse_state = False
-        
-        # Progress bar animation for initial waiting period
-        self.progress_animation_timer = QTimer(self)
-        self.progress_animation_timer.timeout.connect(self._animate_progress_waiting)
-        self.progress_animation_timer.start(100)  # Update every 100ms
-        self.progress_animation_value = 0
-        self.progress_animation_direction = 1
-        
-    def _animate_progress_waiting(self):
-        """Animate progress bar with a bouncing effect while waiting for sync to start"""
-        # Only animate if we haven't received real progress updates yet
-        if not self.progress_received and not self.is_complete:
-            # Bounce between 0 and 10%
-            self.progress_animation_value += self.progress_animation_direction
-            
-            # Reverse direction at boundaries
-            if self.progress_animation_value >= 10:
-                self.progress_animation_direction = -1
-            elif self.progress_animation_value <= 0:
-                self.progress_animation_direction = 1
-                
-            # Apply animated value
-            self.progress_bar.setValue(self.progress_animation_value)
-            
-            # Use a different format during waiting
-            self.progress_bar.setFormat("Preparing...")
-        
-    def _pulse_warning(self):
-        """Create a pulsing effect on the warning label"""
-        if not self.is_complete:
-            self.pulse_state = not self.pulse_state
-            color = "#e74c3c" if self.pulse_state else "#c0392b"
-            self.warning_label.setStyleSheet(f"color: {color}; font-style: italic; font-weight: bold;")
+        # Simple progress indication for waiting period
+        self.progress_bar.setFormat("Preparing...")
         
     def update_progress(self, entity_type, completed, total):
         """Update the progress bar with current progress"""
         if entity_type == "logs":
-            # Stop the animation timer when real progress starts
             self.progress_received = True
-            if self.progress_animation_timer.isActive():
-                self.progress_animation_timer.stop()
             
-            # Configure progress bar for actual progress display
+            # Update progress bar
             self.progress_bar.setMaximum(total)
             self.progress_bar.setValue(completed)
-            self.progress_bar.setFormat("%v/%m logs synced")
-            self.detail_label.setText(f"Syncing {completed} of {total} logs to the server...")
+            self.progress_bar.setFormat("%v/%m")
             
-            # Update progress bar color based on progress
-            progress_percentage = (completed / max(1, total)) * 100
-            if progress_percentage < 33:
-                chunk_color = "#3498db"  # Blue
-            elif progress_percentage < 66:
-                chunk_color = "#2ecc71"  # Green
-            else:
-                chunk_color = "#27ae60"  # Darker green
-                
-            self.progress_bar.setStyleSheet(f"""
-                QProgressBar {{
-                    border: 1px solid #bdbdbd;
-                    border-radius: 5px;
-                    background-color: #f5f5f5;
-                    text-align: center;
-                }}
-                QProgressBar::chunk {{
-                    background-color: {chunk_color};
-                    border-radius: 5px;
-                }}
-            """)
+            # Update detail text
+            self.detail_label.setText(f"Syncing {completed} of {total} items...")
 
     def sync_complete(self, count, context):
         """Handle sync completion"""
         if context == "shutdown":
-            # Stop animation timers
-            if self.progress_animation_timer.isActive():
-                self.progress_animation_timer.stop()
-            
             if count > 0:
-                self.status_label.setText("Sync Complete!")
-                self.status_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #2ecc71; margin-bottom: 10px;")
-                self.detail_label.setText(f"Successfully synced {count} logs to the server")
-                self.warning_label.setText("It's now safe to exit the application.")
-                self.warning_label.setStyleSheet("color: #2ecc71; font-style: normal; font-weight: bold;")
+                self.status_label.setText("Sync Complete")
+                self.detail_label.setText(f"Successfully synced {count} items")
             else:
                 self.status_label.setText("Nothing to Sync")
-                self.status_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #3498db; margin-bottom: 10px;")
                 self.detail_label.setText("No unsaved data found")
-                self.warning_label.setText("It's safe to exit the application.")
-                self.warning_label.setStyleSheet("color: #2ecc71; font-style: normal; font-weight: bold;")
             
-            # Fill progress bar
+            # Complete the progress bar
             self.progress_bar.setValue(self.progress_bar.maximum())
-            self.progress_bar.setStyleSheet("""
-                QProgressBar {
-                    border: 1px solid #bdbdbd;
-                    border-radius: 5px;
-                    background-color: #f5f5f5;
-                    text-align: center;
-                }
-                QProgressBar::chunk {
-                    background-color: #2ecc71;
-                    border-radius: 5px;
-                }
-            """)
             
-            # Update state and button
-            self.is_complete = True
+            # Update button
             self.force_exit_button.setText("Close")
             self.force_exit_button.setStyleSheet("""
                 QPushButton {
-                    background-color: #2ecc71; 
+                    background-color: #3498db;
                     color: white;
                     border: none;
-                    border-radius: 5px;
-                    padding: 5px 15px;
-                    font-weight: bold;
+                    border-radius: 4px;
+                    padding: 6px 12px;
                 }
                 QPushButton:hover {
-                    background-color: #27ae60;
+                    background-color: #2980b9;
                 }
             """)
             
-            # Stop the pulse animation
-            self.pulse_timer.stop()
-            
-            # Auto-close after a short delay
-            QTimer.singleShot(2000, self.accept)
+            # Set state and auto-close
+            self.is_complete = True
+            QTimer.singleShot(1500, self.accept)
 
 def initialize_local_storage():
     """Initialize local storage directories and database"""
@@ -460,9 +349,12 @@ class ParkingSystem(QMainWindow):
             if hasattr(self, 'sync_service') and self.sync_service:
                 # Get pending sync counts
                 try:
+                    print("DEBUG: About to check for unsynced data...")
                     counts = self.sync_service.get_pending_sync_counts()
+                    print(f"DEBUG: Found {counts['total']} items that need sync before exit")
+                    
                     if counts["total"] > 0 and self.sync_service.api_available:
-                        print(f"Found {counts['total']} items to sync before exit")
+                        print(f"DEBUG: Will show exit dialog for {counts['total']} items")
                         
                         # Create and show the exit sync dialog
                         sync_dialog = ExitSyncDialog(self)
@@ -491,11 +383,13 @@ class ParkingSystem(QMainWindow):
                         
                         # Show the dialog and bring to front
                         self.sync_dialog_active = True
+                        print("DEBUG: Showing exit sync dialog")
                         sync_dialog.show()
                         sync_dialog.raise_()
                         sync_dialog.activateWindow()
                         
                         # Explicitly process some events to ensure dialog appears
+                        print("DEBUG: Processing events to display dialog")
                         QApplication.processEvents()
                         
                         # Show the shutdown sync indicator in the main window as well
@@ -503,12 +397,14 @@ class ParkingSystem(QMainWindow):
                             self.control_screen.sync_status_widget.show_shutdown_sync()
                         
                         # Start the sync operation with shutdown context
-                        print("Starting final exit sync operation")
+                        print("DEBUG: Starting final exit sync operation")
                         self.sync_service.sync_now(context="shutdown")
                         
                         # Wait for sync to complete or user to force exit
                         # The dialog will block until sync completes or user cancels
+                        print("DEBUG: About to execute sync dialog")
                         result = sync_dialog.exec_()
+                        print(f"DEBUG: Dialog finished with result: {result}")
                         self.sync_dialog_active = False
                         
                         # Disconnect signals to prevent callbacks during shutdown
@@ -523,7 +419,7 @@ class ParkingSystem(QMainWindow):
                         if result == QDialog.Rejected and not sync_dialog.is_complete:
                             print("User forced exit during sync")
                     else:
-                        print("No items to sync before exit or API not available")
+                        print(f"DEBUG: No sync needed - Items: {counts['total']}, API Available: {self.sync_service.api_available}")
                 except Exception as e:
                     print(f"Error checking for unsynced data: {str(e)}")
             

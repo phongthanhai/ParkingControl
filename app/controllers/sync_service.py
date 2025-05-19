@@ -338,10 +338,13 @@ class SyncService(QObject):
         # The last count of items synced in a cycle
         self.last_sync_count = 0
         
-        # Connect the signal to the handler
+        # IMPORTANT: Connect the signal to the handler FIRST before any other operations
+        # This ensures the connection is established before any sync requests might be made
+        print("Connecting sync_requested_signal to handler")
         self.sync_requested_signal.connect(self._handle_sync_request)
         
         # Create and start the worker thread (now only acts on explicit requests)
+        print("Creating sync worker thread")
         self.sync_worker = SyncWorker(self)
         self.sync_worker.sync_progress.connect(self._handle_sync_progress)
         self.sync_worker.sync_complete.connect(self._handle_sync_complete)
@@ -351,14 +354,17 @@ class SyncService(QObject):
             self.sync_worker.pause()
         
         # Start the worker thread
+        print("Starting sync worker thread")
         self.sync_worker.start()
         
         # Start periodic API connection check timer
+        print("Setting up API connection check timer")
         self.api_check_timer = QTimer(self)
         self.api_check_timer.timeout.connect(self.check_api_connection)
         self.api_check_timer.start(30000)  # Check every 30 seconds
         
         # Schedule an initial sync check after startup
+        print("Scheduling initial sync check")
         QTimer.singleShot(5000, self._check_initial_sync)
     
     def _check_initial_sync(self):
@@ -449,7 +455,8 @@ class SyncService(QObject):
             counts = self.get_pending_sync_counts()
             if counts["total"] > 0:
                 print(f"Found {counts['total']} unsynced items after reconnection, requesting sync")
-                # Use thread-safe method instead of direct call
+                # Use thread-safe method to request sync - this MUST use the thread-safe signal approach
+                # to avoid the "QObject::startTimer: Timers cannot be started from another thread" error
                 self.request_sync_from_thread()
             else:
                 print("No unsynced items after reconnection, skipping sync")
@@ -467,7 +474,8 @@ class SyncService(QObject):
                 counts = self.get_pending_sync_counts()
                 if counts["total"] > 0:
                     print(f"Found {counts['total']} unsynced items after reconnection, requesting sync")
-                    # Use thread-safe method instead of direct call
+                    # Use thread-safe method to request sync - this MUST use the thread-safe signal approach
+                    # to avoid the "QObject::startTimer: Timers cannot be started from another thread" error
                     self.request_sync_from_thread()
                 else:
                     print("No unsynced items after reconnection, skipping sync")
@@ -489,7 +497,8 @@ class SyncService(QObject):
                 counts = self.get_pending_sync_counts()
                 if counts["total"] > 0:
                     print(f"Found {counts['total']} unsynced items after reconnection, requesting sync")
-                    # Use thread-safe method instead of direct call
+                    # Use thread-safe method to request sync - this MUST use the thread-safe signal approach
+                    # to avoid the "QObject::startTimer: Timers cannot be started from another thread" error
                     self.request_sync_from_thread()
                 else:
                     print("No unsynced items after reconnection, skipping sync")
@@ -799,7 +808,9 @@ class SyncService(QObject):
     def request_sync_from_thread(self, entity_type=None):
         """Thread-safe method to request sync from any thread"""
         print(f"Requesting sync from thread: {entity_type or 'all'}")
-        # Use the signal to safely trigger sync on the main thread
+        print("IMPORTANT: Using thread-safe signal approach to avoid 'QObject::startTimer: Timers cannot be started from another thread' error")
+        # This is the key line that makes this method thread-safe: 
+        # We're using a signal to move the execution to the main thread where QTimers can be created
         self.sync_requested_signal.emit(entity_type or "all")
 
     def _handle_refresh_thread_result(self, success):
@@ -819,7 +830,8 @@ class SyncService(QObject):
                     counts = self.get_pending_sync_counts()
                     if counts["total"] > 0:
                         print(f"Found {counts['total']} unsynced items after token refresh")
-                        # Request sync safely through signal
+                        # Use thread-safe method to request sync - this MUST use the thread-safe signal approach
+                        # to avoid the "QObject::startTimer: Timers cannot be started from another thread" error
                         self.request_sync_from_thread()
                     else:
                         print("No unsynced items after token refresh")

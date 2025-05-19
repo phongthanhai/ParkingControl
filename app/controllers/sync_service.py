@@ -64,7 +64,9 @@ class SyncWorker(QThread):
         self.mutex.unlock()
     
     def resume(self):
+        """Resume sync operations"""
         self.mutex.lock()
+        print("Resuming sync worker operations...")
         self._paused = False
         self.mutex.unlock()
     
@@ -288,19 +290,26 @@ class SyncService(QObject):
         # Pause or resume sync worker based on connection status
         if is_connected:
             self.sync_worker.resume()
+            # Trigger an immediate sync when connection is restored
+            QTimer.singleShot(2000, self.sync_now)
+            print("Connection restored, scheduling immediate sync")
         else:
             self.sync_worker.pause()
+            print("Connection lost, pausing sync operations")
     
     def can_sync(self):
         """Check if synchronization is possible."""
         if not self.connection_manager.is_connected():
+            print("Can't sync - not connected to API")
             return False
             
         current_time = time.time()
         if current_time - self.last_sync_attempt < self.sync_cooldown:
+            print(f"Can't sync - cooling down, {int(self.sync_cooldown - (current_time - self.last_sync_attempt))}s left")
             return False
             
         self.last_sync_attempt = current_time
+        print("Can sync - all conditions met")
         return True
     
     def _handle_sync_progress(self, entity_type, completed, total):
@@ -318,6 +327,9 @@ class SyncService(QObject):
         Manually trigger a synchronization.
         If entity_type is None, sync everything.
         """
+        # Reset last sync attempt to allow immediate syncing regardless of cooldown
+        self.last_sync_attempt = 0
+        
         if not self.connection_manager.is_connected():
             print("Cannot sync: API is not available")
             return False
@@ -569,4 +581,55 @@ class SyncService(QObject):
     
     def __del__(self):
         """Clean up resources."""
-        self.stop() 
+        self.stop()
+    
+    def diagnose_sync_queue(self):
+        """
+        Diagnostic method to check what's in the sync queue.
+        Helps troubleshoot sync issues.
+        """
+        try:
+            print("\n--- SYNC QUEUE DIAGNOSTIC ---")
+            print(f"Connection status: {'Connected' if self.connection_manager.is_connected() else 'Disconnected'}")
+            print(f"Worker paused: {self.sync_worker._paused}")
+            print(f"Can sync: {self.can_sync()}")
+            
+            # Check database for unsynced logs
+            unsynced_logs = self.db_manager.get_unsynced_logs(limit=100)
+            
+            if not unsynced_logs:
+                print("No unsynced logs found in database.")
+                return
+                
+            # Report on unsynced logs
+            print(f"Found {len(unsynced_logs)} unsynced logs:")
+            
+            # Group by type
+            log_types = {}
+            for log in unsynced_logs:
+                log_type = log.get('type', 'unknown')
+                if log_type not in log_types:
+                    log_types[log_type] = 0
+                log_types[log_type] += 1
+            
+            # Print summary by type
+            for log_type, count in log_types.items():
+                print(f"  - {log_type}: {count} logs")
+            
+            # Show sample of each type
+            print("\nSample logs:")
+            shown_types = set()
+            for log in unsynced_logs[:10]:  # Show up to 10 samples
+                log_type = log.get('type', 'unknown')
+                if log_type not in shown_types:
+                    shown_types.add(log_type)
+                    print(f"  {log_type} - ID: {log.get('id')}, Plate: {log.get('plate_id')}, Lane: {log.get('lane')}")
+            
+            # Force immediate sync
+            print("\nAttempting immediate sync...")
+            QTimer.singleShot(1000, lambda: self.sync_now())
+            
+        except Exception as e:
+            print(f"Error in sync diagnostic: {str(e)}")
+        finally:
+            print("--- END DIAGNOSTIC ---\n") 

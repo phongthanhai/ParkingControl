@@ -306,11 +306,8 @@ class SyncService(QObject):
     def check_api_connection(self):
         """Check if the backend API server is available."""
         try:
-            # Use the special health check timeouts for faster response
-            api_check_timeout = (self.api_client.health_connect_timeout, self.api_client.health_read_timeout)
-            
-            # Use the dedicated health check endpoint
-            success, _ = self.api_client.get('services/health', timeout=api_check_timeout, auth_required=False)
+            # Use the optimized non-blocking health check
+            success = self.api_client.check_health()
             
             # Update API status - emit signal regardless of previous state to ensure UI updates
             if success:

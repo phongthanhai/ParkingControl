@@ -2267,16 +2267,10 @@ class ControlScreen(QWidget):
     def _quick_api_check(self):
         """Quick API check directly from UI to ensure fast status updates"""
         try:
-            # Use very short timeouts
-            health_timeout = (0.5, 0.5)  # 0.5s connect, 0.5s read
+            # Use the optimized health check method with duplicate prevention
+            success = self.api_client.check_health()
             
-            # Use direct API client to check health endpoint
-            # Don't use the sync service to avoid potentially blocked threads
-            success, _ = self.api_client.get('services/health', 
-                                          timeout=health_timeout, 
-                                          auth_required=False)
-            
-            # Update UI directly based on result
+            # Update UI directly based on result if different from current state
             if success != self.api_available:
                 # Status changed, update UI immediately
                 self._update_api_status(success)
@@ -2288,10 +2282,7 @@ class ControlScreen(QWidget):
                     self.last_successful_connection = time.time()
                 else:
                     print("UI direct check: API is NOT available")
-                
         except Exception as e:
-            # Only change UI state if we were previously connected
-            if self.api_available:
-                print(f"UI direct API check error: {str(e)}")
-                self._update_api_status(False)
-                self.api_available = False
+            # Only log errors, don't change UI state to avoid flickering
+            print(f"UI direct API check error: {str(e)}")
+            # This will be caught on the next check cycle if it's a persistent issue

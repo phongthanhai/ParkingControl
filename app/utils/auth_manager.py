@@ -1,7 +1,8 @@
 class AuthManager:
     """
     Singleton class for managing authentication information.
-    Stores and provides access to the authentication token.
+    Stores and provides access to the authentication token and prevents multiple
+    parallel login attempts.
     """
     _instance = None
     
@@ -12,6 +13,12 @@ class AuthManager:
             cls._instance._token_type = None
             cls._instance._username = None
             cls._instance._password = None
+            cls._instance._last_token_refresh = 0
+            cls._instance._token_refresh_in_progress = False
+            cls._instance._token_refresh_cooldown = 60  # 60 seconds between refresh attempts
+            # Import needed only during initialization to avoid circular imports
+            from PyQt5.QtCore import QMutex
+            cls._instance._auth_mutex = QMutex()
             print("AuthManager instance created")
         return cls._instance
     
@@ -22,6 +29,10 @@ class AuthManager:
     @access_token.setter
     def access_token(self, value):
         self._access_token = value
+        # Update the last refresh timestamp when setting a new token
+        if value:
+            import time
+            self._last_token_refresh = time.time()
         print(f"Access token set: {'present' if value else 'empty'}")
     
     @property
@@ -86,3 +97,63 @@ class AuthManager:
         Check if credentials are stored for potential reconnection.
         """
         return bool(self._username and self._password)
+        
+    def should_refresh_token(self):
+        """
+        Determine if a token refresh should be attempted based on cooldown period
+        and whether a refresh is already in progress.
+        
+        Returns:
+            bool: True if token should be refreshed, False otherwise
+        """
+        import time
+        
+        # Lock for thread safety
+        self._auth_mutex.lock()
+        try:
+            # Check if refresh is already in progress
+            if self._token_refresh_in_progress:
+                print("Token refresh already in progress, skipping")
+                return False
+                
+            # Check cooldown period
+            time_since_refresh = time.time() - self._last_token_refresh
+            if time_since_refresh < self._token_refresh_cooldown:
+                print(f"Token refresh on cooldown, {int(self._token_refresh_cooldown - time_since_refresh)}s remaining")
+                return False
+                
+            # It's safe to refresh
+            self._token_refresh_in_progress = True
+            return True
+        finally:
+            self._auth_mutex.unlock()
+            
+    def finish_token_refresh(self, success=True):
+        """
+        Mark the token refresh as complete and update the timestamp if successful.
+        
+        Args:
+            success (bool): Whether the refresh was successful
+        """
+        import time
+        
+        self._auth_mutex.lock()
+        try:
+            if success:
+                self._last_token_refresh = time.time()
+            self._token_refresh_in_progress = False
+            print(f"Token refresh completed with {'success' if success else 'failure'}")
+        finally:
+            self._auth_mutex.unlock()
+            
+    def get_token_age(self):
+        """
+        Get the age of the current token in seconds.
+        
+        Returns:
+            float: Token age in seconds, or infinity if no token
+        """
+        import time
+        if not self._access_token:
+            return float('inf')
+        return time.time() - self._last_token_refresh

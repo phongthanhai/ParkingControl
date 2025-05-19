@@ -601,25 +601,38 @@ class SyncService(QObject):
         from app.utils.auth_manager import AuthManager
         auth_manager = AuthManager()
         
+        # Use AuthManager's cooldown system to determine if refresh needed
+        if not auth_manager.should_refresh_token():
+            # Either refresh is in progress or token is fresh enough
+            return auth_manager.is_authenticated()
+        
         # Check if we have stored credentials
-        if not (auth_manager.username and auth_manager.password):
+        if not auth_manager.has_stored_credentials():
             print("No stored credentials available for token refresh")
+            auth_manager.finish_token_refresh(success=False)
             return False
             
         print(f"Pre-sync token refresh for {auth_manager.username}")
         
-        # Attempt login to get fresh token
-        success, message, _ = self.api_client.login(
-            auth_manager.username,
-            auth_manager.password,
-            timeout=(3.0, 5.0)
-        )
-        
-        if success:
-            print("Token refreshed successfully before sync")
-            return True
-        else:
-            print(f"Failed to refresh token before sync: {message}")
+        try:
+            # Attempt login to get fresh token
+            success, message, _ = self.api_client.login(
+                auth_manager.username,
+                auth_manager.password,
+                timeout=(3.0, 5.0)
+            )
+            
+            if success:
+                print("Token refreshed successfully before sync")
+                auth_manager.finish_token_refresh(success=True)
+                return True
+            else:
+                print(f"Failed to refresh token before sync: {message}")
+                auth_manager.finish_token_refresh(success=False)
+                return False
+        except Exception as e:
+            print(f"Error refreshing token: {str(e)}")
+            auth_manager.finish_token_refresh(success=False)
             return False
     
     def reconnect(self):

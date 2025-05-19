@@ -1513,9 +1513,19 @@ class ControlScreen(QWidget):
                             self.api_reconnect_button.setVisible(False)
                             return
                         else:
-                            # Authentication failed, try to log in again
-                            print("Authentication is invalid, attempting to re-login...")
-                            self._attempt_relogin(api_check_timeout)
+                            # Authentication failed, try to log in again if not on cooldown
+                            from app.utils.auth_manager import AuthManager
+                            auth_manager = AuthManager()
+                            
+                            if hasattr(auth_manager, 'should_refresh_token') and auth_manager.should_refresh_token():
+                                print("Authentication is invalid, attempting to re-login...")
+                                self._attempt_relogin(api_check_timeout)
+                            else:
+                                print("Authentication refresh blocked by cooldown, try again later")
+                                QMessageBox.warning(self, "Connection Error", 
+                                                "Authentication refresh on cooldown. Please try again in a minute.")
+                                self.api_reconnect_button.setText("Reconnect")
+                                self.api_reconnect_button.setEnabled(True)
                     
                     # Check if current auth token is still valid with a simple request
                     self._perform_async_api_call(

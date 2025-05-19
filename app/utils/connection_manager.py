@@ -339,8 +339,8 @@ class ConnectionManager(QObject):
             error_response (ErrorResponse): The error that occurred
         """
         # Only network or authentication errors should affect connection status
-        # Ignore hardware errors (which include OCR) and others
-        if error_response.category not in [ErrorCategory.NETWORK, ErrorCategory.AUTH]:
+        # Explicitly exclude OCR and hardware errors
+        if error_response.category not in [ErrorCategory.NETWORK, ErrorCategory.AUTH] or error_response.category == ErrorCategory.OCR:
             return
             
         # Handle based on error severity and category

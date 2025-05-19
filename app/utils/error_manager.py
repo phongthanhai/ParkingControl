@@ -27,6 +27,7 @@ class ErrorCategory(Enum):
     API = "api"               # API-related errors
     UI = "ui"                 # UI-related errors
     HARDWARE = "hardware"     # Hardware-related errors (camera, GPIO)
+    OCR = "ocr"               # OCR-specific errors
     CONFIG = "config"         # Configuration errors
     SYSTEM = "system"         # System-level errors (OS, file system)
     UNKNOWN = "unknown"       # Unknown/unclassified errors
@@ -127,7 +128,7 @@ class ErrorManager(QObject):
         # Error counts by category
         self._error_counts = {cat.value: 0 for cat in ErrorCategory}
         
-        # Track connection-impacting categories
+        # Track connection-impacting categories (explicitly exclude OCR)
         self._connection_categories = [ErrorCategory.NETWORK, ErrorCategory.AUTH]
         
         self._initialized = True
@@ -186,8 +187,10 @@ class ErrorManager(QObject):
         self.error_occurred.emit(error_response)
         
         # Check if this error might impact connection status
+        # Explicitly exclude OCR errors
         if (category in self._connection_categories and 
-            severity.value >= ErrorSeverity.MEDIUM.value):
+            severity.value >= ErrorSeverity.MEDIUM.value and
+            category != ErrorCategory.OCR):
             self.connection_error_occurred.emit(error_response)
         
         return error_response

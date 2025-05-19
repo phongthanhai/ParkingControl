@@ -8,15 +8,11 @@ import json
 from app.utils.auth_manager import AuthManager
 from app.utils.error_manager import network_error, auth_error, api_error, ErrorSeverity, ErrorCategory, ErrorManager, ErrorResponse
 
-# Define a special error category for OCR-related errors that shouldn't affect connection status
-class OcrError(ErrorCategory):
-    OCR = "ocr"   # OCR-specific errors shouldn't affect main connection status
-
 def ocr_error(message, severity=ErrorSeverity.LOW, error=None, details=None):
     """Helper function for OCR-specific errors"""
     err = ErrorResponse(
         message=message, 
-        category=ErrorCategory.HARDWARE,  # Use HARDWARE category as OCR is related to image processing hardware
+        category=ErrorCategory.OCR,  # Use the dedicated OCR category
         severity=severity,
         error=error,
         details=details

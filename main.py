@@ -9,7 +9,6 @@ from app.ui.control_screen import ControlScreen
 from app.utils.db_manager import DBManager
 from app.utils.image_storage import ImageStorage
 from app.controllers.sync_service import SyncService
-from app.utils.connection_manager import ConnectionManager
 
 # Initialize database folder
 def initialize_local_storage():
@@ -55,10 +54,7 @@ class ParkingSystem(QMainWindow):
         # Status bar without database indicator
         self.statusBar().showMessage("")
         
-        # Initialize connection manager
-        self.connection_manager = ConnectionManager()
-        
-        # Initialize sync service with the connection manager
+        # Initialize sync service
         self.sync_service = SyncService()
             
         self.setup_ui()
@@ -101,10 +97,6 @@ class ParkingSystem(QMainWindow):
                 self.sync_service.sync_progress.connect(
                     self.control_screen.sync_status_widget.set_sync_progress)
                 
-                # Also connect connection manager message signal
-                self.connection_manager.connection_state_message.connect(
-                    self.control_screen.sync_status_widget.show_message)
-                
                 # Get current counts before connecting complete signal to avoid initial appearance
                 pending_counts = self.sync_service.get_pending_sync_counts()
                 self.control_screen.sync_status_widget.update_pending_counts(pending_counts)
@@ -116,10 +108,6 @@ class ParkingSystem(QMainWindow):
                 # Connect refresh request
                 self.control_screen.sync_status_widget.refresh_requested.connect(
                     self.update_sync_counts)
-                
-                # Connect reconnect request to connection manager
-                self.control_screen.sync_status_widget.reconnect_requested.connect(
-                    self.handle_reconnect_request)
                 
                 # Connect log signal from control screen to handle log entries for sync
                 print("Connecting control_screen.log_signal to sync_service")
@@ -185,10 +173,6 @@ class ParkingSystem(QMainWindow):
             # Stop sync service
             if hasattr(self, 'sync_service'):
                 self.sync_service.stop()
-            
-            # Stop connection manager 
-            if hasattr(self, 'connection_manager'):
-                self.connection_manager.stop()
             
             # Close database connection
             db_manager = DBManager()

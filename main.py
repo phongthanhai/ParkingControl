@@ -120,7 +120,21 @@ class ParkingSystem(QMainWindow):
                 
                 # Trigger an immediate sync attempt after authentication
                 print("Triggering initial sync after successful login")
-                QTimer.singleShot(1500, lambda: self.sync_service.sync_now())
+                
+                # Use a direct thread for more reliable syncing
+                def initial_login_sync():
+                    # Give UI time to initialize
+                    import time
+                    time.sleep(2)
+                    print("\n=== INITIAL SYNC AFTER LOGIN STARTED ===")
+                    self.sync_service.sync_now()
+                    
+                # Start thread for initial sync
+                import threading
+                sync_thread = threading.Thread(target=initial_login_sync)
+                sync_thread.daemon = True
+                sync_thread.start()
+                print("Initial sync scheduled in background thread")
             
             self.stack.addWidget(self.control_screen)
         

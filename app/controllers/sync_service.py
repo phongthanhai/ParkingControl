@@ -405,8 +405,21 @@ class SyncService(QObject):
             
             # Force an immediate sync to upload any pending logs
             print("Triggering immediate sync after reconnection with valid token")
-            # Use a short delay to ensure UI is ready
-            QTimer.singleShot(1000, lambda: self.sync_now())
+            
+            # Use a direct sync call in a separate thread to ensure it actually runs
+            def delayed_reconnect_sync():
+                # Sleep briefly to allow UI updates to complete first
+                time.sleep(1.5)
+                print("\n=== DELAYED SYNC TRIGGERED AFTER RECONNECTION ===")
+                # Call sync_now directly from this thread
+                self.sync_now()
+            
+            # Start a dedicated thread for syncing
+            import threading
+            sync_thread = threading.Thread(target=delayed_reconnect_sync)
+            sync_thread.daemon = True
+            sync_thread.start()
+            print("Scheduled immediate sync in background thread")
             return
         
         # Otherwise do an API check
@@ -507,34 +520,53 @@ class SyncService(QObject):
         Manually trigger a synchronization.
         If entity_type is None, sync everything.
         """
+        # Add missing imports if needed
+        import os
+        import time
+        import cv2
+        from config import LOT_ID
+        
+        print("\n==== SYNC OPERATION STARTED ====")
+        print(f"Triggered sync_now for entity_type: {entity_type or 'all'}")
+        
         if not self.api_available:
             print("Cannot sync: API is not available")
             return False
             
         # Always try to check connection first
-        self.check_api_connection()
+        print("Verifying API connection before sync...")
+        connection_ok = self.check_api_connection()
+        print(f"API connection check: {'OK' if connection_ok else 'Failed'}")
         
         if not self.api_available:
+            print("API became unavailable during connection check")
             return False
         
         print("Starting manual sync process...")
         
         # Force token refresh before sync to avoid authentication issues
+        print("Ensuring fresh authentication token...")
         if not self._ensure_fresh_token():
             print("Failed to refresh authentication token before sync")
             self.api_available = False
             self.api_status_changed.emit(False)
+            print("==== SYNC OPERATION ABORTED: Auth Failed ====\n")
             return False
+            
+        print("Authentication token is valid, proceeding with sync")
         
         # Perform sync operations directly in the main thread for manual sync
         # This avoids potential threading issues when user initiates sync
+        total_synced_count = 0
+        
         if entity_type is None or entity_type == "blacklist":
-            print("Manually syncing blacklist...")
+            print("\n--- Blacklist sync starting ---")
             self.sync_status_changed.emit("blacklist", SyncStatus.RUNNING)
             
             # Handle blacklist sync
             try:
                 # Get blacklisted vehicles from API
+                print("Requesting blacklisted vehicles from API...")
                 success, response = self.api_client.get(
                     'vehicles/blacklisted/',
                     params={'skip': 0, 'limit': 1000},
@@ -542,10 +574,16 @@ class SyncService(QObject):
                 )
                 
                 if success and response:
-                    # Update local database
-                    self.db_manager.update_blacklist(response)
-                    self.sync_status_changed.emit("blacklist", SyncStatus.SUCCESS)
-                    print(f"Manually synced blacklist: Updated {len(response)} records")
+                    # Check if response is a valid list
+                    if isinstance(response, list):
+                        # Update local database
+                        print(f"Blacklist sync successful: received {len(response)} records")
+                        self.db_manager.update_blacklist(response)
+                        self.sync_status_changed.emit("blacklist", SyncStatus.SUCCESS)
+                        print(f"Blacklist sync complete: updated {len(response)} records")
+                    else:
+                        print(f"Invalid blacklist response format: {type(response)}")
+                        self.sync_status_changed.emit("blacklist", SyncStatus.FAILED)
                 else:
                     self.sync_status_changed.emit("blacklist", SyncStatus.FAILED)
                     print(f"Failed to retrieve blacklist data: {response}")
@@ -555,6 +593,7 @@ class SyncService(QObject):
                         print("Authentication failed during blacklist sync")
                         self.api_available = False
                         self.api_status_changed.emit(False)
+                        print("==== SYNC OPERATION ABORTED: Auth Failed ====\n")
                         return False
             except Exception as e:
                 self.sync_status_changed.emit("blacklist", SyncStatus.FAILED)
@@ -565,15 +604,19 @@ class SyncService(QObject):
                     print("Connection error detected during blacklist sync")
                     self.api_available = False
                     self.api_status_changed.emit(False)
+                    print("==== SYNC OPERATION ABORTED: Connection Error ====\n")
                     return False
             
+            print("--- Blacklist sync complete ---\n")
+            
         if entity_type is None or entity_type == "logs":
-            print("Manually syncing logs...")
+            print("--- Logs sync starting ---")
             self.sync_status_changed.emit("logs", SyncStatus.RUNNING)
             
             # Handle logs sync
             try:
                 # Get unsynced logs
+                print("Fetching unsynced logs from local database...")
                 unsynced_logs = self.db_manager.get_unsynced_logs(limit=20)
                 
                 if not unsynced_logs:
@@ -581,17 +624,25 @@ class SyncService(QObject):
                     self.sync_status_changed.emit("logs", SyncStatus.SUCCESS)
                     self.last_sync_count = 0
                     self.sync_all_complete.emit(0)
+                    print("--- No logs to sync, operation complete ---\n")
+                    print("==== SYNC OPERATION COMPLETED ====\n")
                     return True
+                    
+                print(f"Found {len(unsynced_logs)} unsynced logs")
                     
                 # Only sync auto and manual entries, not denied-blacklist or skipped
                 filtered_logs = [log for log in unsynced_logs 
                                 if log['type'] in ('auto', 'manual')]
+                
+                print(f"After filtering: {len(filtered_logs)} logs to sync (auto/manual only)")
                 
                 if not filtered_logs:
                     print("No valid logs to sync after filtering")
                     self.sync_status_changed.emit("logs", SyncStatus.SUCCESS)
                     self.last_sync_count = 0
                     self.sync_all_complete.emit(0)
+                    print("--- No valid logs to sync, operation complete ---\n")
+                    print("==== SYNC OPERATION COMPLETED ====\n")
                     return True
                     
                 total_logs = len(filtered_logs)
@@ -644,7 +695,7 @@ class SyncService(QObject):
                             break
                         
                         # Send to API - guard-control endpoint handles everything
-                        print(f"Sending log {log['id']} to API...")
+                        print(f"Sending log {log['id']} to API endpoint services/guard-control/...")
                         try:
                             success, response = self.api_client.post_with_files(
                                 'services/guard-control/',
@@ -657,6 +708,7 @@ class SyncService(QObject):
                                 # Mark as synced in a separate transaction
                                 self.db_manager.mark_log_synced(log['id'])
                                 synced_count += 1
+                                total_synced_count += 1
                                 print(f"Successfully synced log {log['id']}")
                             else:
                                 failed_count += 1
@@ -705,8 +757,12 @@ class SyncService(QObject):
                     self.sync_status_changed.emit("logs", SyncStatus.SUCCESS)
                     print(f"Successfully {result_message}")
                 else:
-                    self.sync_status_changed.emit("logs", SyncStatus.FAILED)
-                    print(f"Failed to sync any logs")
+                    if total_logs > 0:
+                        self.sync_status_changed.emit("logs", SyncStatus.FAILED)
+                        print(f"Failed to sync any logs")
+                    else:
+                        self.sync_status_changed.emit("logs", SyncStatus.SUCCESS)
+                        print("No logs needed syncing")
                 
             except Exception as e:
                 self.sync_status_changed.emit("logs", SyncStatus.FAILED)
@@ -717,11 +773,15 @@ class SyncService(QObject):
                     print("Connection error detected during log sync")
                     self.api_available = False
                     self.api_status_changed.emit(False)
+                    print("==== SYNC OPERATION ABORTED: Connection Error ====\n")
                     return False
         
             # Signal completion of entire sync process with synced count
-            self.last_sync_count = synced_count
-            self.sync_all_complete.emit(synced_count)
+            self.last_sync_count = total_synced_count
+            self.sync_all_complete.emit(total_synced_count)
+            
+        print("--- Logs sync complete ---")
+        print(f"==== SYNC OPERATION COMPLETED: {total_synced_count} items synced ====\n")
         return True
     
     def reconnect(self):
@@ -885,8 +945,23 @@ class SyncService(QObject):
                     
                     # If we were previously offline, force an immediate sync
                     # This ensures any local logs are synced right after reconnection
-                    print("Triggering immediate sync after reconnection")
-                    QTimer.singleShot(1000, lambda: self.sync_now())
+                    print("Triggering immediate sync after successful token refresh")
+                    
+                    # Use a direct sync call here instead of timer to ensure it's triggered
+                    # We'll use a separate thread to avoid blocking the UI
+                    def delayed_sync():
+                        # Sleep briefly to allow UI updates to complete first
+                        time.sleep(1.5)
+                        print("\n=== DELAYED SYNC TRIGGERED AFTER TOKEN REFRESH ===")
+                        # Call sync_now directly from this thread
+                        self.sync_now()
+                    
+                    # Start a dedicated thread for syncing
+                    import threading
+                    sync_thread = threading.Thread(target=delayed_sync)
+                    sync_thread.daemon = True
+                    sync_thread.start()
+                    print("Scheduled immediate sync in background thread")
             else:
                 print("Token refresh thread failed")
                 self.api_available = False

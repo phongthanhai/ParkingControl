@@ -17,11 +17,14 @@ from app.controllers.sync_service import SyncService
 
 class ExitSyncDialog(QDialog):
     """Dialog that shows sync progress during application exit"""
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, api_available=True):
         super().__init__(parent, Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
         self.setWindowTitle("Syncing Data")
         self.setWindowModality(Qt.ApplicationModal)
         self.setFixedSize(400, 150)
+        
+        # Track API state
+        self.api_available = api_available
         
         # Apply simple styling
         self.setStyleSheet("""
@@ -59,7 +62,12 @@ class ExitSyncDialog(QDialog):
         layout.setSpacing(10)
         
         # Status label
-        self.status_label = QLabel("Syncing data before exit")
+        if api_available:
+            status_text = "Syncing data before exit"
+        else:
+            status_text = "No connection to server"
+            
+        self.status_label = QLabel(status_text)
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setStyleSheet("font-size: 14px; font-weight: bold;")
         layout.addWidget(self.status_label)
@@ -69,11 +77,22 @@ class ExitSyncDialog(QDialog):
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(True)
-        self.progress_bar.setFormat("%v/%m")
+        
+        if not api_available:
+            self.progress_bar.setFormat("Offline")
+            self.progress_bar.setEnabled(False)
+        else:
+            self.progress_bar.setFormat("%v/%m")
+            
         layout.addWidget(self.progress_bar)
         
         # Detail label
-        self.detail_label = QLabel("Please wait...")
+        if api_available:
+            detail_text = "Please wait..."
+        else:
+            detail_text = "Cannot sync data - no server connection"
+            
+        self.detail_label = QLabel(detail_text)
         self.detail_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.detail_label)
         
@@ -81,22 +100,44 @@ class ExitSyncDialog(QDialog):
         button_layout = QHBoxLayout()
         button_layout.addStretch()
         
-        self.force_exit_button = QPushButton("Force Exit")
-        button_layout.addWidget(self.force_exit_button)
+        if not api_available:
+            # When offline, we'll have two buttons
+            self.exit_anyway_button = QPushButton("Exit Anyway")
+            self.exit_anyway_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #e74c3c;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 6px 12px;
+                }
+                QPushButton:hover {
+                    background-color: #c0392b;
+                }
+            """)
+            button_layout.addWidget(self.exit_anyway_button)
+            self.exit_anyway_button.clicked.connect(self.reject)
+        else:
+            # Normal online case
+            self.force_exit_button = QPushButton("Force Exit")
+            button_layout.addWidget(self.force_exit_button)
+            self.force_exit_button.clicked.connect(self.reject)
+            
         layout.addLayout(button_layout)
-        
-        # Connect signals
-        self.force_exit_button.clicked.connect(self.reject)
         
         # State
         self.is_complete = False
         self.progress_received = False
         
         # Simple progress indication for waiting period
-        self.progress_bar.setFormat("Preparing...")
+        if api_available:
+            self.progress_bar.setFormat("Preparing...")
         
     def update_progress(self, entity_type, completed, total):
         """Update the progress bar with current progress"""
+        if not self.api_available:
+            return
+            
         if entity_type == "logs":
             self.progress_received = True
             
@@ -115,26 +156,31 @@ class ExitSyncDialog(QDialog):
                 self.status_label.setText("Sync Complete")
                 self.detail_label.setText(f"Successfully synced {count} items")
             else:
-                self.status_label.setText("Nothing to Sync")
-                self.detail_label.setText("No unsaved data found")
+                if self.api_available:
+                    self.status_label.setText("Nothing to Sync")
+                    self.detail_label.setText("No unsaved data found")
+                else:
+                    # Leave the original offline message
+                    pass
             
             # Complete the progress bar
             self.progress_bar.setValue(self.progress_bar.maximum())
             
             # Update button
-            self.force_exit_button.setText("Close")
-            self.force_exit_button.setStyleSheet("""
-                QPushButton {
-                    background-color: #3498db;
-                    color: white;
-                    border: none;
-                    border-radius: 4px;
-                    padding: 6px 12px;
-                }
-                QPushButton:hover {
-                    background-color: #2980b9;
-                }
-            """)
+            if hasattr(self, 'force_exit_button'):
+                self.force_exit_button.setText("Close")
+                self.force_exit_button.setStyleSheet("""
+                    QPushButton {
+                        background-color: #3498db;
+                        color: white;
+                        border: none;
+                        border-radius: 4px;
+                        padding: 6px 12px;
+                    }
+                    QPushButton:hover {
+                        background-color: #2980b9;
+                    }
+                """)
             
             # Set state and auto-close
             self.is_complete = True
@@ -353,15 +399,20 @@ class ParkingSystem(QMainWindow):
                     counts = self.sync_service.get_pending_sync_counts()
                     print(f"DEBUG: Found {counts['total']} items that need sync before exit")
                     
-                    if counts["total"] > 0 and self.sync_service.api_available:
+                    # First check if there are unsynced items
+                    if counts["total"] > 0:
                         print(f"DEBUG: Will show exit dialog for {counts['total']} items")
                         
-                        # Create and show the exit sync dialog
-                        sync_dialog = ExitSyncDialog(self)
+                        # Check if API is available for sync
+                        api_available = self.sync_service.api_available 
                         
-                        # Connect signals - move to center of screen and make sure it's visible
-                        self.sync_service.sync_progress.connect(sync_dialog.update_progress)
-                        self.sync_service.sync_all_complete.connect(sync_dialog.sync_complete)
+                        # Create and show the exit sync dialog with API availability status
+                        sync_dialog = ExitSyncDialog(self, api_available=api_available)
+                        
+                        # Connect signals if API is available
+                        if api_available:
+                            self.sync_service.sync_progress.connect(sync_dialog.update_progress)
+                            self.sync_service.sync_all_complete.connect(sync_dialog.sync_complete)
                         
                         # Center the dialog on screen for maximum visibility
                         try:
@@ -396,9 +447,15 @@ class ParkingSystem(QMainWindow):
                         if hasattr(self, 'control_screen') and self.control_screen and hasattr(self.control_screen, 'sync_status_widget'):
                             self.control_screen.sync_status_widget.show_shutdown_sync()
                         
-                        # Start the sync operation with shutdown context
-                        print("DEBUG: Starting final exit sync operation")
-                        self.sync_service.sync_now(context="shutdown")
+                        # Start the sync operation with shutdown context if API is available
+                        if api_available:
+                            print("DEBUG: Starting final exit sync operation")
+                            self.sync_service.sync_now(context="shutdown")
+                        else:
+                            # If API is not available, emit completion signal with 0 count
+                            # to ensure dialog handles offline state properly
+                            print("DEBUG: Cannot sync - API not available")
+                            self.sync_service.sync_all_complete.emit(0, "shutdown")
                         
                         # Wait for sync to complete or user to force exit
                         # The dialog will block until sync completes or user cancels
@@ -409,8 +466,9 @@ class ParkingSystem(QMainWindow):
                         
                         # Disconnect signals to prevent callbacks during shutdown
                         try:
-                            self.sync_service.sync_progress.disconnect(sync_dialog.update_progress)
-                            self.sync_service.sync_all_complete.disconnect(sync_dialog.sync_complete)
+                            if api_available:
+                                self.sync_service.sync_progress.disconnect(sync_dialog.update_progress)
+                                self.sync_service.sync_all_complete.disconnect(sync_dialog.sync_complete)
                         except TypeError:
                             # Ignore disconnect errors if signals were already disconnected
                             pass

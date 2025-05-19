@@ -628,6 +628,14 @@ class SyncService(QObject):
             import cv2
             from config import LOT_ID
             
+            # First check if API is available - don't proceed if not connected
+            if not self.api_available:
+                print("DEBUG: API not available for shutdown sync, aborting")
+                # Signal completion with 0 count and shutdown context
+                # Important: Don't mark anything as synced when API is unavailable
+                self.sync_all_complete.emit(0, "shutdown")
+                return
+            
             # Ensure token is valid
             print("DEBUG: Checking token validity for shutdown sync")
             if not self._ensure_fresh_token():
@@ -665,6 +673,11 @@ class SyncService(QObject):
                     if log.get('synced', 0) == 1:
                         print(f"DEBUG: Log {log['id']} is already synced, skipping")
                         continue
+                    
+                    # Check if API is still available before each sync attempt
+                    if not self.api_available:
+                        print(f"DEBUG: API connection lost during shutdown sync, aborting at log {idx+1}/{total_logs}")
+                        break
                             
                     print(f"DEBUG: Processing log {idx+1}/{total_logs}, ID={log['id']}")
                     
@@ -716,10 +729,19 @@ class SyncService(QObject):
                         print(f"DEBUG: Emitting progress signal: {synced_count}/{total_logs}")
                         self.sync_progress.emit("logs", synced_count, total_logs)
                     else:
+                        # Handle API failure - check if it's a connection issue
                         print(f"DEBUG: Failed to sync log {log['id']} during shutdown: {response}")
+                        if "Connection" in str(response) or "timeout" in str(response).lower():
+                            print("DEBUG: Connection issue detected, API may be unavailable")
+                            self.api_available = False
+                            break
                         
                 except Exception as e:
                     print(f"DEBUG: Error syncing log during shutdown: {str(e)}")
+                    if "Connection" in str(e) or "timeout" in str(e).lower():
+                        print("DEBUG: Connection exception detected, API may be unavailable")
+                        self.api_available = False
+                        break
             
             print(f"\n=== SHUTDOWN SYNC COMPLETE: {synced_count}/{len(filtered_logs)} logs synced ===")
             

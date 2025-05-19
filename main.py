@@ -106,9 +106,9 @@ class ParkingSystem(QMainWindow):
                 pending_counts = self.sync_service.get_pending_sync_counts()
                 self.control_screen.sync_status_widget.update_pending_counts(pending_counts)
                 
-                # Connect complete signal with the count of synced items
+                # Connect complete signal with the count of synced items and context
                 self.sync_service.sync_all_complete.connect(
-                    lambda count: self.control_screen.sync_status_widget.sync_completed(True, count))
+                    lambda count, context: self.control_screen.sync_status_widget.sync_completed(True, count, context))
                 
                 # Connect refresh request
                 self.control_screen.sync_status_widget.refresh_requested.connect(
@@ -118,8 +118,11 @@ class ParkingSystem(QMainWindow):
                 print("Connecting control_screen.log_signal to sync_service")
                 self.control_screen.log_signal.connect(self.handle_log_entry)
                 
-                # Trigger an immediate sync attempt after authentication
+                # Trigger an immediate sync attempt after authentication with startup context
                 print("Triggering initial sync after successful login")
+                
+                # First show the startup sync indicator
+                self.control_screen.sync_status_widget.show_startup_sync()
                 
                 # Use a direct thread for more reliable syncing
                 def initial_login_sync():
@@ -127,7 +130,7 @@ class ParkingSystem(QMainWindow):
                     import time
                     time.sleep(2)
                     print("\n=== INITIAL SYNC AFTER LOGIN STARTED ===")
-                    self.sync_service.sync_now()
+                    self.sync_service.sync_now(context="startup")
                     
                 # Start thread for initial sync
                 import threading
@@ -199,6 +202,10 @@ class ParkingSystem(QMainWindow):
             if hasattr(self, 'db_check_timer') and self.db_check_timer.isActive():
                 self.db_check_timer.stop()
                 print("Database check timer stopped")
+            
+            # Show the shutdown sync indicator if we have control screen and sync widget
+            if hasattr(self, 'control_screen') and self.control_screen and hasattr(self.control_screen, 'sync_status_widget'):
+                self.control_screen.sync_status_widget.show_shutdown_sync()
                 
             # If control screen exists, close it first to handle thread cleanup
             if hasattr(self, 'control_screen') and self.control_screen:
@@ -235,7 +242,7 @@ class ParkingSystem(QMainWindow):
             if hasattr(self, 'sync_service'):
                 print("Stopping sync service...")
                 try:
-                    self.sync_service.stop()
+                    self.sync_service.stop()  # This will perform a final sync with shutdown context
                     print("Sync service stopped")
                 except Exception as e:
                     print(f"Error stopping sync service: {str(e)}")

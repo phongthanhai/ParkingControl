@@ -26,6 +26,10 @@ class SyncStatusWidget(QWidget):
         # Hide widget initially
         self.setVisible(False)
         
+        # Track sync state
+        self.is_syncing = False
+        self.sync_context = None
+        
         # Ensure icons are ready
         self.ensure_icons()
     
@@ -106,11 +110,28 @@ class SyncStatusWidget(QWidget):
         # Update the label
         self.loading_label.setPixmap(pixmap)
     
-    def start_sync_animation(self):
-        """Start the loading animation and show the widget"""
+    def start_sync_animation(self, context=None):
+        """
+        Start the loading animation and show the widget
+        
+        Args:
+            context (str, optional): The context of the sync (startup, exit, etc.)
+        """
         self.loading_label.setVisible(True)
         self.check_icon.setVisible(False)
-        self.status_label.setText("Syncing...")
+        
+        # Save sync context
+        self.sync_context = context
+        self.is_syncing = True
+        
+        # Use appropriate message based on context
+        if context == "startup":
+            self.status_label.setText("Initial sync...")
+        elif context == "shutdown":
+            self.status_label.setText("Final sync before exit...")
+        else:
+            self.status_label.setText("Syncing...")
+            
         self.spinner_timer.start(100)  # Update every 100ms
         self.setVisible(True)
         
@@ -118,58 +139,126 @@ class SyncStatusWidget(QWidget):
         if self.hide_timer.isActive():
             self.hide_timer.stop()
     
-    def show_sync_complete(self, message):
-        """Show completion message"""
+    def show_sync_complete(self, message, context=None):
+        """
+        Show completion message with context awareness
+        
+        Args:
+            message (str): The base message to show
+            context (str, optional): The context that completed (startup, exit, etc.)
+        """
         self.spinner_timer.stop()
         self.loading_label.setVisible(False)
+        self.is_syncing = False
         
         # Use the pre-generated check mark pixmap
         self.check_icon.setPixmap(self.check_pixmap)
         self.check_icon.setVisible(True)
         
-        # Show completion message
-        self.status_label.setText(message)
+        # Show completion message with context if provided
+        if context == "startup" or self.sync_context == "startup":
+            self.status_label.setText("Initial sync complete")
+        elif context == "shutdown" or self.sync_context == "shutdown":
+            self.status_label.setText("Final sync complete")
+        else:
+            self.status_label.setText(message)
+        
+        # Reset context
+        self.sync_context = None
         
         # Start auto-hide timer
         self.hide_timer.start(5000)  # Hide after 5 seconds
     
-    def show_sync_failed(self):
-        """Show failure message"""
+    def show_sync_failed(self, context=None):
+        """
+        Show failure message with context awareness
+        
+        Args:
+            context (str, optional): The context that failed (startup, exit, etc.)
+        """
         self.spinner_timer.stop()
         self.loading_label.setVisible(False)
+        self.is_syncing = False
         
         # Use the pre-generated error mark pixmap
         self.check_icon.setPixmap(self.error_pixmap)
         self.check_icon.setVisible(True)
         
-        # Show error message
-        self.status_label.setText("Sync failed")
+        # Show error message with context if provided
+        if context == "startup" or self.sync_context == "startup":
+            self.status_label.setText("Initial sync failed")
+        elif context == "shutdown" or self.sync_context == "shutdown":
+            self.status_label.setText("Final sync failed")
+        else:
+            self.status_label.setText("Sync failed")
+        
+        # Reset context
+        self.sync_context = None
         
         # Start auto-hide timer
         self.hide_timer.start(5000)  # Hide after 5 seconds
     
     def set_connection_status(self, is_connected):
         """Called when API connection status changes"""
-        # This method remains for compatibility but doesn't do anything visible
-        pass
+        # Make this method update the sync widget to show connection status
+        if is_connected and not self.is_syncing:
+            # Show a brief connected message
+            self.check_icon.setPixmap(self.check_pixmap)
+            self.check_icon.setVisible(True)
+            self.loading_label.setVisible(False)
+            self.status_label.setText("Server connected")
+            self.setVisible(True)
+            self.hide_timer.start(3000)  # Hide after 3 seconds
+        elif not is_connected:
+            # Show disconnected status
+            self.check_icon.setPixmap(self.error_pixmap)
+            self.check_icon.setVisible(True)
+            self.loading_label.setVisible(False)
+            self.status_label.setText("Server disconnected")
+            self.setVisible(True)
+            # Don't auto-hide when disconnected - important status
     
     def set_sync_progress(self, entity_type, completed, total):
         """Update progress display during sync"""
         if total > 0:
-            self.status_label.setText(f"Syncing {completed}/{total}...")
-            self.start_sync_animation()
+            if self.sync_context == "startup":
+                self.status_label.setText(f"Initial sync: {completed}/{total}...")
+            elif self.sync_context == "shutdown":
+                self.status_label.setText(f"Final sync: {completed}/{total}...")
+            else:
+                self.status_label.setText(f"Syncing {completed}/{total}...")
+                
+            if not self.spinner_timer.isActive():
+                self.start_sync_animation(self.sync_context)
     
-    def sync_completed(self, success=True, count=None):
-        """Show completion status"""
+    def sync_completed(self, success=True, count=None, context=None):
+        """
+        Show completion status with context awareness
+        
+        Args:
+            success (bool): Whether the sync was successful
+            count (int, optional): Number of items synced
+            context (str, optional): The context of the sync (startup, exit, etc.)
+        """
         if success:
             if count is None or count == 0:
-                # If no count is provided, or it's zero, just show "Synced" without a count
-                self.show_sync_complete("Synced")
+                # If no count is provided, or it's zero, show a contextualized message
+                if context == "startup" or self.sync_context == "startup":
+                    self.show_sync_complete("Initial sync complete", "startup")
+                elif context == "shutdown" or self.sync_context == "shutdown":
+                    self.show_sync_complete("Final sync complete", "shutdown") 
+                else:
+                    self.show_sync_complete("Synced", context)
             else:
-                # Show the count of synced logs
-                self.show_sync_complete(f"Synced {count} logs")
+                # Show the count of synced logs with context
+                if context == "startup" or self.sync_context == "startup":
+                    self.show_sync_complete(f"Initial sync: {count} items", "startup")
+                elif context == "shutdown" or self.sync_context == "shutdown":
+                    self.show_sync_complete(f"Final sync: {count} items", "shutdown")
+                else:
+                    self.show_sync_complete(f"Synced {count} items", context)
         else:
-            self.show_sync_failed()
+            self.show_sync_failed(context or self.sync_context)
         
         # Emit refresh request to update pending counts
         self.refresh_requested.emit()
@@ -180,11 +269,34 @@ class SyncStatusWidget(QWidget):
     
     def hide_widget(self):
         """Hide the widget after a delay"""
-        self.setVisible(False)
+        # Only hide if not currently syncing
+        if not self.is_syncing:
+            self.setVisible(False)
+    
+    def show_startup_sync(self):
+        """Specifically show the startup sync message"""
+        self.start_sync_animation("startup")
+        
+    def show_shutdown_sync(self):
+        """Specifically show the shutdown sync message"""
+        self.start_sync_animation("shutdown")
     
     # These methods are kept for compatibility with existing code
     def reconnect_result(self, success):
-        pass
+        if success:
+            self.check_icon.setPixmap(self.check_pixmap)
+            self.check_icon.setVisible(True)
+            self.loading_label.setVisible(False)
+            self.status_label.setText("Reconnected successfully")
+            self.setVisible(True)
+            self.hide_timer.start(3000)  # Hide after 3 seconds
+        else:
+            self.check_icon.setPixmap(self.error_pixmap)
+            self.check_icon.setVisible(True)
+            self.loading_label.setVisible(False)
+            self.status_label.setText("Reconnection failed")
+            self.setVisible(True)
+            self.hide_timer.start(3000)
     
     def request_sync(self):
         self.sync_requested.emit()

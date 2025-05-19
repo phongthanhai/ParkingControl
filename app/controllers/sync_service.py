@@ -31,117 +31,113 @@ class SyncWorker(QThread):
         self._current_operation = None
         self._sync_requested = False  # New flag to trigger sync operations
         self._sync_type = None  # Type of sync to perform
+        self.context = None  # Track the context of the current sync (startup, shutdown, etc.)
         
     def run(self):
-        """Main worker thread loop - now only processes explicit sync requests"""
-        print("SyncWorker started - waiting for sync requests")
+        """Main worker thread loop"""
+        print("SyncWorker thread started")
+        
         while self._running:
-            # Check if sync was requested and we're not paused
-            if self._sync_requested and not self._paused and self.sync_service.api_available:
-                self.mutex.lock()
-                self._sync_requested = False
-                sync_type = self._sync_type
-                self._sync_type = None
-                self.mutex.unlock()
-                
+            # Check if sync was requested
+            self.mutex.lock()
+            sync_requested = self._sync_requested
+            sync_type = self._sync_type
+            self.mutex.unlock()
+            
+            if sync_requested:
                 try:
-                    print(f"SyncWorker processing sync request: {sync_type}")
-                    # Only proceed if token refresh is successful
-                    if self.sync_service._ensure_fresh_token():
-                        # Check if we have anything to sync
-                        counts = self.sync_service.get_pending_sync_counts()
-                        if counts["total"] > 0:
-                            print(f"SyncWorker found {counts['total']} items to sync")
-                            
-                            # Sync blacklist first if requested
-                            if sync_type == "all" or sync_type == "blacklist":
-                                self._sync_blacklist()
-                                
-                            # Then sync logs
-                            if sync_type == "all" or sync_type == "logs":
-                                sync_count = self._sync_logs()
-                                
-                                # Signal completion with count
-                                sync_count = sync_count if sync_count is not None else 0
-                                self.sync_service.last_sync_count = sync_count
-                                self.sync_service.sync_all_complete.emit(sync_count)
-                        else:
-                            print("SyncWorker: No items to sync")
-                            self.sync_service.last_sync_count = 0
-                            self.sync_service.sync_all_complete.emit(0)
-                    else:
+                    print(f"SyncWorker processing sync request: {sync_type} (context: {self.context})")
+                    
+                    # Check API connection
+                    if not self.sync_service.api_available:
+                        print("SyncWorker: API is not available")
+                        self.sync_service.last_sync_count = 0
+                        self.sync_service.sync_all_complete.emit(0, self.context)
+                        
+                        # Reset sync flags
+                        self.mutex.lock()
+                        self._sync_requested = False
+                        self._sync_type = None
+                        self.mutex.unlock()
+                        continue
+                    
+                    # Make sure we have valid auth before proceeding
+                    token_valid = self.sync_service._ensure_fresh_token()
+                    if not token_valid:
                         print("SyncWorker: Token refresh failed, aborting sync")
+                        
+                        # Reset sync flags
+                        self.mutex.lock()
+                        self._sync_requested = False
+                        self._sync_type = None
+                        self.mutex.unlock()
+                        
+                        # Signal completion with error
+                        self.sync_service.last_sync_count = 0
+                        self.sync_service.sync_all_complete.emit(0, self.context)
+                        continue
+                    
+                    # Perform the actual sync
+                    sync_count = None
+                    
+                    if sync_type == "logs" or sync_type == "all":
+                        sync_count = self._sync_logs()
+                        
+                    # Mark sync as complete
+                    self.mutex.lock()
+                    self._sync_requested = False
+                    self._sync_type = None
+                    self.mutex.unlock()
+                    
+                    # Signal completion with the context
+                    sync_count = sync_count if sync_count is not None else 0
+                    self.sync_service.last_sync_count = sync_count
+                    self.sync_service.sync_all_complete.emit(sync_count, self.context)
                 except Exception as e:
                     print(f"SyncWorker sync error: {str(e)}")
                     self.sync_service.last_sync_count = 0
-                    self.sync_service.sync_all_complete.emit(0)
+                    self.sync_service.sync_all_complete.emit(0, self.context)
+                    
+                    # Reset sync flags even on error
+                    self.mutex.lock()
+                    self._sync_requested = False
+                    self._sync_type = None
+                    self.mutex.unlock()
             
             # Sleep a bit to avoid CPU spinning
-            time.sleep(0.5)
-    
+            time.sleep(0.1)
+            
     def request_sync(self, sync_type="all"):
         """Request a sync operation to be performed"""
-        if not self._running:
-            print("Cannot request sync: worker is not running")
-            return False
-            
+        print(f"Sync requested: {sync_type}")
+        
+        # Set the request flag with mutex protection
         self.mutex.lock()
         self._sync_requested = True
         self._sync_type = sync_type
         self.mutex.unlock()
-        print(f"Sync requested: {sync_type}")
+        
         return True
-    
+        
     def stop(self):
-        """Signal the thread to stop"""
-        print("Stopping sync worker")
+        """Stop the worker thread"""
         self._running = False
-    
+        print("SyncWorker stopping...")
+        
     def pause(self):
-        """Pause sync operations"""
-        print("Pausing sync worker")
+        """Pause the worker thread"""
         self.mutex.lock()
         self._paused = True
         self.mutex.unlock()
-    
+        print("SyncWorker paused")
+        
     def resume(self):
-        """Resume sync operations"""
-        print("Resuming sync worker")
+        """Resume the worker thread"""
         self.mutex.lock()
         self._paused = False
         self.mutex.unlock()
-    
-    def _sync_blacklist(self):
-        """Sync blacklist data from server to local"""
-        if not self.sync_service.can_sync():
-            return
-            
-        self.mutex.lock()
-        self._current_operation = "blacklist"
-        self.mutex.unlock()
-        
-        try:
-            # Get blacklisted vehicles from API
-            success, response = self.api_client.get(
-                'vehicles/blacklisted/',
-                params={'skip': 0, 'limit': 1000},
-                timeout=(3.0, 10.0)
-            )
-            
-            if success and response:
-                # Update local database
-                self.db_manager.update_blacklist(response)
-                self.sync_complete.emit("blacklist", True, f"Updated {len(response)} blacklist records")
-            else:
-                self.sync_complete.emit("blacklist", False, "Failed to retrieve blacklist data")
-        
-        except Exception as e:
-            self.sync_complete.emit("blacklist", False, f"Blacklist sync error: {str(e)}")
-        
-        self.mutex.lock()
-        self._current_operation = None
-        self.mutex.unlock()
-    
+        print("SyncWorker resumed")
+
     def _sync_logs(self):
         """Sync log entries from local to server using the comprehensive guard-control endpoint"""
         if not self.sync_service.can_sync():
@@ -153,56 +149,58 @@ class SyncWorker(QThread):
         self.mutex.unlock()
             
         try:
-            print("\n=== SYNC WORKER: STARTING LOG SYNC ===")
+            # Print context-aware message
+            if self.context == "startup":
+                print("\n=== SYNC WORKER: STARTING INITIAL LOG SYNC ===")
+            elif self.context == "shutdown":
+                print("\n=== SYNC WORKER: STARTING FINAL LOG SYNC ===")
+            else:
+                print("\n=== SYNC WORKER: STARTING LOG SYNC ===")
+                
             # Get unsynced logs
             unsynced_logs = self.db_manager.get_unsynced_logs(limit=20)
             
             if not unsynced_logs:
                 print("SYNC WORKER: No logs to sync")
                 self.sync_complete.emit("logs", True, "No logs to sync")
-                self.mutex.lock()
-                self._current_operation = None
-                self.mutex.unlock()
                 return 0
             
-            print(f"SYNC WORKER: Found {len(unsynced_logs)} unsynced logs")    
+            print(f"SYNC WORKER: Found {len(unsynced_logs)} unsynced logs")
             
-            # Only sync auto and manual entries, not denied-blacklist or skipped
-            filtered_logs = [log for log in unsynced_logs 
-                            if log['type'] in ('auto', 'manual')]
+            # Filter only auto and manual entries (not blacklist or skipped)
+            filtered_logs = [log for log in unsynced_logs if log['type'] in ('auto', 'manual')]
             
-            print(f"SYNC WORKER: After filtering - {len(filtered_logs)} logs to sync")
-            
-            # If no valid logs after filtering, exit
             if not filtered_logs:
                 print("SYNC WORKER: No valid logs to sync after filtering")
                 self.sync_complete.emit("logs", True, "No valid logs to sync")
-                self.mutex.lock()
-                self._current_operation = None
-                self.mutex.unlock()
                 return 0
                 
-            total_logs = len(filtered_logs)
-            self.sync_progress.emit("logs", 0, total_logs)
-            print(f"SYNC WORKER: Starting to sync {total_logs} logs to server...")
+            print(f"SYNC WORKER: Syncing {len(filtered_logs)} valid logs")
             
-            # Process each log
+            # Import here to avoid circular imports
+            import os
+            import cv2
+            from config import LOT_ID
+            
             synced_count = 0
-            failed_count = 0
-            for i, log in enumerate(filtered_logs):
-                if not self._running or self._paused:
-                    print("SYNC WORKER: Sync operation interrupted - stopping")
-                    break
-                
+            total_count = len(filtered_logs)
+            
+            # Report initial progress
+            self.sync_progress.emit("logs", 0, total_count)
+            
+            for idx, log in enumerate(filtered_logs):
                 try:
-                    # Check if this log is already marked as synced
-                    if log.get('synced', 0) == 1:
-                        print(f"SYNC WORKER: Skipping log {log['id']} as it's already marked as synced")
-                        continue
+                    # Skip if paused
+                    self.mutex.lock()
+                    paused = self._paused
+                    self.mutex.unlock()
+                    
+                    if paused:
+                        print("SYNC WORKER: Sync paused, stopping")
+                        break
                         
-                    # Extra validation
-                    if not log.get('plate_id'):
-                        print(f"SYNC WORKER: Skipping log {log['id']} - missing plate_id")
+                    # Check if already synced
+                    if log.get('synced', 0) == 1:
                         continue
                         
                     # Prepare form data
@@ -214,14 +212,10 @@ class SyncWorker(QThread):
                         'timestamp': log['timestamp']
                     }
                     
-                    print(f"SYNC WORKER: Syncing log {log['id']}: {log['plate_id']} - {log['lane']} - {log['type']}") 
-                    
                     # Handle image if available
                     files = None
                     if log.get('image_path') and os.path.exists(log.get('image_path')):
                         try:
-                            print(f"SYNC WORKER: Processing image for log {log['id']}: {log['image_path']}")
-                            # Read image and convert to bytes
                             img = cv2.imread(log['image_path'])
                             if img is not None:
                                 _, img_encoded = cv2.imencode('.png', img)
@@ -229,20 +223,11 @@ class SyncWorker(QThread):
                                 files = {
                                     'image': ('frame.png', img_bytes, 'image/png')
                                 }
-                                print(f"SYNC WORKER: Successfully prepared image for log {log['id']}")
-                            else:
-                                print(f"SYNC WORKER: Image for log {log['id']} couldn't be read, sending without image")
                         except Exception as img_err:
-                            print(f"SYNC WORKER: Error processing image for log {log['id']}: {str(img_err)}")
-                            # Continue without the image rather than failing the sync
+                            print(f"SYNC WORKER: Error processing image: {str(img_err)}")
                     
-                    # Send to API - guard-control endpoint handles everything
-                    print(f"SYNC WORKER: Sending log {log['id']} to API endpoint services/guard-control/...")
-                    
-                    # Create a separate API client instance to avoid thread safety issues
-                    api_client = ApiClient(base_url=API_BASE_URL)
-                    
-                    success, response = api_client.post_with_files(
+                    # Sync to API
+                    success, response = self.api_client.post_with_files(
                         'services/guard-control/',
                         data=form_data,
                         files=files,
@@ -250,55 +235,42 @@ class SyncWorker(QThread):
                     )
                     
                     if success:
-                        print(f"SYNC WORKER: Successfully synced log {log['id']}")
-                        # Mark as synced in the database
+                        # Mark as synced in local DB
                         self.db_manager.mark_log_synced(log['id'])
                         synced_count += 1
+                        print(f"SYNC WORKER: Successfully synced log {log['id']}")
+                        
+                        # Report progress
+                        self.sync_progress.emit("logs", synced_count, total_count)
                     else:
-                        failed_count += 1
                         print(f"SYNC WORKER: Failed to sync log {log['id']}: {response}")
                         
-                        # Check if it's an authentication failure
-                        if isinstance(response, str) and "Authentication failed" in response:
-                            print("SYNC WORKER: Authentication failed during sync, stopping batch")
-                            break
-                    
-                    progress = i + 1
-                    self.sync_progress.emit("logs", progress, total_logs)
-                    
-                    # Small delay to prevent UI freezing and avoid overwhelming the server
-                    time.sleep(0.2)
-                    
                 except Exception as e:
-                    failed_count += 1
-                    print(f"SYNC WORKER: Error syncing log {log['id']}: {str(e)}")
-                    # Don't mark as synced on error, it will be retried next time
+                    print(f"SYNC WORKER: Error syncing log: {str(e)}")
+                    
+                # Short sleep to avoid overwhelming the server
+                time.sleep(0.1)
             
-            # Always emit final progress with the actual count
-            self.sync_progress.emit("logs", synced_count + failed_count, total_logs)
+            # Report final results
+            if self.context == "startup":
+                print(f"SYNC WORKER: Initial sync completed, {synced_count}/{total_count} logs synced")
+            elif self.context == "shutdown":
+                print(f"SYNC WORKER: Final sync completed, {synced_count}/{total_count} logs synced")
+            else:
+                print(f"SYNC WORKER: Sync completed, {synced_count}/{total_count} logs synced")
                 
-            # Show detailed summary
-            result_message = f"Synced {synced_count}/{total_logs} log entries"
-            if failed_count > 0:
-                result_message += f" ({failed_count} failed)"
+            self.sync_complete.emit("logs", synced_count > 0, f"Synced {synced_count}/{total_count} logs")
             
-            success = synced_count > 0
-            print(f"SYNC WORKER: Completed log sync - {result_message} - Success: {success}")
+            return synced_count
             
-            # Only report success if we actually synced something
-            self.sync_complete.emit("logs", success, result_message)
-                                   
         except Exception as e:
-            print(f"SYNC WORKER: Log sync error: {str(e)}")
-            self.sync_complete.emit("logs", False, f"Log sync error: {str(e)}")
-            synced_count = 0
-        
-        self.mutex.lock()
-        self._current_operation = None
-        self.mutex.unlock()
-        
-        print(f"=== SYNC WORKER: LOG SYNC COMPLETE - Synced {synced_count} logs ===\n")
-        return synced_count
+            print(f"SYNC WORKER: Error in sync_logs: {str(e)}")
+            self.sync_complete.emit("logs", False, f"Error: {str(e)}")
+            return 0
+        finally:
+            self.mutex.lock()
+            self._current_operation = None
+            self.mutex.unlock()
 
 class SyncService(QObject):
     """
@@ -311,7 +283,7 @@ class SyncService(QObject):
     sync_status_changed = pyqtSignal(str, str)  # type, status
     sync_progress = pyqtSignal(str, int, int)   # entity_type, completed, total
     api_status_changed = pyqtSignal(bool)       # is_available
-    sync_all_complete = pyqtSignal(int)         # count of synced items
+    sync_all_complete = pyqtSignal(int, str)    # count of synced items, context
     # Add the signal as a class attribute, not an instance attribute
     sync_requested_signal = pyqtSignal(str)     # entity_type
     
@@ -367,15 +339,26 @@ class SyncService(QObject):
         QTimer.singleShot(5000, self._check_initial_sync)
     
     def _check_initial_sync(self):
-        """Check if there are any unsynced logs at application startup and sync if needed"""
-        if self.api_available:
-            # Get counts of unsynced items
-            counts = self.get_pending_sync_counts()
-            if counts["total"] > 0:
-                print(f"Found {counts['total']} unsynced items at startup, triggering sync")
-                self.sync_now()
-            else:
-                print("No unsynced items at startup, skipping initial sync")
+        """Perform initial sync after app startup"""
+        print("\n=== CHECKING FOR INITIAL SYNC ===")
+        
+        # Only proceed if API is available
+        if not self.api_available:
+            print("API not available, skipping initial sync")
+            self.sync_all_complete.emit(0, "startup")
+            return
+            
+        # Get pending counts
+        counts = self.get_pending_sync_counts()
+        
+        if counts["total"] > 0:
+            print(f"Found {counts['total']} items to sync at startup")
+            # Use the startup context for initial sync
+            self.sync_now(context="startup")
+        else:
+            print("No items to sync at startup")
+            # Still notify with startup context so UI can update properly
+            self.sync_all_complete.emit(0, "startup")
     
     def check_api_connection(self):
         """Check if the API server is available"""
@@ -405,12 +388,14 @@ class SyncService(QObject):
             # Check if we've transitioned from offline to online
             if previously_offline:
                 print("SyncService detected transition from OFFLINE to ONLINE")
-                self.previously_offline = True
                 # Mark as available immediately to allow other operations
                 self.api_available = True
                 self.api_status_changed.emit(True)
-                # Validate the authentication to make sure our token is still valid
-                self._validate_token_after_reconnect()
+                # SIMPLIFIED APPROACH: Only update API status, no sync on reconnection
+                print("SyncService: API is now available (not attempting sync on reconnection)")
+                # Just resume worker but don't trigger a sync
+                if hasattr(self, 'sync_worker'):
+                    self.sync_worker.resume()
             elif not self.api_available:
                 # We were unavailable but not in a full offline state
                 self.api_available = True
@@ -427,97 +412,111 @@ class SyncService(QObject):
                 self.sync_worker.pause()
     
     def _validate_token_after_reconnect(self):
-        """Validate authentication token after reconnecting from offline to online"""
-        if not self.previously_offline:
-            return
-            
-        # Clear the flag immediately to prevent duplicate operations
-        self.previously_offline = False
+        """
+        SIMPLIFIED: This method is now disabled to avoid thread-safety issues
+        Previously would validate auth token after reconnecting from offline to online
+        """
+        # This method is now disabled - we only sync at startup and exit
+        print("SyncService: Reconnection sync disabled - only syncing at startup and exit")
         
-        print("SyncService validating authentication after offline->online transition")
+        # Still update state and resume worker
+        if hasattr(self, 'sync_worker'):
+            self.sync_worker.resume()
         
-        # Just check if our current token looks valid by checking lastUpdated time
+        return
+    
+    def _attempt_token_refresh(self):
+        """
+        SIMPLIFIED: Only refresh token without triggering sync operations
+        to avoid thread-safety issues
+        """
+        print("SyncService: Attempting simplified token refresh (no sync)")
         from app.utils.auth_manager import AuthManager
         auth_manager = AuthManager()
         
-        # Get token age in seconds
-        current_time = time.time()
-        token_age = current_time - auth_manager.last_updated if auth_manager.last_updated > 0 else float('inf')
+        # Check if we have refresh token or credentials
+        if not (auth_manager.has_refresh_token() or auth_manager.has_stored_credentials()):
+            print("SyncService: No refresh token or credentials available")
+            return False
         
-        # If token was updated in the last 5 minutes, assume it's valid
-        if auth_manager.is_authenticated() and token_age < 300:
-            print(f"Token appears valid (updated {token_age:.1f}s ago), checking for unsynced items")
-            # Resume sync operations
-            self.sync_worker.resume()
+        # First try a direct token refresh which is already thread-safe
+        if auth_manager.has_refresh_token():
+            print("SyncService: Using refresh token")
+            # This is safe because _refresh_token doesn't use Qt classes directly
+            refresh_success = self.api_client._refresh_token()
             
-            # Check if we have unsynced logs to sync
-            counts = self.get_pending_sync_counts()
-            if counts["total"] > 0:
-                print(f"Found {counts['total']} unsynced items after reconnection, requesting sync")
-                # Use thread-safe method to request sync - this MUST use the thread-safe signal approach
-                # to avoid the "QObject::startTimer: Timers cannot be started from another thread" error
-                self.request_sync_from_thread()
+            # Just update connection status, no sync operations
+            if refresh_success:
+                print("SyncService: Token refresh succeeded")
+                self.api_available = True
+                self.api_status_changed.emit(True)
             else:
-                print("No unsynced items after reconnection, skipping sync")
-            return
+                print("SyncService: Token refresh failed")
+            
+            return refresh_success
+            
+        # Fall back to credential login if available
+        if auth_manager.has_stored_credentials():
+            print(f"SyncService: Using stored credentials for token refresh")
+            # Try login with stored credentials
+            username = auth_manager.username
+            password = auth_manager.password
+            
+            # Attempt login to get fresh token
+            try:
+                print(f"SyncService: Attempting login as {username}")
+                success, message, _ = self.api_client.login(
+                    username,
+                    password,
+                    timeout=(3.0, 5.0)
+                )
+                
+                # Just update connection status, no sync operations
+                if success:
+                    print("SyncService: Login succeeded")
+                    self.api_available = True
+                    self.api_status_changed.emit(True)
+                else:
+                    print(f"SyncService: Login failed: {message}")
+                
+                return success
+                
+            except Exception as e:
+                print(f"SyncService: Login error: {str(e)}")
+                return False
         
-        # Otherwise do an API check
-        try:
-            # First try to refresh the token
-            if self._ensure_fresh_token():
-                print("Token refreshed successfully after reconnect")
-                # Resume sync operations
-                self.sync_worker.resume()
-                
-                # Check if we have unsynced logs to sync
-                counts = self.get_pending_sync_counts()
-                if counts["total"] > 0:
-                    print(f"Found {counts['total']} unsynced items after reconnection, requesting sync")
-                    # Use thread-safe method to request sync - this MUST use the thread-safe signal approach
-                    # to avoid the "QObject::startTimer: Timers cannot be started from another thread" error
-                    self.request_sync_from_thread()
-                else:
-                    print("No unsynced items after reconnection, skipping sync")
-                return
-                
-            # If token refresh failed, try an API call to check token validity
-            auth_result = self.api_client.get(
-                'services/lot-occupancy/1', 
-                timeout=(2.0, 3.0),
-                retry_on_auth_fail=False  # Don't auto-retry
-            )
+        # If we got here, we had no refresh token or credentials
+        return False
+        
+    def _handle_successful_token_refresh(self):
+        """REMOVED - no longer used in simplified approach"""
+        pass
             
-            if auth_result[0]:
-                print("Authentication is still valid after reconnect")
-                # Resume sync operations
-                self.sync_worker.resume()
-                
-                # Check if we have unsynced logs to sync
-                counts = self.get_pending_sync_counts()
-                if counts["total"] > 0:
-                    print(f"Found {counts['total']} unsynced items after reconnection, requesting sync")
-                    # Use thread-safe method to request sync - this MUST use the thread-safe signal approach
-                    # to avoid the "QObject::startTimer: Timers cannot be started from another thread" error
-                    self.request_sync_from_thread()
-                else:
-                    print("No unsynced items after reconnection, skipping sync")
-            else:
-                print("Authentication is invalid after reconnect, refreshing token")
-                # Refresh token before resuming operations
-                self._attempt_token_refresh()
-        except Exception as e:
-            print(f"Error validating token after reconnect: {str(e)}")
-            # Try to refresh token on error
-            self._attempt_token_refresh()
+    def _handle_failed_token_refresh(self):
+        """REMOVED - no longer used in simplified approach"""
+        pass
     
-    def sync_now(self, entity_type=None):
+    def sync_now(self, entity_type=None, context=None):
         """
-        Manually trigger a synchronization through the worker.
+        Manually trigger a synchronization.
         If entity_type is None, sync everything.
         
+        Args:
+            entity_type (str, optional): Type of entity to sync ('logs', 'blacklist', etc.)
+            context (str, optional): Context of the sync ('startup', 'shutdown', etc.)
+            
         Returns:
-            dict: A result dictionary with success, count, and message
+            dict: A result dictionary containing success, count, and message
         """
+        # Add missing imports if needed
+        import os
+        import time
+        import cv2
+        from config import LOT_ID
+        
+        print(f"\\n==== SYNC OPERATION STARTED ({context or 'manual'}) ====")
+        print(f"Triggered sync_now for entity_type: {entity_type or 'all'}")
+        
         # Initialize result dictionary
         result = {
             "success": False,
@@ -525,46 +524,61 @@ class SyncService(QObject):
             "message": ""
         }
         
-        print("\n==== REQUESTING SYNC OPERATION ====")
-        
         if not self.api_available:
-            print("Cannot sync: API is not available")
-            result["message"] = "API not available"
-            return result
-        
-        # Check if we have anything to sync first
-        counts = self.get_pending_sync_counts()
-        if counts["total"] == 0:
-            print("No items to sync, skipping operation")
-            result["success"] = True
-            result["message"] = "No items needed syncing"
-            return result
-            
-        # Verify connection
-        print("Verifying API connection...")
-        connection_ok = self.check_api_connection()
-        if not connection_ok or not self.api_available:
-            print("API is not available, skipping sync")
+            print("Cannot sync: API not available")
+            # Emit completion with 0 count and context
+            self.sync_all_complete.emit(0, context or "manual")
             result["message"] = "API not available"
             return result
             
-        # Ensure we have a valid token
+        # Always use the current context for the worker
+        self.sync_worker.context = context
+            
+        # Check if we have a valid token before syncing
         if not self._ensure_fresh_token():
-            print("Failed to refresh authentication token, skipping sync")
+            print("Cannot sync: Failed to refresh authentication token")
+            # Emit completion with 0 count and context
+            self.sync_all_complete.emit(0, context or "manual")
             result["message"] = "Authentication failed"
             return result
             
-        # Request the sync operation through the worker
-        print(f"Requesting sync for {entity_type or 'all'} from worker thread")
-        if self.sync_worker.request_sync(entity_type or "all"):
-            # The sync will happen asynchronously, so we can't return actual results
-            # But we can indicate that the request was successful
-            result["success"] = True
-            result["message"] = "Sync requested successfully"
-        else:
-            result["message"] = "Failed to request sync"
+        try:
+            counts = self.get_pending_sync_counts()
+            if counts["total"] == 0:
+                print("Nothing to sync")
+                # Emit completion with 0 count and context
+                self.sync_all_complete.emit(0, context or "manual")
+                result["success"] = True
+                result["message"] = "Nothing to sync"
+                return result
+                
+            print(f"Found {counts['total']} items to sync")
             
-        return result
+            # Sync specific entity type or all
+            if entity_type:
+                self.sync_worker.request_sync(entity_type)
+            else:
+                # Sync logs first, then blacklist (order matters)
+                if counts["logs"] > 0:
+                    self.sync_worker.request_sync("logs")
+            
+            # Update last sync time
+            self.last_sync_time = time.time()
+            
+            # Store the count for later use
+            self.last_sync_count = counts["total"]
+            
+            result["success"] = True
+            result["count"] = counts["total"]
+            result["message"] = "Sync started"
+            return result
+            
+        except Exception as e:
+            print(f"Error triggering sync: {str(e)}")
+            # Emit completion with 0 count and context on error
+            self.sync_all_complete.emit(0, context or "manual")
+            result["message"] = f"Error: {str(e)}"
+            return result
     
     def stop(self):
         """Stop the sync service cleanly"""
@@ -577,6 +591,9 @@ class SyncService(QObject):
                     print(f"Found {counts['total']} unsynced items before shutdown, attempting final sync")
                     # Use synchronous sync here to ensure it completes before shutdown
                     self._perform_shutdown_sync()
+                else:
+                    # Signal completion with 0 count and shutdown context
+                    self.sync_all_complete.emit(0, "shutdown")
             
             # Stop the API check timer
             if hasattr(self, 'api_check_timer') and self.api_check_timer.isActive():
@@ -614,6 +631,7 @@ class SyncService(QObject):
             # Ensure token is valid
             if not self._ensure_fresh_token():
                 print("Failed to refresh token for shutdown sync")
+                self.sync_all_complete.emit(0, "shutdown")
                 return
                 
             # Get unsynced logs
@@ -622,13 +640,19 @@ class SyncService(QObject):
             
             if not filtered_logs:
                 print("No logs to sync before shutdown")
+                # Signal completion with 0 count and shutdown context
+                self.sync_all_complete.emit(0, "shutdown")
                 return
                 
             print(f"Syncing {len(filtered_logs)} logs before shutdown")
             synced_count = 0
             
+            # Update UI with progress information
+            total_logs = len(filtered_logs)
+            self.sync_progress.emit("logs", 0, total_logs)
+            
             # Process each log
-            for log in filtered_logs:
+            for idx, log in enumerate(filtered_logs):
                 try:
                     # Check if already synced
                     if log.get('synced', 0) == 1:
@@ -669,6 +693,9 @@ class SyncService(QObject):
                         self.db_manager.mark_log_synced(log['id'])
                         synced_count += 1
                         print(f"Successfully synced log {log['id']} during shutdown")
+                        
+                        # Update progress
+                        self.sync_progress.emit("logs", synced_count, total_logs)
                     else:
                         print(f"Failed to sync log {log['id']} during shutdown: {response}")
                         
@@ -677,8 +704,13 @@ class SyncService(QObject):
             
             print(f"Shutdown sync complete: {synced_count}/{len(filtered_logs)} logs synced")
             
+            # Signal completion with synced count and shutdown context
+            self.sync_all_complete.emit(synced_count, "shutdown")
+            
         except Exception as e:
             print(f"Error during shutdown sync: {str(e)}")
+            # Signal completion with 0 count on error
+            self.sync_all_complete.emit(0, "shutdown")
     
     def _handle_sync_progress(self, entity_type, completed, total):
         """Handle progress updates from the sync worker."""
@@ -799,9 +831,9 @@ class SyncService(QObject):
             print(f"Error during sync service cleanup: {str(e)}")
     
     def _handle_sync_request(self, entity_type=None):
-        """Thread-safe handler for sync requests from other threads"""
-        # This method runs on the main thread because it's connected to a signal
-        print(f"Handling sync request on main thread: {entity_type}")
+        """Handle sync request triggered by signal"""
+        print(f"Processing sync request for {entity_type}")
+        # Pass the preserved context if available
         self.sync_now(entity_type)
         
     def request_sync_from_thread(self, entity_type=None):
@@ -843,98 +875,10 @@ class SyncService(QObject):
             self.api_available = False
             self.api_status_changed.emit(False)
 
-    def _attempt_token_refresh(self):
-        """Attempt to refresh token or re-login if necessary, in a thread-safe way"""
-        print("SyncService: Attempting to refresh the authentication token")
-        from app.utils.auth_manager import AuthManager
-        from PyQt5.QtCore import QMetaObject, Qt, Q_ARG
-        
-        auth_manager = AuthManager()
-        
-        # Check if we have refresh token or credentials
-        if not (auth_manager.has_refresh_token() or auth_manager.has_stored_credentials()):
-            print("SyncService: No refresh token or credentials available")
-            return False
-        
-        # First try a direct token refresh which is already thread-safe
-        if auth_manager.has_refresh_token():
-            print("SyncService: Using refresh token")
-            # This is safe because _refresh_token doesn't use Qt classes directly
-            refresh_success = self.api_client._refresh_token()
-            
-            # Schedule the result handling on the main thread
-            if refresh_success:
-                # Don't modify UI state directly from this thread
-                print("SyncService: Token refresh succeeded, scheduling main thread update")
-                QMetaObject.invokeMethod(self, "_handle_successful_token_refresh", 
-                                         Qt.QueuedConnection)
-            else:
-                print("SyncService: Token refresh failed")
-                QMetaObject.invokeMethod(self, "_handle_failed_token_refresh",
-                                         Qt.QueuedConnection)
-            
-            return refresh_success
-            
-        # Fall back to credential login if available
-        if auth_manager.has_stored_credentials():
-            print(f"SyncService: Using stored credentials for token refresh")
-            # Try login with stored credentials
-            username = auth_manager.username
-            password = auth_manager.password
-            
-            # Attempt login to get fresh token
-            try:
-                print(f"SyncService: Attempting login as {username}")
-                success, message, _ = self.api_client.login(
-                    username,
-                    password,
-                    timeout=(3.0, 5.0)
-                )
-                
-                # Schedule the result handling on the main thread
-                if success:
-                    print("SyncService: Login succeeded, scheduling main thread update")
-                    QMetaObject.invokeMethod(self, "_handle_successful_token_refresh", 
-                                             Qt.QueuedConnection)
-                else:
-                    print(f"SyncService: Login failed: {message}")
-                    QMetaObject.invokeMethod(self, "_handle_failed_token_refresh",
-                                             Qt.QueuedConnection)
-                
-                return success
-                
-            except Exception as e:
-                print(f"SyncService: Login error: {str(e)}")
-                QMetaObject.invokeMethod(self, "_handle_failed_token_refresh",
-                                         Qt.QueuedConnection)
-                return False
-        
-        # If we got here, we had no refresh token or credentials
-        return False
-        
     def _handle_successful_token_refresh(self):
-        """Handle successful token refresh on the main thread"""
-        print("SyncService: Handling successful token refresh on main thread")
-        self.api_available = True
-        self.api_status_changed.emit(True)
-        
-        # Resume worker and check for pending operations
-        if hasattr(self, 'sync_worker'):
-            self.sync_worker.resume()
-        
-        # Check for unsynced items using thread-safe method
-        counts = self.get_pending_sync_counts()
-        if counts["total"] > 0:
-            print(f"SyncService: Found {counts['total']} unsynced items after token refresh")
-            # Now we're on the main thread, so we can just call sync_now directly
-            self.sync_now()
-        else:
-            print("SyncService: No unsynced items after token refresh")
+        """REMOVED - no longer used in simplified approach"""
+        pass
             
     def _handle_failed_token_refresh(self):
-        """Handle failed token refresh on the main thread"""
-        print("SyncService: Handling failed token refresh on main thread")
-        self.api_available = False
-        self.api_status_changed.emit(False)
-        if hasattr(self, 'sync_worker'):
-            self.sync_worker.pause() 
+        """REMOVED - no longer used in simplified approach"""
+        pass 

@@ -277,29 +277,40 @@ class SyncService(QObject):
         super().__init__()
         self.db_manager = DBManager()
         self.api_client = ApiClient(base_url=API_BASE_URL)
+        
+        # API connectivity state
         self.api_available = True
         self.api_retry_count = 0
-        self.max_api_retries = 3
-        self.last_sync_attempt = 0
-        self.sync_cooldown = 60  # seconds between sync attempts
-        self.auto_reconnect = False  # Don't automatically reconnect
-        self.last_sync_count = 0  # Track number of items synced in last operation
+        self.max_api_retries = 5 
+        self.consecutive_failures = 0
         
-        # Set up background sync worker
+        # Track last successful sync and auth refreshes
+        self.last_sync_time = time.time()
+        self.last_token_refresh_time = 0
+        self.min_token_refresh_interval = 5  # Minimum seconds between token refreshes
+        
+        # Track when we were offline
+        self.previously_offline = False
+        
+        # The last count of items synced in a cycle
+        self.last_sync_count = 0
+        
+        # Create and start the background sync worker
         self.sync_worker = SyncWorker(self)
         self.sync_worker.sync_progress.connect(self._handle_sync_progress)
         self.sync_worker.sync_complete.connect(self._handle_sync_complete)
         
-        # Set up API check timer with more frequent checks
-        self.api_check_timer = QTimer()
-        self.api_check_timer.timeout.connect(self.check_api_connection)
-        self.api_check_timer.start(3000)  # Check API status every 3 seconds for faster disconnection detection
+        # Set initial paused state based on connectivity
+        if not self.check_api_connection():
+            self.sync_worker.pause()
         
-        # Initial API check
-        self.check_api_connection()
-        
-        # Start background sync worker
+        # Start the worker thread
         self.sync_worker.start()
+        
+        # Start periodic API connection check timer
+        self.api_check_timer = QTimer(self)
+        self.api_check_timer.timeout.connect(self.check_api_connection)
+        self.api_check_timer.start(30000)  # Check every 30 seconds (increased from 10 seconds)
     
     def can_sync(self):
         """Check if synchronization is possible."""
@@ -307,62 +318,140 @@ class SyncService(QObject):
             return False
             
         current_time = time.time()
-        if current_time - self.last_sync_attempt < self.sync_cooldown:
+        if current_time - self.last_sync_time < 60:
             return False
             
-        self.last_sync_attempt = current_time
+        self.last_sync_time = current_time
         return True
     
     def check_api_connection(self):
-        """Check if the backend API server is available."""
+        """Check if the API server is available"""
         try:
-            # Use the asynchronous non-blocking health check
+            # Add rate limiting - only check every 5 seconds
+            current_time = time.time()
+            
+            # Call the asynchronous health check method
             self.api_client.check_health_async(
                 callback=self._handle_api_check_result,
-                timeout=(2.0, 3.0)
+                timeout=(1.0, 2.0)  # Short timeout
             )
             
+            return self.api_available
         except Exception as e:
-            # Immediately mark as disconnected on any exception
-            print(f"Backend API connection check error: {str(e)}")
+            print(f"API connection check error: {str(e)}")
             self.api_available = False
             self.api_status_changed.emit(False)
-            self.sync_worker.pause()
-            
-            # Continue incrementing retry count for logging
-            self.api_retry_count += 1
-
+            return False
+    
     def _handle_api_check_result(self, success):
-        """Handle result from asynchronous API health check"""
-        try:
-            # Update API status based on check result
-            if success:
-                if not self.api_available:
-                    print("Backend API connection restored, resuming sync operations")
-                    self.api_available = True
-                    self.api_retry_count = 0
-                    self.api_status_changed.emit(True)
-                    self.sync_worker.resume()
-                    
-                    # Auto-trigger sync when connection is restored
-                    QTimer.singleShot(1000, lambda: self.sync_now())
-            else:
-                # Mark as disconnected immediately after failure for faster UI feedback
-                if self.api_available:
-                    print("Backend API connection lost, pausing sync operations")
-                
+        """Handle API health check result with transition detection"""
+        previously_offline = not self.api_available
+        
+        if success:
+            # Reset failure counters
+            self.consecutive_failures = 0
+            self.api_retry_count = 0
+            
+            # Check if we've transitioned from offline to online
+            if previously_offline:
+                print("SyncService detected transition from OFFLINE to ONLINE")
+                self.previously_offline = True
+                # Mark as available immediately to allow other operations
+                self.api_available = True
+                self.api_status_changed.emit(True)
+                # Validate the authentication to make sure our token is still valid
+                self._validate_token_after_reconnect()
+            elif not self.api_available:
+                # We were unavailable but not in a full offline state
+                self.api_available = True
+                self.api_status_changed.emit(True)
+                # Resume background sync
+                self.sync_worker.resume()
+        else:
+            # If we get consecutive failures, mark as unavailable
+            self.consecutive_failures += 1
+            if self.consecutive_failures >= self.max_api_retries:
                 self.api_available = False
                 self.api_status_changed.emit(False)
+                # Pause background sync when API is unavailable
                 self.sync_worker.pause()
-                
-                # Continue incrementing retry count for logging purposes
-                self.api_retry_count += 1
+    
+    def _validate_token_after_reconnect(self):
+        """Validate authentication token after reconnecting from offline to online"""
+        if not self.previously_offline:
+            return
+            
+        # Clear the flag immediately to prevent duplicate operations
+        self.previously_offline = False
+        
+        print("SyncService validating authentication after offline->online transition")
+        
+        # Use a fast, authenticated request to check if our token is still valid
+        try:
+            auth_result = self.api_client.get(
+                'services/lot-occupancy/1', 
+                timeout=(2.0, 3.0),
+                retry_on_auth_fail=False  # Don't auto-retry
+            )
+            
+            if auth_result[0]:
+                print("Authentication is still valid after reconnect")
+                # Resume sync operations
+                self.sync_worker.resume()
+            else:
+                print("Authentication is invalid after reconnect, refreshing token")
+                # Refresh token before resuming operations
+                self._attempt_token_refresh()
         except Exception as e:
-            print(f"Error handling API check result: {str(e)}")
-            # In case of error, assume API is down
-            self.api_available = False
-            self.api_status_changed.emit(False)
-            self.sync_worker.pause()
+            print(f"Error validating token after reconnect: {str(e)}")
+            # Try to refresh token on error
+            self._attempt_token_refresh()
+    
+    def _ensure_fresh_token(self):
+        """Ensure we have a fresh authentication token by using refresh token"""
+        from app.utils.auth_manager import AuthManager
+        auth_manager = AuthManager()
+        
+        # Rate limit token refreshes
+        current_time = time.time()
+        if current_time - self.last_token_refresh_time < self.min_token_refresh_interval:
+            print(f"Skipping token refresh - last refresh was {current_time - self.last_token_refresh_time:.1f}s ago")
+            return True
+            
+        print("Pre-sync token refresh check")
+        
+        token_refreshed = False
+        
+        # First try to use refresh token if available
+        if auth_manager.has_refresh_token():
+            print("Using refresh token for pre-sync token refresh")
+            token_refreshed = self.api_client._refresh_token()
+            if token_refreshed:
+                print("Token refreshed successfully using refresh token before sync")
+                self.last_token_refresh_time = current_time
+                return True
+            print("Refresh token failed, falling back to credentials")
+        
+        # Fall back to credentials if refresh token not available or failed
+        if not token_refreshed and (auth_manager.username and auth_manager.password):
+            print(f"Using credentials for pre-sync token refresh ({auth_manager.username})")
+            
+            # Attempt login to get fresh token
+            success, message, _ = self.api_client.login(
+                auth_manager.username,
+                auth_manager.password,
+                timeout=(3.0, 5.0)
+            )
+            
+            if success:
+                print("Token refreshed successfully before sync using credentials")
+                self.last_token_refresh_time = current_time
+                return True
+            else:
+                print(f"Failed to refresh token before sync: {message}")
+                return False
+        
+        return token_refreshed
     
     def _handle_sync_progress(self, entity_type, completed, total):
         """Handle progress updates from the sync worker."""
@@ -595,42 +684,6 @@ class SyncService(QObject):
             self.last_sync_count = synced_count
             self.sync_all_complete.emit(synced_count)
         return True
-    
-    def _ensure_fresh_token(self):
-        """Ensure we have a fresh authentication token by using refresh token"""
-        from app.utils.auth_manager import AuthManager
-        auth_manager = AuthManager()
-        
-        print("Pre-sync token refresh check")
-        
-        # First try to use refresh token if available
-        if auth_manager.has_refresh_token():
-            print("Using refresh token for pre-sync token refresh")
-            if self.api_client._refresh_token():
-                print("Token refreshed successfully using refresh token before sync")
-                return True
-            print("Refresh token failed, falling back to credentials")
-        
-        # Fall back to credentials if refresh token not available or failed
-        if not (auth_manager.username and auth_manager.password):
-            print("No stored credentials available for token refresh")
-            return False
-            
-        print(f"Using credentials for pre-sync token refresh ({auth_manager.username})")
-        
-        # Attempt login to get fresh token
-        success, message, _ = self.api_client.login(
-            auth_manager.username,
-            auth_manager.password,
-            timeout=(3.0, 5.0)
-        )
-        
-        if success:
-            print("Token refreshed successfully before sync using credentials")
-            return True
-        else:
-            print(f"Failed to refresh token before sync: {message}")
-            return False
     
     def reconnect(self):
         """Manually attempt to reconnect to the API"""

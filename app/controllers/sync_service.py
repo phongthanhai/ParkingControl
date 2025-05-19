@@ -316,10 +316,26 @@ class SyncService(QObject):
     def check_api_connection(self):
         """Check if the backend API server is available."""
         try:
-            # Use the optimized non-blocking health check
-            success = self.api_client.check_health()
+            # Use the asynchronous non-blocking health check
+            self.api_client.check_health_async(
+                callback=self._handle_api_check_result,
+                timeout=(2.0, 3.0)
+            )
             
-            # Update API status - emit signal regardless of previous state to ensure UI updates
+        except Exception as e:
+            # Immediately mark as disconnected on any exception
+            print(f"Backend API connection check error: {str(e)}")
+            self.api_available = False
+            self.api_status_changed.emit(False)
+            self.sync_worker.pause()
+            
+            # Continue incrementing retry count for logging
+            self.api_retry_count += 1
+
+    def _handle_api_check_result(self, success):
+        """Handle result from asynchronous API health check"""
+        try:
+            # Update API status based on check result
             if success:
                 if not self.api_available:
                     print("Backend API connection restored, resuming sync operations")
@@ -341,16 +357,12 @@ class SyncService(QObject):
                 
                 # Continue incrementing retry count for logging purposes
                 self.api_retry_count += 1
-            
         except Exception as e:
-            # Immediately mark as disconnected on any exception
-            print(f"Backend API connection check error: {str(e)}")
+            print(f"Error handling API check result: {str(e)}")
+            # In case of error, assume API is down
             self.api_available = False
             self.api_status_changed.emit(False)
             self.sync_worker.pause()
-            
-            # Continue incrementing retry count for logging
-            self.api_retry_count += 1
     
     def _handle_sync_progress(self, entity_type, completed, total):
         """Handle progress updates from the sync worker."""
@@ -616,65 +628,156 @@ class SyncService(QObject):
         
         print("Attempting to reconnect to API server...")
         
-        # First try to check if server is available
+        # Define timeout
         api_check_timeout = (2.0, 3.0)
+        
         try:
-            # Use the dedicated health check endpoint (doesn't require auth)
-            success, _ = self.api_client.get('services/health', timeout=api_check_timeout, auth_required=False)
+            # Use the asynchronous health check (doesn't require auth)
+            self.api_client.check_health_async(
+                callback=lambda success: self._handle_reconnect_health_check(success, api_check_timeout),
+                timeout=api_check_timeout
+            )
             
-            if success:
-                print("Server is available, checking authentication...")
-                # Server is up, now check if token has expired by making an authenticated request
-                auth_success, auth_response = self.api_client.get('services/lot-occupancy/1', timeout=api_check_timeout)
-                
-                # If auth failed but server is up, we need to refresh token
-                if not auth_success:
-                    print("Authentication failed, attempting to refresh token...")
-                    # Check if auth_manager has stored credentials
-                    from app.utils.auth_manager import AuthManager
-                    auth_manager = AuthManager()
-                    
-                    # If we have stored credentials, try to login again
-                    if auth_manager.username and auth_manager.password:
-                        print(f"Attempting to refresh authentication token for user {auth_manager.username}...")
-                        login_success, login_msg, _ = self.api_client.login(
-                            auth_manager.username, 
-                            auth_manager.password,
-                            timeout=(3.0, 5.0)
-                        )
-                        if login_success:
-                            print("Authentication token refreshed successfully")
-                            self.api_available = True
-                            self.api_status_changed.emit(True)
-                            self.sync_worker.resume()
-                            return True
-                        else:
-                            print(f"Failed to refresh authentication token: {login_msg}")
-                            self.api_available = False
-                            self.api_status_changed.emit(False)
-                            return False
-                    else:
-                        print("No stored credentials available for token refresh")
-                        self.api_available = False
-                        self.api_status_changed.emit(False)
-                        return False
-                else:
-                    print("Authentication is valid")
-                    self.api_available = True
-                    self.api_status_changed.emit(True)
-                    self.sync_worker.resume()
-                    return True
-            else:
-                print("Server is not available")
-                self.api_available = False
-                self.api_status_changed.emit(False)
-                return False
+            return True  # Return success for initial attempt
             
         except Exception as e:
             print(f"Reconnection error: {str(e)}")
             self.api_available = False
             self.api_status_changed.emit(False)
             return False
+
+    def _handle_reconnect_health_check(self, success, timeout):
+        """Handle health check result during reconnect attempt"""
+        try:
+            if success:
+                print("Server is available, checking authentication...")
+                # Server is up, now check if token has expired by making an authenticated request
+                self._perform_async_auth_check(timeout)
+            else:
+                print("Server is not available")
+                self.api_available = False
+                self.api_status_changed.emit(False)
+        except Exception as e:
+            print(f"Error handling reconnect health check: {str(e)}")
+            self.api_available = False
+            self.api_status_changed.emit(False)
+
+    def _perform_async_auth_check(self, timeout):
+        """Perform auth check asynchronously"""
+        try:
+            # Define an inner function to handle auth check result
+            def handle_auth_result(auth_success, auth_response):
+                self._handle_reconnect_auth_check(auth_success, auth_response)
+            
+            # Create a worker thread for auth check
+            worker = threading.Thread(
+                target=self._do_auth_check,
+                args=(timeout, handle_auth_result)
+            )
+            worker.daemon = True
+            worker.start()
+            
+        except Exception as e:
+            print(f"Error performing async auth check: {str(e)}")
+            self.api_available = False
+            self.api_status_changed.emit(False)
+
+    def _do_auth_check(self, timeout, callback):
+        """Perform the actual auth check in a separate thread"""
+        try:
+            auth_result = self.api_client.get(
+                'services/lot-occupancy/1', 
+                timeout=timeout,
+                retry_on_auth_fail=False  # Don't auto-retry
+            )
+            # Call the callback with the result
+            callback(auth_result[0], auth_result[1] if len(auth_result) > 1 else None)
+        except Exception as e:
+            print(f"Auth check thread error: {str(e)}")
+            callback(False, str(e))
+
+    def _handle_reconnect_auth_check(self, success, response):
+        """Handle authentication check result during reconnect"""
+        try:
+            # If auth failed but server is up, we need to refresh token
+            if not success:
+                print("Authentication failed, attempting to refresh token...")
+                # Check if auth_manager has stored credentials
+                from app.utils.auth_manager import AuthManager
+                auth_manager = AuthManager()
+                
+                # If we have stored credentials, try to login again
+                if auth_manager.username and auth_manager.password:
+                    print(f"Attempting to refresh authentication token for user {auth_manager.username}...")
+                    
+                    # Use the async API call
+                    self._perform_async_login(
+                        auth_manager.username, 
+                        auth_manager.password,
+                        timeout=(3.0, 5.0)
+                    )
+                else:
+                    print("No stored credentials available for token refresh")
+                    self.api_available = False
+                    self.api_status_changed.emit(False)
+            else:
+                print("Authentication is valid")
+                self.api_available = True
+                self.api_status_changed.emit(True)
+                self.sync_worker.resume()
+        except Exception as e:
+            print(f"Error handling reconnect auth check: {str(e)}")
+            self.api_available = False
+            self.api_status_changed.emit(False)
+
+    def _perform_async_login(self, username, password, timeout):
+        """Perform login asynchronously"""
+        try:
+            # Define an inner function to handle login result
+            def handle_login_result(login_success, login_data):
+                # Parse result data 
+                if isinstance(login_data, tuple) and len(login_data) >= 2:
+                    login_success, login_msg = login_data[0], login_data[1]
+                else:
+                    login_success = False
+                    login_msg = "Unknown login error"
+                    
+                if login_success:
+                    print("Authentication token refreshed successfully")
+                    self.api_available = True
+                    self.api_status_changed.emit(True)
+                    self.sync_worker.resume()
+                else:
+                    print(f"Failed to refresh authentication token: {login_msg}")
+                    self.api_available = False
+                    self.api_status_changed.emit(False)
+            
+            # Create a worker thread for login
+            worker = threading.Thread(
+                target=self._do_login,
+                args=(username, password, timeout, handle_login_result)
+            )
+            worker.daemon = True
+            worker.start()
+            
+        except Exception as e:
+            print(f"Error performing async login: {str(e)}")
+            self.api_available = False
+            self.api_status_changed.emit(False)
+
+    def _do_login(self, username, password, timeout, callback):
+        """Perform the actual login in a separate thread"""
+        try:
+            login_result = self.api_client.login(
+                username, 
+                password,
+                timeout=timeout
+            )
+            # Call the callback with the result
+            callback(login_result[0], login_result)
+        except Exception as e:
+            print(f"Login thread error: {str(e)}")
+            callback(False, (False, str(e), None))
     
     def get_pending_sync_counts(self):
         """Get counts of pending items for each sync category."""

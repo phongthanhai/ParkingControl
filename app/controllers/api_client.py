@@ -2,7 +2,7 @@ import time
 import requests
 from io import BytesIO
 import cv2
-from PyQt5.QtCore import pyqtSignal, QObject, QThread, QMutex
+from PyQt5.QtCore import pyqtSignal, QObject, QThread, QMutex, QThreadPool, QRunnable, pyqtSlot
 from config import PLATE_RECOGNIZER_API_KEY, PLATE_RECOGNIZER_URL, OCR_RATE_LIMIT, API_BASE_URL
 import json
 from app.utils.auth_manager import AuthManager
@@ -189,12 +189,40 @@ class PlateRecognizerWorker(QThread):
             self.error_signal.emit(f"Processing error: {str(e)}")
             self.result_signal.emit((None, None))
     
-class ApiClient:
+# Add a new ApiWorker class for threaded API operations
+class ApiWorker(QRunnable):
+    """Worker for executing API calls in a separate thread"""
+    
+    class Signals(QObject):
+        finished = pyqtSignal(bool, object)
+        
+    def __init__(self, func, *args, **kwargs):
+        super().__init__()
+        self.func = func
+        self.args = args
+        self.kwargs = kwargs
+        self.signals = self.Signals()
+        self.setAutoDelete(True)
+        
+    @pyqtSlot()
+    def run(self):
+        try:
+            result = self.func(*self.args, **self.kwargs)
+            self.signals.finished.emit(True, result)
+        except Exception as e:
+            self.signals.finished.emit(False, str(e))
+
+class ApiClient(QObject):
     """
     Client for handling API requests to the backend server.
     Manages all API interactions and authentication.
     """
+    # Add a new signal for health check results
+    health_check_signal = pyqtSignal(bool)
+    
     def __init__(self, base_url=API_BASE_URL):
+        super(ApiClient, self).__init__() 
+        
         self.base_url = base_url
         self.auth_manager = AuthManager()
         # Store user information
@@ -229,6 +257,16 @@ class ApiClient:
         
         # Optimization: Cache headers to avoid recreating them for each request
         self._cached_headers = {}
+        
+        # Create a thread pool for API calls
+        self.thread_pool = QThreadPool.globalInstance()
+        # Set a reasonable maximum thread count to avoid overloading
+        self.thread_pool.setMaxThreadCount(5)
+        
+        # Track health check callbacks
+        self._health_check_callbacks = {}
+        self._next_callback_id = 0
+        self._callback_mutex = QMutex()
     
     def __del__(self):
         """Cleanup resources on object destruction"""
@@ -749,3 +787,112 @@ class ApiClient:
             
             print(f"Health check error: {str(e)}")
             return False
+    
+    def check_health_async(self, callback=None, timeout=None):
+        """
+        Non-blocking health check that runs in a separate thread and calls back when done.
+        
+        Args:
+            callback (callable, optional): Function to call with result (bool)
+            timeout (tuple, optional): Custom timeout for health check
+            
+        Returns:
+            int: Callback ID that can be used to track completion
+        """
+        # Use very short timeouts
+        if timeout is None:
+            timeout = (self.health_connect_timeout, self.health_read_timeout)
+        
+        callback_id = None
+        if callback:
+            # Store callback with a unique ID
+            self._callback_mutex.lock()
+            callback_id = self._next_callback_id
+            self._next_callback_id += 1
+            self._health_check_callbacks[callback_id] = callback
+            self._callback_mutex.unlock()
+        
+        # Create a worker for the health check
+        worker = ApiWorker(self._do_health_check, timeout, callback_id)
+        worker.signals.finished.connect(self._handle_health_check_result)
+        
+        # Start the worker on a separate thread
+        self.thread_pool.start(worker)
+        
+        return callback_id
+    
+    def _do_health_check(self, timeout, callback_id):
+        """
+        Perform the actual health check in a separate thread
+        
+        Args:
+            timeout (tuple): Connection and read timeout
+            callback_id (int): ID for callback lookup
+            
+        Returns:
+            tuple: (callback_id, success)
+        """
+        try:
+            # Only one active health check at a time
+            if self._health_check_active:
+                return (callback_id, False)
+            
+            self._health_check_mutex.lock()
+            self._health_check_active = True
+            self._health_check_mutex.unlock()
+            
+            try:
+                # Use GET for health check
+                response = self.session.get(
+                    f"{self.base_url}/services/health", 
+                    timeout=timeout
+                )
+                success = response.status_code == 200
+            except Exception as e:
+                print(f"Health check error: {str(e)}")
+                success = False
+            
+            # Reset active flag
+            self._health_check_mutex.lock()
+            self._health_check_active = False
+            self._health_check_mutex.unlock()
+            
+            return (callback_id, success)
+            
+        except Exception as e:
+            # Make sure to reset active flag
+            self._health_check_mutex.lock()
+            self._health_check_active = False
+            self._health_check_mutex.unlock()
+            
+            print(f"Async health check error: {str(e)}")
+            return (callback_id, False)
+    
+    def _handle_health_check_result(self, success, result):
+        """
+        Handle result from health check worker
+        
+        Args:
+            success (bool): Whether the worker completed successfully
+            result (tuple): (callback_id, health_check_success)
+        """
+        if not success:
+            print(f"Health check worker error: {result}")
+            return
+            
+        callback_id, health_check_success = result
+        
+        # Execute callback if provided
+        if callback_id is not None:
+            self._callback_mutex.lock()
+            if callback_id in self._health_check_callbacks:
+                callback = self._health_check_callbacks.pop(callback_id)
+                self._callback_mutex.unlock()
+                
+                # Call the callback with the result
+                try:
+                    callback(health_check_success)
+                except Exception as e:
+                    print(f"Error in health check callback: {str(e)}")
+            else:
+                self._callback_mutex.unlock()

@@ -1,9 +1,10 @@
 import sys
 import os
 import time
+import sqlite3
 from datetime import datetime
 from PyQt5.QtWidgets import QApplication, QMainWindow, QStackedWidget, QMessageBox, QLabel, QHBoxLayout
-from PyQt5.QtCore import Qt, QTimer, QCloseEvent, pyqtSlot
+from PyQt5.QtCore import Qt, QTimer
 import atexit
 
 from app.ui.login_screen import LoginScreen
@@ -199,11 +200,10 @@ class ParkingSystem(QMainWindow):
                     except:
                         pass
                 
-                # Let the control screen clean up its threads
+                # Let the control screen clean up its threads directly
                 try:
-                    # Simulate a close event to trigger thread cleanup
-                    close_event = QCloseEvent()
-                    self.control_screen.closeEvent(close_event)
+                    # Call closeEvent directly rather than creating a new event
+                    self.control_screen.closeEvent(event)
                     print("Control screen threads cleaned up")
                 except Exception as e:
                     print(f"Error cleaning up control screen threads: {str(e)}")

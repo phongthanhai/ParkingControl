@@ -2,13 +2,16 @@ import sys
 import os
 import time
 import sqlite3
-from PyQt5.QtWidgets import QApplication, QMainWindow, QStackedWidget, QMessageBox, QLabel, QHBoxLayout
+from PyQt5.QtWidgets import QApplication, QMainWindow, QStackedWidget, QMessageBox, QLabel, QHBoxLayout, QVBoxLayout, QDialog, QTextEdit, QPushButton
 from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QIcon
 from app.ui.login_screen import LoginScreen
 from app.ui.control_screen import ControlScreen
 from app.utils.db_manager import DBManager
 from app.utils.image_storage import ImageStorage
+from app.utils.error_manager import ErrorManager, ErrorResponse, ErrorSeverity
 from app.controllers.sync_service import SyncService
+from app.utils.connection_manager import ConnectionManager
 
 # Initialize database folder
 def initialize_local_storage():
@@ -34,11 +37,62 @@ def initialize_local_storage():
         print(f"Error initializing local storage: {str(e)}")
         return False
 
+class ErrorDialog(QDialog):
+    """Dialog window for displaying error details"""
+    
+    def __init__(self, error_response, parent=None):
+        super().__init__(parent)
+        self.error = error_response
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Set up the dialog UI"""
+        self.setWindowTitle(f"Error - {self.error.category.value}")
+        self.setMinimumSize(500, 300)
+        
+        # Main layout
+        layout = QVBoxLayout(self)
+        
+        # Error message
+        message_label = QLabel(self.error.message)
+        message_label.setStyleSheet("font-weight: bold; color: red;")
+        message_label.setWordWrap(True)
+        layout.addWidget(message_label)
+        
+        # Error details section
+        if self.error.error or self.error.details:
+            # Create details text
+            details_text = QTextEdit()
+            details_text.setReadOnly(True)
+            
+            details_content = ""
+            if self.error.error:
+                details_content += f"Error: {str(self.error.error)}\n\n"
+                
+            if self.error.details:
+                details_content += "Details:\n"
+                for key, value in self.error.details.items():
+                    details_content += f"- {key}: {value}\n"
+            
+            details_text.setPlainText(details_content)
+            layout.addWidget(details_text)
+        
+        # Close button
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button)
+        
+        self.setLayout(layout)
+
 class ParkingSystem(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Parking Control System")
         self.resize(1920, 1080)  # Set initial window size
+        
+        # Initialize error manager
+        self.error_manager = ErrorManager()
+        self.error_manager.error_occurred.connect(self.handle_error)
         
         # Initialize local storage before setting up UI
         if not initialize_local_storage():
@@ -54,7 +108,10 @@ class ParkingSystem(QMainWindow):
         # Status bar without database indicator
         self.statusBar().showMessage("")
         
-        # Initialize sync service
+        # Initialize connection manager
+        self.connection_manager = ConnectionManager()
+        
+        # Initialize sync service with the connection manager
         self.sync_service = SyncService()
             
         self.setup_ui()
@@ -85,6 +142,51 @@ class ParkingSystem(QMainWindow):
         self.setCentralWidget(self.stack)
         self.show()
 
+    def handle_error(self, error_response):
+        """
+        Handle errors based on severity
+        
+        Args:
+            error_response (ErrorResponse): The error that occurred
+        """
+        # Show in status bar for low severity errors
+        if error_response.severity == ErrorSeverity.LOW:
+            self.statusBar().showMessage(
+                f"{error_response.category.value}: {error_response.message}", 
+                5000  # Show for 5 seconds
+            )
+            
+        # Show dialog for medium to critical errors
+        elif error_response.severity.value >= ErrorSeverity.MEDIUM.value:
+            # For critical errors, show immediately
+            if error_response.severity == ErrorSeverity.CRITICAL:
+                self.show_error_dialog(error_response)
+            # For other errors, only show dialog if it's not a duplicate within the last minute
+            else:
+                # Get recent errors of the same category
+                recent_errors = self.error_manager.get_recent_errors(
+                    category=error_response.category,
+                    limit=5
+                )
+                
+                # Check if we've shown a similar error recently
+                show_dialog = True
+                if len(recent_errors) > 1:  # More than just this error
+                    for err in recent_errors[:-1]:  # Exclude the current error
+                        # Check if it's a similar message in the last minute
+                        time_diff = (error_response.timestamp - err.timestamp).total_seconds()
+                        if time_diff < 60 and err.message == error_response.message:
+                            show_dialog = False
+                            break
+                
+                if show_dialog:
+                    self.show_error_dialog(error_response)
+    
+    def show_error_dialog(self, error_response):
+        """Show an error dialog with details"""
+        dialog = ErrorDialog(error_response, self)
+        dialog.exec_()
+    
     def show_control(self):
         if self.control_screen is None:
             self.control_screen = ControlScreen()
@@ -97,6 +199,10 @@ class ParkingSystem(QMainWindow):
                 self.sync_service.sync_progress.connect(
                     self.control_screen.sync_status_widget.set_sync_progress)
                 
+                # Also connect connection manager message signal
+                self.connection_manager.connection_state_message.connect(
+                    self.control_screen.sync_status_widget.show_message)
+                
                 # Get current counts before connecting complete signal to avoid initial appearance
                 pending_counts = self.sync_service.get_pending_sync_counts()
                 self.control_screen.sync_status_widget.update_pending_counts(pending_counts)
@@ -108,6 +214,10 @@ class ParkingSystem(QMainWindow):
                 # Connect refresh request
                 self.control_screen.sync_status_widget.refresh_requested.connect(
                     self.update_sync_counts)
+                
+                # Connect reconnect request to connection manager
+                self.control_screen.sync_status_widget.reconnect_requested.connect(
+                    self.handle_reconnect_request)
                 
                 # Connect log signal from control screen to handle log entries for sync
                 print("Connecting control_screen.log_signal to sync_service")
@@ -173,6 +283,10 @@ class ParkingSystem(QMainWindow):
             # Stop sync service
             if hasattr(self, 'sync_service'):
                 self.sync_service.stop()
+            
+            # Stop connection manager 
+            if hasattr(self, 'connection_manager'):
+                self.connection_manager.stop()
             
             # Close database connection
             db_manager = DBManager()

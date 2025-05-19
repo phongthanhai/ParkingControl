@@ -259,3 +259,23 @@ class SyncStatusWidget(QWidget):
         painter.drawLine(11, 5, 5, 11)
         
         painter.end() 
+
+    def show_message(self, message):
+        """Display a message from the connection manager."""
+        if message:
+            self.status_label.setText(message)
+            self.setVisible(True)
+            
+            # Start auto-hide timer
+            self.hide_timer.start(5000)  # Hide after 5 seconds
+    
+    def _reset_status_display(self):
+        """Reset the status display to show pending sync counts."""
+        count = self.pending_counts.get('total', 0)
+        if count > 0:
+            self.status_label.setText(f"{count} items waiting to sync")
+            self.setVisible(True)
+        else:
+            self.status_label.setText("All synced")
+            # Hide the widget after a short delay
+            self.hide_timer.start(2000) 

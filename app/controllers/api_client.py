@@ -6,6 +6,26 @@ from PyQt5.QtCore import pyqtSignal, QObject
 from config import PLATE_RECOGNIZER_API_KEY, PLATE_RECOGNIZER_URL, OCR_RATE_LIMIT, API_BASE_URL
 import json
 from app.utils.auth_manager import AuthManager
+from app.utils.error_manager import network_error, auth_error, api_error, ErrorSeverity, ErrorCategory, ErrorManager, ErrorResponse
+
+# Define a special error category for OCR-related errors that shouldn't affect connection status
+class OcrError(ErrorCategory):
+    OCR = "ocr"   # OCR-specific errors shouldn't affect main connection status
+
+def ocr_error(message, severity=ErrorSeverity.LOW, error=None, details=None):
+    """Helper function for OCR-specific errors"""
+    err = ErrorResponse(
+        message=message, 
+        category=ErrorCategory.HARDWARE,  # Use HARDWARE category as OCR is related to image processing hardware
+        severity=severity,
+        error=error,
+        details=details
+    )
+    # Log the error but don't trigger connection status changes
+    ErrorManager().logger.warning(f"OCR: {message}")
+    # Only emit the signal for UI notification, not for connection status changes
+    ErrorManager().error_occurred.emit(err)
+    return err
 
 class PlateRecognizer(QObject):
     error_signal = pyqtSignal(str)
@@ -44,6 +64,11 @@ class PlateRecognizer(QObject):
             )
             
             if response.status_code == 429:
+                ocr_error(
+                    "API rate limit exceeded for plate recognition", 
+                    ErrorSeverity.LOW,
+                    details={"status_code": 429}
+                )
                 self.error_signal.emit("API rate limit exceeded")
                 return None
                 
@@ -55,12 +80,33 @@ class PlateRecognizer(QObject):
                     return (plate_data['plate'], plate_data['score'])
                     
         except requests.exceptions.ConnectTimeout:
+            ocr_error(
+                "Connection timeout to plate recognition API", 
+                ErrorSeverity.LOW,
+                details={"url": PLATE_RECOGNIZER_URL}
+            )
             self.error_signal.emit("Connection timeout to plate recognition API")
         except requests.exceptions.ReadTimeout:
+            ocr_error(
+                "Read timeout from plate recognition API", 
+                ErrorSeverity.LOW,
+                details={"url": PLATE_RECOGNIZER_URL}
+            )
             self.error_signal.emit("Read timeout from plate recognition API")
         except requests.exceptions.RequestException as e:
+            ocr_error(
+                "Connection error to plate recognition API", 
+                ErrorSeverity.LOW,
+                error=e,
+                details={"url": PLATE_RECOGNIZER_URL}
+            )
             self.error_signal.emit(f"Connection error: {str(e)}")
         except Exception as e:
+            ocr_error(
+                "Processing error with plate recognition API", 
+                ErrorSeverity.MEDIUM,
+                error=e
+            )
             self.error_signal.emit(f"Processing error: {str(e)}")
         return None
     
@@ -93,7 +139,6 @@ class ApiClient:
             tuple: (success, message, data) - success is a boolean, message is a string, data contains user info
         """
         login_url = f"{self.base_url}/login/access-token"
-        print(f"Attempting login at URL: {login_url}")
         
         # Use provided timeout or default values
         if timeout is None:
@@ -139,24 +184,66 @@ class ApiClient:
                 self.user_role = data.get('user_role')
                 self.assigned_lots = data.get('assigned_lots', [])
                 
-                print(f"Login successful. Token type: {self.auth_manager.token_type}")
                 return True, "Login successful", data
             else:
                 # Handle error responses
                 try:
                     error_data = response.json()
                     if 'detail' in error_data:
+                        auth_error(
+                            f"Login failed: {error_data['detail']}", 
+                            ErrorSeverity.MEDIUM,
+                            details={
+                                "status_code": response.status_code,
+                                "username": username
+                            }
+                        )
                         return False, error_data['detail'], None
                 except:
+                    auth_error(
+                        f"Login failed with HTTP error {response.status_code}", 
+                        ErrorSeverity.MEDIUM,
+                        details={"username": username}
+                    )
                     return False, f"HTTP Error: {response.status_code}", None
                 
         except requests.exceptions.ConnectTimeout:
+            network_error(
+                "Connection timeout during login", 
+                ErrorSeverity.MEDIUM,
+                details={
+                    "url": login_url,
+                    "username": username
+                }
+            )
             return False, "Connection timeout. The server is not responding.", None
         except requests.exceptions.ReadTimeout:
+            network_error(
+                "Read timeout during login", 
+                ErrorSeverity.MEDIUM,
+                details={
+                    "url": login_url,
+                    "username": username
+                }
+            )
             return False, "Read timeout. The server took too long to respond.", None
         except requests.exceptions.ConnectionError:
+            network_error(
+                "Connection error during login", 
+                ErrorSeverity.MEDIUM,
+                details={
+                    "url": login_url,
+                    "username": username
+                }
+            )
             return False, "Could not connect to the server. Please check if the server is running.", None
         except Exception as e:
+            api_error(
+                "Unexpected error during login", 
+                ErrorSeverity.HIGH,
+                error=e,
+                details={"username": username}
+            )
             return False, f"An error occurred: {str(e)}", None
 
     def is_lot_assigned(self, lot_id):
@@ -207,7 +294,10 @@ class ApiClient:
                 return True, response.json()
             elif response.status_code == 401 and auth_required and retry_on_auth_fail:
                 # Only attempt token refresh if explicitly enabled and authentication is required
-                print(f"Authentication failed for {url} - token might be expired")
+                auth_error(
+                    f"Authentication failed for {endpoint} - token might be expired", 
+                    ErrorSeverity.LOW
+                )
                 if self._refresh_token():
                     # Retry the request with the new token (but don't allow further retries to prevent loops)
                     return self.get(endpoint, params, timeout, auth_required, False)
@@ -217,15 +307,53 @@ class ApiClient:
                 try:
                     error_data = response.json()
                     if 'detail' in error_data:
+                        api_error(
+                            f"API error in GET {endpoint}: {error_data['detail']}", 
+                            ErrorSeverity.MEDIUM,
+                            details={
+                                "status_code": response.status_code,
+                                "endpoint": endpoint
+                            }
+                        )
                         return False, error_data['detail']
                 except:
+                    api_error(
+                        f"API error in GET {endpoint}", 
+                        ErrorSeverity.MEDIUM,
+                        details={
+                            "status_code": response.status_code,
+                            "endpoint": endpoint
+                        }
+                    )
                     return False, f"HTTP Error: {response.status_code}"
                     
         except requests.exceptions.ConnectTimeout:
+            network_error(
+                "Connection timeout in API request", 
+                ErrorSeverity.MEDIUM,
+                details={
+                    "url": url,
+                    "endpoint": endpoint
+                }
+            )
             return False, "Connection timeout. The server is not responding."
         except requests.exceptions.ReadTimeout:
+            network_error(
+                "Read timeout in API request", 
+                ErrorSeverity.MEDIUM,
+                details={
+                    "url": url,
+                    "endpoint": endpoint
+                }
+            )
             return False, "Read timeout. The server took too long to respond."
         except Exception as e:
+            api_error(
+                f"Unexpected error in GET {endpoint}", 
+                ErrorSeverity.HIGH,
+                error=e,
+                details={"endpoint": endpoint}
+            )
             return False, f"An error occurred: {str(e)}"
 
     def post(self, endpoint, data=None, json_data=None, timeout=None, retry_on_auth_fail=True):

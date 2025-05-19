@@ -394,10 +394,9 @@ class ApiClient(QObject):
         """Get authentication header with thread safety"""
         self.auth_mutex.lock()
         try:
-            # Check if we have a cached header
-            if 'auth' not in self._cached_headers:
-                # Create a new header
-                self._cached_headers['auth'] = self.auth_manager.auth_header
+            # Always regenerate headers to ensure we have the most current token
+            # This fixes the race condition where cached headers use stale tokens
+            self._cached_headers['auth'] = self.auth_manager.auth_header
             return self._cached_headers['auth']
         finally:
             self.auth_mutex.unlock()
@@ -434,9 +433,18 @@ class ApiClient(QObject):
             elif response.status_code == 401 and auth_required and retry_on_auth_fail:
                 # Only attempt token refresh if explicitly enabled and authentication is required
                 print(f"Authentication failed for {url} - token might be expired")
+                
+                # Clear header cache immediately when 401 is detected
+                self.auth_mutex.lock()
+                try:
+                    self._cached_headers = {}
+                finally:
+                    self.auth_mutex.unlock()
+                
                 if self._refresh_token():
                     # Update headers with new token
                     headers = self._get_auth_header()
+                    print(f"Retrying {url} with refreshed token")
                     # Retry the request with the new token (but don't allow further retries to prevent loops)
                     return self.get(endpoint, params, timeout, auth_required, False)
                 else:
@@ -490,9 +498,18 @@ class ApiClient(QObject):
                 return True, response.json()
             elif response.status_code == 401 and retry_on_auth_fail:
                 print(f"Authentication failed for {url} - attempting to refresh token and retry")
+                
+                # Clear header cache immediately when 401 is detected
+                self.auth_mutex.lock()
+                try:
+                    self._cached_headers = {}
+                finally:
+                    self.auth_mutex.unlock()
+                
                 if self._refresh_token():
                     # Update headers with new token
                     headers = self._get_auth_header()
+                    print(f"Retrying {url} with refreshed token")
                     # Retry the request with the new token (but don't allow further retries to prevent loops)
                     return self.post(endpoint, data, json_data, timeout, False)
                 else:
@@ -548,7 +565,18 @@ class ApiClient(QObject):
                 return True, {}
             elif response.status_code == 401 and retry_on_auth_fail:
                 print(f"Authentication failed for {url} - attempting to refresh token and retry")
+                
+                # Clear header cache immediately when 401 is detected
+                self.auth_mutex.lock()
+                try:
+                    self._cached_headers = {}
+                finally:
+                    self.auth_mutex.unlock()
+                
                 if self._refresh_token():
+                    # Update headers with new token
+                    headers = self._get_auth_header()
+                    print(f"Retrying {url} with refreshed token")
                     # Retry the request with the new token (but don't allow further retries to prevent loops)
                     return self.put(endpoint, data, json_data, timeout, False)
                 else:
@@ -598,7 +626,18 @@ class ApiClient(QObject):
                 return True, {}
             elif response.status_code == 401 and retry_on_auth_fail:
                 print(f"Authentication failed for {url} - attempting to refresh token and retry")
+                
+                # Clear header cache immediately when 401 is detected
+                self.auth_mutex.lock()
+                try:
+                    self._cached_headers = {}
+                finally:
+                    self.auth_mutex.unlock()
+                
                 if self._refresh_token():
+                    # Update headers with new token
+                    headers = self._get_auth_header()
+                    print(f"Retrying {url} with refreshed token")
                     # Retry the request with the new token (but don't allow further retries to prevent loops)
                     return self.delete(endpoint, timeout, False)
                 else:
@@ -649,9 +688,18 @@ class ApiClient(QObject):
                 return True, response.json()
             elif response.status_code == 401 and retry_on_auth_fail:
                 print(f"Authentication failed for {url} - attempting to refresh token and retry")
+                
+                # Clear header cache immediately when 401 is detected
+                self.auth_mutex.lock()
+                try:
+                    self._cached_headers = {}
+                finally:
+                    self.auth_mutex.unlock()
+                
                 if self._refresh_token():
                     # Update headers with new token
                     headers = self._get_auth_header()
+                    print(f"Retrying {url} with refreshed token")
                     # Retry the request with the new token (but don't allow further retries to prevent loops)
                     return self.post_with_files(endpoint, data, files, timeout, False)
                 else:
@@ -739,6 +787,8 @@ class ApiClient(QObject):
                     self.auth_mutex.lock()
                     try:
                         self.auth_manager.access_token = None
+                        # Clear cached headers immediately when token is invalidated
+                        self._cached_headers = {}
                     finally:
                         self.auth_mutex.unlock()
                     
@@ -769,6 +819,10 @@ class ApiClient(QObject):
                             
                             # Clear cached headers to force regeneration
                             self._cached_headers = {}
+                            
+                            # Verify the new auth header is valid (debug)
+                            auth_header = self.auth_manager.auth_header
+                            print(f"New auth header available: {bool(auth_header)}")
                         finally:
                             self.auth_mutex.unlock()
                             
@@ -783,6 +837,8 @@ class ApiClient(QObject):
                         try:
                             # Clear only the refresh token, keep credentials for fallback
                             self.auth_manager.refresh_token = None
+                            # Clear cached headers immediately when token is rejected
+                            self._cached_headers = {}
                         finally:
                             self.auth_mutex.unlock()
                             
@@ -801,11 +857,13 @@ class ApiClient(QObject):
                     print(f"Token refresh error: {str(e)}")
             else:
                 print("No refresh token available for token refresh")
-                
+            
             # If refresh token failed or wasn't available, try credentials
             if not success and username and password:
                 print(f"Falling back to credential login for {username}")
                 try:
+                    # Clear cached headers before login attempt
+                    self._cached_headers = {}
                     login_success, _, _ = self.login(username, password)
                     success = login_success
                 except Exception as login_e:

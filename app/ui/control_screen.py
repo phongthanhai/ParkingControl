@@ -1557,7 +1557,7 @@ class ControlScreen(QWidget):
             self.api_reconnect_button.setText("Reconnect")
             self.api_reconnect_button.setEnabled(True)
 
-    def _attempt_token_refresh(self, timeout):
+    def _attempt_token_refresh(self, timeout, custom_callback=None):
         """Attempt to refresh token or re-login if necessary"""
         print("Attempting to refresh the authentication token")
         
@@ -1572,7 +1572,13 @@ class ControlScreen(QWidget):
                     self.api_available = True
                     self.last_successful_connection = time.time()
                     self._update_api_status(True)
-                    # Update data after reconnection
+                    
+                    # If we have a custom callback, use it instead of default behavior
+                    if custom_callback:
+                        custom_callback(refresh_success, refresh_result)
+                        return
+                    
+                    # Default behavior - update data after reconnection
                     QTimer.singleShot(500, self._update_occupancy)
                     QTimer.singleShot(1000, self._fetch_logs)
                     self.api_reconnect_button.setText("Reconnect")
@@ -1580,7 +1586,13 @@ class ControlScreen(QWidget):
                     self.api_reconnect_button.setVisible(False)
                 else:
                     print(f"Token refresh failed: {refresh_result}")
-                    # Fall back to credential login if refresh token fails
+                    
+                    # If we have a custom callback, use it
+                    if custom_callback:
+                        custom_callback(refresh_success, refresh_result)
+                        return
+                    
+                    # Default behavior - fall back to credential login if refresh token fails
                     self._attempt_relogin(timeout)
             except Exception as e:
                 print(f"Error handling refresh result: {str(e)}")
@@ -1597,9 +1609,13 @@ class ControlScreen(QWidget):
                 
             def run(self):
                 try:
+                    # First clear any cached headers to ensure fresh values
+                    self.api_client._cached_headers = {}
+                    
                     # Direct call to refresh token - this may block but it's in a separate thread
                     success = self.api_client._refresh_token()
-                    # Call back on the main thread
+                    
+                    # Call back on the main thread 
                     QMetaObject.invokeMethod(QApplication.instance(), 
                                             lambda: self.callback(success, "Token refresh completed"),
                                             Qt.ConnectionType.QueuedConnection)
@@ -2549,27 +2565,39 @@ class ControlScreen(QWidget):
             
         print("Validating authentication after offline -> online transition")
         
-        # Define a simple callback
-        def handle_auth_check(success, result):
-            if success:
-                print("Authentication is valid after reconnect")
-                # Just update data - UI is already showing connected
-                QTimer.singleShot(1000, self._update_occupancy)
-                QTimer.singleShot(2000, self._fetch_logs)
-            else:
-                print("Authentication failed after reconnect")
-                # We need to refresh the token
-                self._attempt_token_refresh((3.0, 5.0))
-        
-        # Make a very simple authenticated request
-        self._perform_async_api_call(
-            "auth_check_after_reconnect",
-            lambda: self.api_client.get('vehicles/blacklisted/', 
-                                       params={'skip': 0, 'limit': 1},
-                                       timeout=(2.0, 3.0),
-                                       retry_on_auth_fail=False),
-            callback=handle_auth_check
-        )
-        
-        # Clear the flag to avoid multiple checks - moved here to prevent race conditions
+        # Set the flag that we've acted on the transition (prevents multiple calls)
+        offline_transition_flag = self.previously_offline
         self.previously_offline = False
+        
+        # First, refresh the token to ensure we have a fresh one
+        # This is more reliable than checking the existing token
+        print("Forcing token refresh after reconnection")
+        
+        # Define token refresh callback
+        def handle_refresh_result(refresh_success, refresh_result):
+            try:
+                if refresh_success:
+                    print("Authentication refreshed successfully after reconnection")
+                    self.api_available = True
+                    self.last_successful_connection = time.time()
+                    
+                    # Update UI to show we're connected
+                    self._update_api_status(True)
+                    
+                    # Force UI update by processing events to show the change immediately
+                    QApplication.processEvents()
+                    
+                    # Now that we have a refreshed token, we can update data
+                    # Use a slight delay to ensure the token is fully applied
+                    QTimer.singleShot(750, self._update_occupancy)
+                    QTimer.singleShot(1500, self._fetch_logs)
+                else:
+                    print("Failed to refresh token after reconnection")
+                    # Trigger the manual reconnect UI so user can try again
+                    self.api_available = False
+                    self._update_api_status(False)
+            except Exception as e:
+                print(f"Error handling refresh result after reconnection: {str(e)}")
+        
+        # Instead of checking token validity first, just refresh it
+        self._attempt_token_refresh((3.0, 5.0), handle_refresh_result)

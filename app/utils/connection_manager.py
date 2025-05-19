@@ -5,7 +5,6 @@ from PyQt5.QtCore import QObject, pyqtSignal, QThread, QTimer, QMutex
 from config import API_BASE_URL
 from app.controllers.api_client import ApiClient
 from app.utils.auth_manager import AuthManager
-from app.utils.error_manager import ErrorManager, ErrorCategory, ErrorSeverity, network_error, auth_error
 
 class ConnectionState:
     """Enum-like class for connection states"""
@@ -36,10 +35,6 @@ class ConnectionManager(QObject):
         self.base_url = base_url
         self.api_client = ApiClient(base_url=base_url)
         self.auth_manager = AuthManager()
-        self.error_manager = ErrorManager()
-        
-        # Connect to connection-specific errors only
-        self.error_manager.connection_error_occurred.connect(self.handle_error)
         
         # State variables
         self._state = ConnectionState.DISCONNECTED
@@ -69,19 +64,12 @@ class ConnectionManager(QObject):
     
     def _start_health_check_thread(self):
         """Start the background health check thread"""
-        try:
-            self._stop_health_check.clear()
-            self._health_check_thread = threading.Thread(
-                target=self._health_check_worker,
-                daemon=True
-            )
-            self._health_check_thread.start()
-        except Exception as e:
-            network_error(
-                "Failed to start health check thread", 
-                ErrorSeverity.HIGH, 
-                error=e
-            )
+        self._stop_health_check.clear()
+        self._health_check_thread = threading.Thread(
+            target=self._health_check_worker,
+            daemon=True
+        )
+        self._health_check_thread.start()
     
     def _health_check_worker(self):
         """Background worker that periodically checks API health"""
@@ -102,12 +90,8 @@ class ConnectionManager(QObject):
                 # Wait for the determined interval or until stopped
                 self._stop_health_check.wait(wait_time)
             except Exception as e:
-                # Use the error manager to log the error properly
-                network_error(
-                    "Error in health check thread", 
-                    ErrorSeverity.MEDIUM, 
-                    error=e
-                )
+                # Catch any exceptions to prevent thread from dying
+                print(f"Error in health check thread: {str(e)}")
                 # Wait a bit before retrying
                 self._stop_health_check.wait(self._health_check_interval)
     
@@ -125,7 +109,7 @@ class ConnectionManager(QObject):
         jitter_amount = backoff * self._jitter
         backoff = backoff + random.uniform(-jitter_amount, jitter_amount)
         
-        self.error_manager.logger.debug(f"Using backoff of {backoff:.2f}s for reconnect attempt {self._reconnect_attempts}")
+        print(f"Using backoff of {backoff:.2f}s for reconnect attempt {self._reconnect_attempts}")
         return backoff
     
     def _check_connection(self):
@@ -161,17 +145,6 @@ class ConnectionManager(QObject):
             self._connected = False
             self.connection_state_changed.emit(False)
             self.connection_state_message.emit("Connection to server lost")
-            
-            # Log network error
-            network_error(
-                "Connection to server lost",
-                ErrorSeverity.MEDIUM,
-                details={
-                    'reconnect_attempt': self._reconnect_attempts + 1,
-                    'backoff_time': self._calculate_backoff()
-                }
-            )
-            
             self._reconnect_attempts += 1
     
     def _is_api_reachable(self):
@@ -185,12 +158,7 @@ class ConnectionManager(QObject):
             )
             return success
         except Exception as e:
-            network_error(
-                "Error checking API reachability", 
-                ErrorSeverity.LOW, 
-                error=e,
-                details={'api_url': self.base_url}
-            )
+            print(f"Error checking API reachability: {str(e)}")
             return False
     
     def _is_authenticated(self):
@@ -208,11 +176,7 @@ class ConnectionManager(QObject):
             
             return success
         except Exception as e:
-            auth_error(
-                "Error checking authentication status", 
-                ErrorSeverity.LOW, 
-                error=e
-            )
+            print(f"Error checking authentication: {str(e)}")
             return False
     
     def _refresh_token(self):
@@ -222,10 +186,7 @@ class ConnectionManager(QObject):
             
             # Check if we have stored credentials
             if not (self.auth_manager.username and self.auth_manager.password):
-                auth_error(
-                    "No stored credentials available for token refresh",
-                    ErrorSeverity.MEDIUM
-                )
+                print("No stored credentials available for token refresh")
                 
                 # Update state
                 self._update_state(ConnectionState.DISCONNECTED)
@@ -235,7 +196,7 @@ class ConnectionManager(QObject):
                 
                 return False
                 
-            self.error_manager.logger.info(f"Attempting to refresh token for {self.auth_manager.username}")
+            print(f"Attempting to refresh token for {self.auth_manager.username}")
             
             # Attempt login to get fresh token
             success, message, _ = self.api_client.login(
@@ -245,7 +206,7 @@ class ConnectionManager(QObject):
             )
             
             if success:
-                self.error_manager.logger.info("Token refreshed successfully")
+                print("Token refreshed successfully")
                 
                 # Update state
                 self._update_state(ConnectionState.CONNECTED)
@@ -255,11 +216,7 @@ class ConnectionManager(QObject):
                 
                 return True
             else:
-                auth_error(
-                    "Failed to refresh authentication token", 
-                    ErrorSeverity.MEDIUM,
-                    details={'message': message}
-                )
+                print(f"Failed to refresh token: {message}")
                 
                 # Update state
                 self._update_state(ConnectionState.DISCONNECTED)
@@ -269,11 +226,7 @@ class ConnectionManager(QObject):
                 
                 return False
         except Exception as e:
-            auth_error(
-                "Unexpected error during token refresh", 
-                ErrorSeverity.HIGH, 
-                error=e
-            )
+            print(f"Error refreshing token: {str(e)}")
             return False
         finally:
             self._authenticating = False
@@ -329,24 +282,4 @@ class ConnectionManager(QObject):
     
     def __del__(self):
         """Clean up resources when object is destroyed"""
-        self.stop()
-
-    def handle_error(self, error_response):
-        """
-        Handle errors that might affect connection status
-        
-        Args:
-            error_response (ErrorResponse): The error that occurred
-        """
-        # Only network or authentication errors should affect connection status
-        # Explicitly exclude OCR and hardware errors
-        if error_response.category not in [ErrorCategory.NETWORK, ErrorCategory.AUTH] or error_response.category == ErrorCategory.OCR:
-            return
-            
-        # Handle based on error severity and category
-        if error_response.category == ErrorCategory.NETWORK:
-            # Network errors might indicate a disconnection
-            if error_response.severity.value >= ErrorSeverity.MEDIUM.value:
-                self.error_manager.logger.warning(f"Network error affecting connection status: {error_response.message}")
-                # Check connection on next cycle rather than immediate disconnect
-                self._reconnect_attempts += 1 
+        self.stop() 

@@ -17,6 +17,7 @@ from app.ui.sync_status_widget import SyncStatusWidget
 from app.utils.auth_manager import AuthManager
 import numpy as np
 from app.controllers.db_worker import DBWorker, DBOperationType
+from PyQt5.QtCore import QRunnable, QThreadPool
 
 class LaneWidget(QWidget):
     def __init__(self, title):
@@ -1555,30 +1556,57 @@ class ControlScreen(QWidget):
         """Attempt to refresh token or re-login if necessary"""
         print("Attempting to refresh the authentication token")
         
+        # Use a more efficient approach to prevent UI blocking
+        auth_manager = AuthManager()
+        
         # Define token refresh callback
         def handle_refresh_result(refresh_success, refresh_result):
-            if refresh_success:
-                print("Authentication refreshed successfully")
-                self.api_available = True
-                self.last_successful_connection = time.time()
-                self._update_api_status(True)
-                # Update data after reconnection
-                self._update_occupancy()
-                self._fetch_logs()
+            try:
+                if refresh_success:
+                    print("Authentication refreshed successfully")
+                    self.api_available = True
+                    self.last_successful_connection = time.time()
+                    self._update_api_status(True)
+                    # Update data after reconnection
+                    QTimer.singleShot(500, self._update_occupancy)
+                    QTimer.singleShot(1000, self._fetch_logs)
+                    self.api_reconnect_button.setText("Reconnect")
+                    self.api_reconnect_button.setEnabled(True)
+                    self.api_reconnect_button.setVisible(False)
+                else:
+                    print(f"Token refresh failed: {refresh_result}")
+                    # Fall back to credential login if refresh token fails
+                    self._attempt_relogin(timeout)
+            except Exception as e:
+                print(f"Error handling refresh result: {str(e)}")
                 self.api_reconnect_button.setText("Reconnect")
                 self.api_reconnect_button.setEnabled(True)
-                self.api_reconnect_button.setVisible(False)
-            else:
-                print(f"Token refresh failed: {refresh_result}")
-                # Fall back to credential login if refresh token fails
-                self._attempt_relogin(timeout)
         
-        # Attempt token refresh directly through API client
-        self._perform_async_api_call(
-            "token_refresh",
-            lambda: (self.api_client._refresh_token(), "Token refresh completed"),
-            callback=handle_refresh_result
-        )
+        # Instead of directly calling api_client._refresh_token which may block,
+        # we'll create a custom worker that safely handles the token refresh
+        class RefreshWorker(QRunnable):
+            def __init__(self, api_client, callback):
+                super().__init__()
+                self.api_client = api_client
+                self.callback = callback
+                
+            def run(self):
+                try:
+                    # Direct call to refresh token - this may block but it's in a separate thread
+                    success = self.api_client._refresh_token()
+                    # Call back on the main thread
+                    QMetaObject.invokeMethod(QApplication.instance(), 
+                                            lambda: self.callback(success, "Token refresh completed"),
+                                            Qt.ConnectionType.QueuedConnection)
+                except Exception as e:
+                    # Handle any exceptions
+                    QMetaObject.invokeMethod(QApplication.instance(), 
+                                            lambda: self.callback(False, str(e)),
+                                            Qt.ConnectionType.QueuedConnection)
+        
+        # Create and start the worker
+        worker = RefreshWorker(self.api_client, handle_refresh_result)
+        QThreadPool.globalInstance().start(worker)
 
     def _attempt_relogin(self, timeout):
         """Attempt to re-login with stored credentials as fallback"""

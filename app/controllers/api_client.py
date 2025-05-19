@@ -671,125 +671,105 @@ class ApiClient(QObject):
             bool: True if token refresh was successful, False otherwise
         """
         # Thread-safe access to refresh token
+        refresh_token = None
+        username = None
+        password = None
+        
+        # Get token and credentials safely
         self.auth_mutex.lock()
         try:
             # Check if we have a refresh token
             refresh_token = self.auth_manager.refresh_token
-            if not refresh_token:
-                print("No refresh token available for token refresh")
-                # Fall back to credentials if available
-                username = self.auth_manager.username
-                password = self.auth_manager.password
-                if not (username and password):
-                    print("No stored credentials available for token refresh fallback")
-                    return False
-                else:
-                    print(f"No refresh token available, falling back to credentials for {username}")
-                    self.auth_mutex.unlock()  # Unlock before calling login
-                    success, _, _ = self.login(username, password)
-                    return success
-        finally:
-            if self.auth_mutex.locked():
-                self.auth_mutex.unlock()
-            
-        print("Attempting token refresh using refresh token")
-        
-        # Create refresh token request
-        refresh_url = f"{self.base_url}/refresh-token"
-        json_data = {
-            "refresh_token": refresh_token
-        }
-        
-        headers = {
-            'Content-Type': 'application/json',
-            'accept': 'application/json'
-        }
-        
-        # Use a quick timeout for refresh - we don't want to hang here too long
-        timeout = (self.health_connect_timeout, self.health_read_timeout)
-        
-        try:
-            # Clear existing access token but keep refresh token
-            self.auth_manager.access_token = None
-            
-            # Send refresh token request
-            response = self.session.post(refresh_url, json=json_data, 
-                                       headers=headers, timeout=timeout)
-            
-            if response.status_code == 200:
-                data = response.json()
-                
-                # Thread-safe token update
-                self.auth_mutex.lock()
-                try:
-                    self.auth_manager.access_token = data['access_token']
-                    self.auth_manager.token_type = data['token_type']
-                    
-                    # Update refresh token if a new one is provided
-                    if 'refresh_token' in data:
-                        self.auth_manager.refresh_token = data['refresh_token']
-                    
-                    # Update user information if provided
-                    if 'user_id' in data:
-                        self.user_id = data['user_id']
-                    if 'user_role' in data:
-                        self.user_role = data['user_role']
-                    if 'assigned_lots' in data:
-                        self.assigned_lots = data['assigned_lots']
-                    
-                    # Clear cached headers to force regeneration
-                    self._cached_headers = {}
-                finally:
-                    self.auth_mutex.unlock()
-                    
-                print("Token refreshed successfully using refresh token")
-                return True
-            elif response.status_code == 401:
-                print("Refresh token expired or invalid")
-                # Fall back to credentials if available
-                username = self.auth_manager.username
-                password = self.auth_manager.password
-                if username and password:
-                    print(f"Falling back to credential login for {username}")
-                    success, _, _ = self.login(username, password)
-                    return success
-                return False
-            else:
-                error_msg = "Unknown error"
-                try:
-                    error_data = response.json()
-                    if 'detail' in error_data:
-                        error_msg = error_data['detail']
-                except:
-                    error_msg = f"HTTP Error {response.status_code}"
-                    
-                print(f"Failed to refresh token: {error_msg}")
-                
-                # Fall back to credentials if available
-                username = self.auth_manager.username
-                password = self.auth_manager.password
-                if username and password:
-                    print(f"Falling back to credential login for {username}")
-                    success, _, _ = self.login(username, password)
-                    return success
-                
-                return False
-                
-        except Exception as e:
-            print(f"Token refresh error: {str(e)}")
-            
-            # Fall back to credentials if available
+            # Also get credentials for potential fallback
             username = self.auth_manager.username
             password = self.auth_manager.password
-            if username and password:
-                print(f"Error during token refresh, falling back to credential login for {username}")
-                try:
-                    success, _, _ = self.login(username, password)
-                    return success
-                except Exception as login_e:
-                    print(f"Login fallback also failed: {str(login_e)}")
+        finally:
+            self.auth_mutex.unlock()
+        
+        # First try refresh token if available
+        if refresh_token:
+            print("Attempting token refresh using refresh token")
             
-            return False
+            # Create refresh token request
+            refresh_url = f"{self.base_url}/refresh-token"
+            json_data = {
+                "refresh_token": refresh_token
+            }
+            
+            headers = {
+                'Content-Type': 'application/json',
+                'accept': 'application/json'
+            }
+            
+            # Use a quick timeout for refresh - we don't want to hang here too long
+            timeout = (self.health_connect_timeout, self.health_read_timeout)
+            
+            try:
+                # Clear existing access token but keep refresh token
+                self.auth_mutex.lock()
+                try:
+                    self.auth_manager.access_token = None
+                finally:
+                    self.auth_mutex.unlock()
+                
+                # Send refresh token request
+                response = self.session.post(refresh_url, json=json_data, 
+                                           headers=headers, timeout=timeout)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    # Thread-safe token update
+                    self.auth_mutex.lock()
+                    try:
+                        self.auth_manager.access_token = data['access_token']
+                        self.auth_manager.token_type = data['token_type']
+                        
+                        # Update refresh token if a new one is provided
+                        if 'refresh_token' in data:
+                            self.auth_manager.refresh_token = data['refresh_token']
+                        
+                        # Update user information if provided
+                        if 'user_id' in data:
+                            self.user_id = data['user_id']
+                        if 'user_role' in data:
+                            self.user_role = data['user_role']
+                        if 'assigned_lots' in data:
+                            self.assigned_lots = data['assigned_lots']
+                        
+                        # Clear cached headers to force regeneration
+                        self._cached_headers = {}
+                    finally:
+                        self.auth_mutex.unlock()
+                        
+                    print("Token refreshed successfully using refresh token")
+                    return True
+                else:
+                    error_msg = "Unknown error"
+                    try:
+                        error_data = response.json()
+                        if 'detail' in error_data:
+                            error_msg = error_data['detail']
+                    except:
+                        error_msg = f"HTTP Error {response.status_code}"
+                        
+                    print(f"Failed to refresh token: {error_msg}")
+            except Exception as e:
+                print(f"Token refresh error: {str(e)}")
+        else:
+            print("No refresh token available for token refresh")
+            
+        # If we reach here, refresh token failed or wasn't available
+        # Fall back to credentials if available
+        if username and password:
+            print(f"Falling back to credential login for {username}")
+            try:
+                success, _, _ = self.login(username, password)
+                return success
+            except Exception as login_e:
+                print(f"Login fallback also failed: {str(login_e)}")
+                
+        return False
 
     def check_health(self, timeout=None):
         """

@@ -728,83 +728,64 @@ class SyncService(QObject):
         """Attempt to refresh token using refresh token or credentials as fallback"""
         print("Attempting to refresh authentication token")
         
-        # First try refresh token
+        # Get auth_manager reference
         from app.utils.auth_manager import AuthManager
         auth_manager = AuthManager()
         
-        if auth_manager.has_refresh_token():
-            print("Using refresh token for authentication refresh")
-            if self.api_client._refresh_token():
-                print("Token refreshed successfully using refresh token")
+        # Define a function to handle the token refresh in a separate thread
+        def do_token_refresh():
+            result = False
+            try:
+                # First try refresh token if available
+                if auth_manager.has_refresh_token():
+                    print("Using refresh token for authentication refresh")
+                    result = self.api_client._refresh_token()
+                    if result:
+                        # Successfully refreshed token
+                        return True
+                    print("Refresh token failed, falling back to credentials")
+                
+                # Fall back to credentials
+                if auth_manager.username and auth_manager.password:
+                    print(f"Attempting credential login for {auth_manager.username}")
+                    success, _, _ = self.api_client.login(
+                        auth_manager.username,
+                        auth_manager.password,
+                        timeout=timeout
+                    )
+                    return success
+                else:
+                    print("No stored credentials available for token refresh")
+                    return False
+            except Exception as e:
+                print(f"Error during token refresh: {str(e)}")
+                return False
+        
+        # Create and start a thread for the token refresh
+        refresh_thread = threading.Thread(target=lambda: self._handle_refresh_thread_result(do_token_refresh()))
+        refresh_thread.daemon = True
+        refresh_thread.start()
+        
+        # Return immediately - we'll handle the result in the callback
+        return True
+    
+    def _handle_refresh_thread_result(self, success):
+        """Handle the result from the token refresh thread"""
+        try:
+            if success:
+                print("Token refresh thread completed successfully")
                 self.api_available = True
                 self.api_status_changed.emit(True)
-                self.sync_worker.resume()
-                return True
-            print("Refresh token failed, falling back to credentials")
-            
-        # Fall back to credentials
-        if auth_manager.username and auth_manager.password:
-            print(f"Attempting credential login for {auth_manager.username}")
-            self._perform_async_login(
-                auth_manager.username,
-                auth_manager.password,
-                timeout=timeout
-            )
-            return True
-        else:
-            print("No stored credentials available for token refresh")
-            self.api_available = False
-            self.api_status_changed.emit(False)
-            return False
-
-    def _perform_async_login(self, username, password, timeout):
-        """Perform login asynchronously"""
-        try:
-            # Define an inner function to handle login result
-            def handle_login_result(login_success, login_data):
-                # Parse result data 
-                if isinstance(login_data, tuple) and len(login_data) >= 2:
-                    login_success, login_msg = login_data[0], login_data[1]
-                else:
-                    login_success = False
-                    login_msg = "Unknown login error"
-                    
-                if login_success:
-                    print("Authentication token refreshed successfully")
-                    self.api_available = True
-                    self.api_status_changed.emit(True)
+                if hasattr(self, 'sync_worker'):
                     self.sync_worker.resume()
-                else:
-                    print(f"Failed to refresh authentication token: {login_msg}")
-                    self.api_available = False
-                    self.api_status_changed.emit(False)
-            
-            # Create a worker thread for login
-            worker = threading.Thread(
-                target=self._do_login,
-                args=(username, password, timeout, handle_login_result)
-            )
-            worker.daemon = True
-            worker.start()
-            
+            else:
+                print("Token refresh thread failed")
+                self.api_available = False
+                self.api_status_changed.emit(False)
         except Exception as e:
-            print(f"Error performing async login: {str(e)}")
+            print(f"Error handling refresh thread result: {str(e)}")
             self.api_available = False
             self.api_status_changed.emit(False)
-
-    def _do_login(self, username, password, timeout, callback):
-        """Perform the actual login in a separate thread"""
-        try:
-            login_result = self.api_client.login(
-                username, 
-                password,
-                timeout=timeout
-            )
-            # Call the callback with the result
-            callback(login_result[0], login_result)
-        except Exception as e:
-            print(f"Login thread error: {str(e)}")
-            callback(False, (False, str(e), None))
     
     def get_pending_sync_counts(self):
         """Get counts of pending items for each sync category."""

@@ -2,7 +2,7 @@ import os
 import time
 import cv2
 from datetime import datetime
-from PyQt5.QtCore import QObject, pyqtSignal, QThread, QTimer, QMutex
+from PyQt5.QtCore import QObject, pyqtSignal, QThread, QTimer, QMutex, QMetaObject, Qt, Q_ARG
 from app.utils.db_manager import DBManager
 from app.controllers.api_client import ApiClient
 from config import LOT_ID, API_BASE_URL
@@ -847,6 +847,8 @@ class SyncService(QObject):
         """Attempt to refresh token or re-login if necessary, in a thread-safe way"""
         print("SyncService: Attempting to refresh the authentication token")
         from app.utils.auth_manager import AuthManager
+        from PyQt5.QtCore import QMetaObject, Qt, Q_ARG
+        
         auth_manager = AuthManager()
         
         # Check if we have refresh token or credentials
@@ -854,42 +856,23 @@ class SyncService(QObject):
             print("SyncService: No refresh token or credentials available")
             return False
         
-        # Function to handle refresh result - MUST be thread-safe
-        def handle_refresh_complete(success):
-            try:
-                print(f"SyncService: Token refresh {'succeeded' if success else 'failed'}")
-                if success:
-                    self.api_available = True
-                    self.api_status_changed.emit(True)
-                    
-                    # Resume worker and check for pending operations but do it safely
-                    if hasattr(self, 'sync_worker'):
-                        self.sync_worker.resume()
-                    
-                    # Check for unsynced items using thread-safe method
-                    counts = self.get_pending_sync_counts()
-                    if counts["total"] > 0:
-                        print(f"SyncService: Found {counts['total']} unsynced items after token refresh")
-                        # CRITICAL: Use thread-safe method to avoid QObject::startTimer errors
-                        self.request_sync_from_thread()
-                    else:
-                        print("SyncService: No unsynced items after token refresh")
-                else:
-                    self.api_available = False
-                    self.api_status_changed.emit(False)
-            except Exception as e:
-                print(f"SyncService: Error in refresh completion handler: {str(e)}")
-                self.api_available = False
-                self.api_status_changed.emit(False)
-        
         # First try a direct token refresh which is already thread-safe
         if auth_manager.has_refresh_token():
             print("SyncService: Using refresh token")
             # This is safe because _refresh_token doesn't use Qt classes directly
             refresh_success = self.api_client._refresh_token()
             
-            # Handle the result through our thread-safe handler
-            handle_refresh_complete(refresh_success)
+            # Schedule the result handling on the main thread
+            if refresh_success:
+                # Don't modify UI state directly from this thread
+                print("SyncService: Token refresh succeeded, scheduling main thread update")
+                QMetaObject.invokeMethod(self, "_handle_successful_token_refresh", 
+                                         Qt.QueuedConnection)
+            else:
+                print("SyncService: Token refresh failed")
+                QMetaObject.invokeMethod(self, "_handle_failed_token_refresh",
+                                         Qt.QueuedConnection)
+            
             return refresh_success
             
         # Fall back to credential login if available
@@ -908,13 +891,50 @@ class SyncService(QObject):
                     timeout=(3.0, 5.0)
                 )
                 
-                # Handle the result through our thread-safe handler
-                handle_refresh_complete(success)
+                # Schedule the result handling on the main thread
+                if success:
+                    print("SyncService: Login succeeded, scheduling main thread update")
+                    QMetaObject.invokeMethod(self, "_handle_successful_token_refresh", 
+                                             Qt.QueuedConnection)
+                else:
+                    print(f"SyncService: Login failed: {message}")
+                    QMetaObject.invokeMethod(self, "_handle_failed_token_refresh",
+                                             Qt.QueuedConnection)
+                
                 return success
                 
             except Exception as e:
                 print(f"SyncService: Login error: {str(e)}")
+                QMetaObject.invokeMethod(self, "_handle_failed_token_refresh",
+                                         Qt.QueuedConnection)
                 return False
         
         # If we got here, we had no refresh token or credentials
-        return False 
+        return False
+        
+    def _handle_successful_token_refresh(self):
+        """Handle successful token refresh on the main thread"""
+        print("SyncService: Handling successful token refresh on main thread")
+        self.api_available = True
+        self.api_status_changed.emit(True)
+        
+        # Resume worker and check for pending operations
+        if hasattr(self, 'sync_worker'):
+            self.sync_worker.resume()
+        
+        # Check for unsynced items using thread-safe method
+        counts = self.get_pending_sync_counts()
+        if counts["total"] > 0:
+            print(f"SyncService: Found {counts['total']} unsynced items after token refresh")
+            # Now we're on the main thread, so we can just call sync_now directly
+            self.sync_now()
+        else:
+            print("SyncService: No unsynced items after token refresh")
+            
+    def _handle_failed_token_refresh(self):
+        """Handle failed token refresh on the main thread"""
+        print("SyncService: Handling failed token refresh on main thread")
+        self.api_available = False
+        self.api_status_changed.emit(False)
+        if hasattr(self, 'sync_worker'):
+            self.sync_worker.pause() 

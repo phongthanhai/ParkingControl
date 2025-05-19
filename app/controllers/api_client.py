@@ -728,8 +728,8 @@ class ApiClient:
             timeout = (self.health_connect_timeout, self.health_read_timeout)
         
         try:
-            # Only perform a simple HEAD request to minimize server load
-            response = self.session.head(
+            # Use GET instead of HEAD since HEAD is not allowed
+            response = self.session.get(
                 f"{self.base_url}/services/health", 
                 timeout=timeout
             )

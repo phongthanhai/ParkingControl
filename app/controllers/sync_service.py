@@ -312,22 +312,24 @@ class SyncService(QObject):
             # Use the dedicated health check endpoint
             success, _ = self.api_client.get('services/health', timeout=api_check_timeout, auth_required=False)
             
-            # Update API status
-            if success and not self.api_available:
-                self.api_available = True
-                self.api_retry_count = 0
-                self.api_status_changed.emit(True)
-                print("Backend API connection restored, resuming sync operations")
-                self.sync_worker.resume()
+            # Update API status - emit signal regardless of previous state to ensure UI updates
+            if success:
+                if not self.api_available:
+                    print("Backend API connection restored, resuming sync operations")
+                    self.api_available = True
+                    self.api_retry_count = 0
+                    self.api_status_changed.emit(True)
+                    self.sync_worker.resume()
+                    
+                    # Auto-trigger sync when connection is restored
+                    QTimer.singleShot(1000, lambda: self.sync_now())
+            else:
+                # Mark as disconnected immediately after failure for faster UI feedback
+                if self.api_available:
+                    print("Backend API connection lost, pausing sync operations")
                 
-                # Auto-trigger sync when connection is restored
-                QTimer.singleShot(1000, lambda: self.sync_now())
-                
-            elif not success and self.api_available:
-                # Mark as disconnected immediately after the first failure for faster UI feedback
                 self.api_available = False
                 self.api_status_changed.emit(False)
-                print("Backend API connection lost, pausing sync operations")
                 self.sync_worker.pause()
                 
                 # Continue incrementing retry count for logging purposes
@@ -335,9 +337,9 @@ class SyncService(QObject):
             
         except Exception as e:
             # Immediately mark as disconnected on any exception
+            print(f"Backend API connection check error: {str(e)}")
             self.api_available = False
             self.api_status_changed.emit(False)
-            print(f"Backend API connection check error: {str(e)}")
             self.sync_worker.pause()
             
             # Continue incrementing retry count for logging

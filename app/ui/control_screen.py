@@ -1,6 +1,6 @@
 from PyQt5.QtGui import QPixmap, QImage, QFont, QColor, QPalette
-from PyQt5.QtWidgets import QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSpacerItem, QWidget, QComboBox, QMessageBox
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG, QPropertyAnimation, QEasingCurve, QRect, QThread, QElapsedTimer
+from PyQt5.QtWidgets import QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy, QPushButton, QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSpacerItem, QWidget, QComboBox, QMessageBox, QApplication
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QMetaObject, Q_ARG, QPropertyAnimation, QEasingCurve, QRect, QThread, QElapsedTimer, pyqtSlot
 import RPi.GPIO as GPIO
 import time
 import threading
@@ -188,7 +188,9 @@ class LaneWidget(QWidget):
 class ControlScreen(QWidget):
     log_signal = pyqtSignal(dict)
     manual_submit_signal = pyqtSignal(str, str)
-
+    # Add a new signal for updating UI from background threads
+    ui_update_signal = pyqtSignal(object)
+    
     def __init__(self):
         super().__init__()
         self.lane_widgets = {}
@@ -196,6 +198,9 @@ class ControlScreen(QWidget):
         self.active_timers = {}
         self.lanes_in_manual_mode = {}  # Track which lanes are in manual input mode
         self.worker_guard = threading.Lock()  # Protects worker creation/deletion
+        
+        # Connect the UI update signal
+        self.ui_update_signal.connect(self._process_ui_update)
         
         # Initialize UI responsiveness monitor
         self.ui_monitor_timer = QTimer(self)
@@ -221,6 +226,11 @@ class ControlScreen(QWidget):
         # Connectivity tracking
         self.consecutive_failures = 0
         self.last_successful_connection = time.time()
+        
+        # Setup more frequent API check timer directly in UI
+        self.ui_api_check_timer = QTimer(self)
+        self.ui_api_check_timer.timeout.connect(self._quick_api_check)
+        self.ui_api_check_timer.start(1000)  # Check every second from the UI
         
         # Debug flags
         self.debug_blacklist = False  # Set to True to enable extensive blacklist logging
@@ -1435,14 +1445,22 @@ class ControlScreen(QWidget):
 
     def _update_api_status(self, is_connected):
         """Update backend API status indicators"""
-        if is_connected:
-            self.api_status_indicator.setStyleSheet("background-color: green; border-radius: 7px;")
-            self.api_status_label.setText("Server: Connected")
-            self.api_reconnect_button.setVisible(False)
-        else:
-            self.api_status_indicator.setStyleSheet("background-color: red; border-radius: 7px;")
-            self.api_status_label.setText("Server: Disconnected")
-            self.api_reconnect_button.setVisible(True)
+        try:
+            if is_connected:
+                self.api_status_indicator.setStyleSheet("background-color: green; border-radius: 7px;")
+                self.api_status_label.setText("Server: Connected")
+                self.api_reconnect_button.setVisible(False)
+                print("UI updated: API status set to CONNECTED")
+            else:
+                self.api_status_indicator.setStyleSheet("background-color: red; border-radius: 7px;")
+                self.api_status_label.setText("Server: Disconnected")
+                self.api_reconnect_button.setVisible(True)
+                print("UI updated: API status set to DISCONNECTED")
+                
+            # Force UI update by processing all pending events
+            QApplication.processEvents()
+        except Exception as e:
+            print(f"Error updating API status UI: {str(e)}")
 
     def _reconnect_api(self):
         """Manually attempt to reconnect to the API"""
@@ -1937,12 +1955,10 @@ class ControlScreen(QWidget):
                                     # Check if the parent has the API-related attributes
                                     if hasattr(self._parent, 'api_available'):
                                         self._parent.api_available = False
-                                        if hasattr(self._parent, '_update_api_status'):
-                                            QMetaObject.invokeMethod(
-                                                self._parent, 
-                                                "_update_api_status", 
-                                                Qt.QueuedConnection,
-                                                Q_ARG(bool, False)
+                                        if hasattr(self._parent, 'ui_update_signal'):
+                                            # Use the signal to update API status safely
+                                            self._parent.ui_update_signal.emit(
+                                                lambda: self._parent._update_api_status(False)
                                             )
                                 else:
                                     print(f"PlateRecognizer API call failed: {error_msg} (not affecting backend API status)")
@@ -1956,12 +1972,10 @@ class ControlScreen(QWidget):
                             # Backend API is down
                             if hasattr(self._parent, 'api_available'):
                                 self._parent.api_available = False
-                                if hasattr(self._parent, '_update_api_status'):
-                                    QMetaObject.invokeMethod(
-                                        self._parent, 
-                                        "_update_api_status", 
-                                        Qt.QueuedConnection,
-                                        Q_ARG(bool, False)
+                                if hasattr(self._parent, 'ui_update_signal'):
+                                    # Use the signal to update API status safely
+                                    self._parent.ui_update_signal.emit(
+                                        lambda: self._parent._update_api_status(False)
                                     )
                             print(f"Backend API call exception: {str(e)}")
                         self.finished.emit(self.op_id, False, str(e))
@@ -2150,6 +2164,13 @@ class ControlScreen(QWidget):
     def closeEvent(self, event):
         """Handle application close properly by cleaning up threads"""
         try:
+            # Stop UI monitor and API check timers
+            if hasattr(self, 'ui_monitor_timer') and self.ui_monitor_timer.isActive():
+                self.ui_monitor_timer.stop()
+                
+            if hasattr(self, 'ui_api_check_timer') and self.ui_api_check_timer.isActive():
+                self.ui_api_check_timer.stop()
+            
             # Clear manual input mode flags
             self.lanes_in_manual_mode.clear()
             
@@ -2226,20 +2247,51 @@ class ControlScreen(QWidget):
             # Don't try to update UI from here as it could make things worse
         self.last_ui_check.restart()
 
+    @pyqtSlot(object)
+    def _process_ui_update(self, update_func):
+        """Process UI updates from a signal to ensure thread safety"""
+        try:
+            update_func()
+        except Exception as e:
+            print(f"Error updating UI: {str(e)}")
+    
     def _safe_update_ui(self, update_func):
-        """Thread-safe way to update UI elements"""
+        """Thread-safe way to update UI elements using signals"""
         if threading.current_thread() is threading.main_thread():
             # If we're already on the main thread, just call the function
             update_func()
         else:
-            # Otherwise use invokeMethod to execute on the main thread
-            # We'll use a lambda that takes no arguments since we're capturing our function
-            QMetaObject.invokeMethod(self, "_execute_ui_update", Qt.QueuedConnection,
-                                  Q_ARG(object, update_func))
-    
-    def _execute_ui_update(self, func):
-        """Execute the UI update function on the main thread"""
+            # Otherwise emit a signal to execute on the main thread
+            self.ui_update_signal.emit(update_func)
+
+    def _quick_api_check(self):
+        """Quick API check directly from UI to ensure fast status updates"""
         try:
-            func()
+            # Use very short timeouts
+            health_timeout = (0.5, 0.5)  # 0.5s connect, 0.5s read
+            
+            # Use direct API client to check health endpoint
+            # Don't use the sync service to avoid potentially blocked threads
+            success, _ = self.api_client.get('services/health', 
+                                          timeout=health_timeout, 
+                                          auth_required=False)
+            
+            # Update UI directly based on result
+            if success != self.api_available:
+                # Status changed, update UI immediately
+                self._update_api_status(success)
+                self.api_available = success
+                
+                if success:
+                    print("UI direct check: API is available")
+                    self.consecutive_failures = 0
+                    self.last_successful_connection = time.time()
+                else:
+                    print("UI direct check: API is NOT available")
+                
         except Exception as e:
-            print(f"Error updating UI: {str(e)}")
+            # Only change UI state if we were previously connected
+            if self.api_available:
+                print(f"UI direct API check error: {str(e)}")
+                self._update_api_status(False)
+                self.api_available = False

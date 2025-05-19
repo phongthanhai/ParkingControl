@@ -313,6 +313,8 @@ class SyncService(QObject):
     sync_progress = pyqtSignal(str, int, int)   # entity_type, completed, total
     api_status_changed = pyqtSignal(bool)       # is_available
     sync_all_complete = pyqtSignal(int)         # count of synced items
+    # Add the signal as a class attribute, not an instance attribute
+    sync_requested_signal = pyqtSignal(str)     # entity_type
     
     def __init__(self):
         super().__init__()
@@ -336,8 +338,7 @@ class SyncService(QObject):
         # The last count of items synced in a cycle
         self.last_sync_count = 0
         
-        # Create a signal for thread-safe sync triggering
-        self.sync_requested_signal = pyqtSignal(str)
+        # Connect the signal to the handler
         self.sync_requested_signal.connect(self._handle_sync_request)
         
         # Create and start the worker thread (now only acts on explicit requests)

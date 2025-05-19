@@ -2494,28 +2494,42 @@ class ControlScreen(QWidget):
             
             # Define callback for the async health check result
             def handle_quick_health_check(success):
-                # Update UI directly based on result if different from current state
-                if success != self.api_available:
-                    # Status changed
-                    was_offline = not self.api_available
-                    
-                    # Update state
-                    self._update_api_status(success)
-                    self.api_available = success
-                    
-                    if success:
-                        print("UI direct check: API is available")
-                        self.consecutive_failures = 0
-                        self.last_successful_connection = time.time()
+                try:
+                    # Update UI directly based on result if different from current state
+                    if success != self.api_available:
+                        # Status changed
+                        was_offline = not self.api_available
                         
-                        # Check if we're transitioning from offline to online
-                        if was_offline:
-                            print("Detected transition from OFFLINE to ONLINE")
-                            self.previously_offline = True
-                            # Attempt authenticated operation to validate token
-                            self._check_token_after_reconnect()
-                    else:
-                        print("UI direct check: API is NOT available")
+                        # IMPORTANT: First update internal state, then UI
+                        self.api_available = success
+                        
+                        if success:
+                            print("UI direct check: API is available")
+                            self.consecutive_failures = 0
+                            self.last_successful_connection = time.time()
+                            
+                            # First update the UI to show connected status immediately
+                            self._update_api_status(True)
+                            
+                            # Force UI update by processing events
+                            QApplication.processEvents()
+                            
+                            # Check if we're transitioning from offline to online
+                            if was_offline:
+                                print("Detected transition from OFFLINE to ONLINE")
+                                self.previously_offline = True
+                                # Attempt authenticated operation to validate token
+                                self._check_token_after_reconnect()
+                        else:
+                            print("UI direct check: API is NOT available")
+                            # Update UI to show disconnected
+                            self._update_api_status(False)
+                    elif success and not self.api_reconnect_button.isHidden():
+                        # This handles edge cases where UI shows disconnected but we're actually connected
+                        print("UI status mismatch detected - correcting UI to show connected")
+                        self._update_api_status(True)
+                except Exception as e:
+                    print(f"Error in quick health check handler: {str(e)}")
             
             # Use the non-blocking async health check to prevent UI freezing
             self.api_client.check_health_async(
@@ -2533,17 +2547,13 @@ class ControlScreen(QWidget):
         if not self.previously_offline:
             return
             
-        # Clear the flag to avoid multiple checks
-        self.previously_offline = False
-        
         print("Validating authentication after offline -> online transition")
         
         # Define a simple callback
         def handle_auth_check(success, result):
             if success:
                 print("Authentication is valid after reconnect")
-                # Update UI and data
-                self._update_api_status(True)
+                # Just update data - UI is already showing connected
                 QTimer.singleShot(1000, self._update_occupancy)
                 QTimer.singleShot(2000, self._fetch_logs)
             else:
@@ -2560,3 +2570,6 @@ class ControlScreen(QWidget):
                                        retry_on_auth_fail=False),
             callback=handle_auth_check
         )
+        
+        # Clear the flag to avoid multiple checks - moved here to prevent race conditions
+        self.previously_offline = False

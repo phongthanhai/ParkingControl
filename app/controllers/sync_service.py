@@ -586,14 +586,35 @@ class SyncService(QObject):
         try:
             # First check if there are unsynced items and sync them if possible
             if self.api_available:
-                counts = self.get_pending_sync_counts()
-                if counts["total"] > 0:
-                    print(f"Found {counts['total']} unsynced items before shutdown, attempting final sync")
-                    # Use synchronous sync here to ensure it completes before shutdown
-                    self._perform_shutdown_sync()
+                # CRITICAL FIX: Double-check API availability with a direct health check
+                try:
+                    print("Performing final API health check before shutdown sync")
+                    is_api_healthy = self.api_client.check_health(timeout=(2.0, 3.0))
+                    if not is_api_healthy:
+                        print("API health check failed before shutdown, marking API as unavailable")
+                        self.api_available = False
+                except Exception as e:
+                    print(f"Error during final API health check: {str(e)}")
+                    self.api_available = False
+                
+                # Only proceed with sync if API is still available after check
+                if self.api_available:
+                    counts = self.get_pending_sync_counts()
+                    if counts["total"] > 0:
+                        print(f"Found {counts['total']} unsynced items before shutdown, attempting final sync")
+                        # Use synchronous sync here to ensure it completes before shutdown
+                        self._perform_shutdown_sync()
+                    else:
+                        # Signal completion with 0 count and shutdown context
+                        self.sync_all_complete.emit(0, "shutdown")
                 else:
+                    print("API not available for shutdown sync, skipping")
                     # Signal completion with 0 count and shutdown context
                     self.sync_all_complete.emit(0, "shutdown")
+            else:
+                print("API not available for shutdown sync, skipping")
+                # Signal completion with 0 count and shutdown context
+                self.sync_all_complete.emit(0, "shutdown")
             
             # Stop the API check timer
             if hasattr(self, 'api_check_timer') and self.api_check_timer.isActive():
@@ -618,6 +639,11 @@ class SyncService(QObject):
             
         except Exception as e:
             print(f"Error during sync service shutdown: {str(e)}")
+            # Ensure we emit completion signal even on error
+            try:
+                self.sync_all_complete.emit(0, "shutdown")
+            except:
+                pass
     
     def _perform_shutdown_sync(self):
         """Perform a synchronous sync operation during shutdown"""
@@ -846,7 +872,12 @@ class SyncService(QObject):
             if token_refreshed:
                 print("Token refreshed successfully using refresh token before sync")
                 self.last_token_refresh_time = current_time
-                # CRITICAL FIX: Update API availability status when refresh token fails
+                # CRITICAL FIX: Set API as available when refresh succeeds
+                self.api_available = True
+                return True
+            else:
+                print("Refresh token failed, falling back to credentials")
+                # CRITICAL FIX: Only mark API as unavailable if refresh fails
                 self.api_available = False
             
         # Fall back to credentials if refresh token not available or failed

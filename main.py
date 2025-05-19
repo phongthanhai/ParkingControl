@@ -598,16 +598,35 @@ class ParkingSystem(QMainWindow):
             unsynced_count = cursor.fetchone()[0]
             
             if unsynced_count > 0:
-                print(f"Found {unsynced_count} potentially corrupted unsynced logs, cleaning up...")
+                print(f"Found {unsynced_count} unsynced logs, checking for potential corruption...")
                 
-                # Mark all existing unsynced logs as synced
-                cursor.execute("UPDATE local_log SET synced = 1 WHERE synced = 0")
-                conn.commit()
+                # CRITICAL FIX: Only clean up logs that are older than 24 hours
+                # This prevents cleaning up legitimate unsynced logs from recent activity
+                import time
+                from datetime import datetime, timedelta
                 
-                print(f"Marked {unsynced_count} unsynced logs as synced")
+                # Calculate timestamp for 24 hours ago
+                one_day_ago = time.time() - (24 * 60 * 60)
                 
-                # Show confirmation in status bar briefly
-                self.statusBar().showMessage(f"Fixed {unsynced_count} corrupted log entries", 5000)
+                # Only clean up logs older than one day
+                cursor.execute("SELECT COUNT(*) FROM local_log WHERE synced = 0 AND timestamp < ?", 
+                              (one_day_ago,))
+                old_unsynced_count = cursor.fetchone()[0]
+                
+                if old_unsynced_count > 0:
+                    print(f"Found {old_unsynced_count} potentially corrupted unsynced logs older than 24 hours")
+                    
+                    # Only mark old logs as synced
+                    cursor.execute("UPDATE local_log SET synced = 1 WHERE synced = 0 AND timestamp < ?", 
+                                 (one_day_ago,))
+                    conn.commit()
+                    
+                    print(f"Marked {old_unsynced_count} old unsynced logs as synced")
+                    
+                    # Show confirmation in status bar briefly
+                    self.statusBar().showMessage(f"Fixed {old_unsynced_count} corrupted log entries", 5000)
+                else:
+                    print(f"All {unsynced_count} unsynced logs are recent (within 24 hours), not cleaning up")
             else:
                 print("No unsynced logs found, no cleanup needed")
                 

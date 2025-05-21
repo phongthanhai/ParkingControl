@@ -354,7 +354,7 @@ class SyncService(QObject):
             return
             
         # Get pending counts
-        counts = self.get_pending_counts()
+        counts = self.get_pending_sync_counts()
         
         if counts["total"] > 0:
             print(f"Found {counts['total']} items to sync at startup")

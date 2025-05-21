@@ -4,9 +4,7 @@ from PyQt5.QtGui import QMovie, QPixmap, QColor
 
 class SyncStatusWidget(QWidget):
     """Compact widget that displays synchronization status using icons"""
-    sync_requested = pyqtSignal()
     refresh_requested = pyqtSignal()
-    reconnect_requested = pyqtSignal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -281,27 +279,6 @@ class SyncStatusWidget(QWidget):
         """Specifically show the shutdown sync message"""
         self.start_sync_animation("shutdown")
     
-    # These methods are kept for compatibility with existing code
-    def reconnect_result(self, success):
-        if success:
-            self.check_icon.setPixmap(self.check_pixmap)
-            self.check_icon.setVisible(True)
-            self.loading_label.setVisible(False)
-            self.status_label.setText("Reconnected successfully")
-            self.setVisible(True)
-            self.hide_timer.start(3000)  # Hide after 3 seconds
-        else:
-            self.check_icon.setPixmap(self.error_pixmap)
-            self.check_icon.setVisible(True)
-            self.loading_label.setVisible(False)
-            self.status_label.setText("Reconnection failed")
-            self.setVisible(True)
-            self.hide_timer.start(3000)
-    
-    def request_sync(self):
-        self.sync_requested.emit()
-        self.start_sync_animation()
-        
     def __del__(self):
         # Clean up timers
         if hasattr(self, 'spinner_timer') and self.spinner_timer.isActive():

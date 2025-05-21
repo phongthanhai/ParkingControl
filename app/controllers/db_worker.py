@@ -155,14 +155,16 @@ class DBWorker(QThread):
         entry_type = params.get('entry_type')
         image_path = params.get('image_path')
         synced = params.get('synced', False)
+        timestamp = params.get('timestamp')  # Get timestamp if provided
         
         # If we have an image but no path, save it now
-        if not image_path and params.get('image') is not None:
+        if not image_path and params.get('image_data') is not None:
             image_path = self.image_storage.save_image(
-                params.get('image'),
+                params.get('image_data'),
                 lane, 
                 plate_id, 
-                entry_type
+                entry_type,
+                timestamp=timestamp  # Pass timestamp to ensure consistency
             )
         
         # Store in database
@@ -172,7 +174,8 @@ class DBWorker(QThread):
             confidence=confidence,
             entry_type=entry_type,
             image_path=image_path,
-            synced=synced
+            synced=synced,
+            timestamp=timestamp  # Pass timestamp to ensure consistency
         )
         
         return {

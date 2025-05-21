@@ -250,27 +250,33 @@ class DBManager:
             return []
     
     # Log methods
-    def add_log_entry(self, lane, plate_id, confidence, entry_type, image_path=None, synced=False):
+    def add_log_entry(self, lane, plate_id, confidence, entry_type, image_path=None, synced=False, timestamp=None):
         """Add a log entry to the local database."""
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
+            
+            # Use provided timestamp or create one
+            if timestamp is None:
+                # Generate current timestamp as a float (UNIX timestamp)
+                timestamp = time.time()
+            
             # Debug print to show what we're adding
-            print(f"Adding log entry to database: {lane}, {plate_id}, {entry_type}, synced={synced}")
+            print(f"Adding log entry to database: {lane}, {plate_id}, {entry_type}, synced={synced}, timestamp={timestamp}")
             
             # Check if synced parameter is supported in the current schema
             try:
                 cursor.execute(
-                    'INSERT INTO local_log (lane, plate_id, confidence, type, image_path, synced) VALUES (?, ?, ?, ?, ?, ?)',
-                    (lane, plate_id, confidence, entry_type, image_path, 1 if synced else 0)
+                    'INSERT INTO local_log (lane, plate_id, confidence, type, image_path, synced, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    (lane, plate_id, confidence, entry_type, image_path, 1 if synced else 0, timestamp)
                 )
             except sqlite3.OperationalError as e:
                 if "no such column" in str(e).lower() and "synced" in str(e).lower():
                     # Handle older schema without synced column
                     print("Using legacy schema without synced column")
                     cursor.execute(
-                        'INSERT INTO local_log (lane, plate_id, confidence, type, image_path) VALUES (?, ?, ?, ?, ?)',
-                        (lane, plate_id, confidence, entry_type, image_path)
+                        'INSERT INTO local_log (lane, plate_id, confidence, type, image_path, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
+                        (lane, plate_id, confidence, entry_type, image_path, timestamp)
                     )
                 else:
                     raise e

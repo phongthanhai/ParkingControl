@@ -1016,6 +1016,10 @@ class ControlScreen(QWidget):
                     # Extract image from data if available
                     frame_image = data.get('image')
                     
+                    # Create a consistent timestamp (Unix timestamp as float)
+                    current_timestamp = time.time()
+                    formatted_timestamp = datetime.fromtimestamp(current_timestamp).strftime("%Y-%m-%d %H:%M:%S.%f")
+                    
                     # Save image to local storage
                     db_manager = DBManager()
                     image_storage = ImageStorage()
@@ -1026,7 +1030,8 @@ class ControlScreen(QWidget):
                             frame_image, 
                             lane, 
                             data.get('text', 'N/A'), 
-                            entry_type
+                            entry_type,
+                            timestamp=current_timestamp  # Pass timestamp for consistency
                         )
                     
                     # Prepare form data for API
@@ -1070,7 +1075,8 @@ class ControlScreen(QWidget):
                             confidence=data.get('confidence', 0.0),
                             entry_type=entry_type,
                             image_path=local_image_path,
-                            synced=True
+                            synced=True,
+                            timestamp=current_timestamp  # Use same timestamp for consistency
                         )
                         
                         # Handle local session tracking (parking session)
@@ -1194,6 +1200,9 @@ class ControlScreen(QWidget):
             plate_id = data.get('text', 'N/A')
             confidence = data.get('confidence', 0.0)
             
+            # Create a consistent timestamp (Unix timestamp as float)
+            current_timestamp = time.time()
+            
             # Queue the log entry operation
             operation_id = self.db_worker.queue_operation(
                 DBOperationType.LOG_ENTRY,
@@ -1201,74 +1210,43 @@ class ControlScreen(QWidget):
                 plate_id=plate_id,
                 confidence=confidence,
                 entry_type=entry_type,
-                image_path=existing_image_path,
-                image=image if existing_image_path is None else None,  # Only send image if no path
-                synced=False
+                image_data=image,
+                timestamp=current_timestamp
             )
             
-            # Queue the parking session operation
-            from config import LOT_ID
+            # Save image if available
+            image_path = existing_image_path
+            if image is not None and existing_image_path is None:
+                # Use same timestamp in filename for consistency
+                try:
+                    image_storage = ImageStorage()
+                    image_path = image_storage.save_image(
+                        image, 
+                        lane, 
+                        plate_id, 
+                        entry_type,
+                        timestamp=current_timestamp
+                    )
+                    
+                    # Update the operation with image path
+                    self.db_worker.update_operation(
+                        operation_id,
+                        image_path=image_path
+                    )
+                except Exception as img_err:
+                    print(f"Error saving image: {str(img_err)}")
             
-            # For entry lanes, create a new session
-            if lane == 'entry':
-                session_operation_id = self.db_worker.queue_operation(
-                    DBOperationType.PARKING_SESSION,
-                    action='create',
-                    lane=lane,
-                    plate_id=plate_id,
-                    lot_id=LOT_ID,
-                    confidence=confidence,
-                    image_path=existing_image_path  # Will be updated in callback when log completes
-                )
-                
-                # Track this operation for completion handling
-                self.pending_db_operations[session_operation_id] = {
-                    'operation_type': DBOperationType.PARKING_SESSION,
-                    'callback': lambda success, result: self._handle_session_complete(success, result, lane, entry_type, session_operation_id)
-                }
-            
-            # For exit lanes, update an existing session
-            elif lane == 'exit':
-                session_operation_id = self.db_worker.queue_operation(
-                    DBOperationType.PARKING_SESSION,
-                    action='update',
-                    lane=lane,
-                    plate_id=plate_id,
-                    lot_id=LOT_ID,
-                    confidence=confidence,
-                    image_path=existing_image_path  # Will be updated in callback when log completes
-                )
-                
-                # Track this operation for completion handling
-                self.pending_db_operations[session_operation_id] = {
-                    'operation_type': DBOperationType.PARKING_SESSION,
-                    'callback': lambda success, result: self._handle_session_complete(success, result, lane, entry_type, session_operation_id)
-                }
-            
-            # Track the log operation - we'll update the image path when it completes
-            log_data = {
-                'lane': lane,
-                'plate': plate_id,
-                'confidence': confidence,
-                'timestamp': time.time(),
-                'formatted_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'),
-                'type': entry_type,
-                'already_synced': False  # Not synced with the server yet
-            }
-            
+            # Track this operation
             self.pending_db_operations[operation_id] = {
                 'operation_type': DBOperationType.LOG_ENTRY,
-                'log_data': log_data,
-                'notify_sync': True  # Flag to emit log_signal when complete
+                'callback': None  # No callback needed for log entries
             }
             
-            print(f"Queued log entry for async storage with ID {operation_id}")
-            
-            # Return placeholder - real path will be set in the operation complete handler
-            return existing_image_path
+            print(f"Queued log entry operation {operation_id} for {lane} lane")
+            return image_path
             
         except Exception as e:
-            print(f"Error queueing log for local storage: {str(e)}")
+            print(f"Error storing log locally: {str(e)}")
             return None
     
     def _handle_session_complete(self, success, result, lane, entry_type, operation_id):

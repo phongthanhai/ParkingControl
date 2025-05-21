@@ -39,7 +39,7 @@ class ImageStorage:
         # Set image retention period (7 days by default)
         self.retention_days = 7
     
-    def save_image(self, image, lane_type, plate_id=None, event_type=None):
+    def save_image(self, image, lane_type, plate_id=None, event_type=None, timestamp=None):
         """
         Save an image to local storage with proper naming and organization.
         
@@ -48,6 +48,7 @@ class ImageStorage:
             lane_type: 'entry' or 'exit'
             plate_id: Vehicle plate ID (if available)
             event_type: Type of event ('auto', 'manual', 'denied-blacklist', etc.)
+            timestamp: Optional UNIX timestamp (float) for consistent naming
             
         Returns:
             str: Path to the saved image file, or None if save failed
@@ -64,15 +65,26 @@ class ImageStorage:
                 target_dir = self.base_dir
             
             # Create a unique filename with timestamp and plate ID
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            if timestamp is None:
+                # Use current time if no timestamp provided
+                timestamp = time.time()
+                
+            # Format timestamp for filename
+            if isinstance(timestamp, (int, float)):
+                # Convert from UNIX timestamp to formatted string
+                date_format = datetime.fromtimestamp(timestamp).strftime('%Y%m%d_%H%M%S')
+            else:
+                # Use as is if it's already a string
+                date_format = timestamp
+                
             unique_id = str(uuid.uuid4())[:8]
             
             if plate_id:
                 # Sanitize plate ID for filename
                 safe_plate = plate_id.replace(' ', '_').replace('-', '_')
-                filename = f"{timestamp}_{safe_plate}_{unique_id}.png"
+                filename = f"{date_format}_{safe_plate}_{unique_id}.png"
             else:
-                filename = f"{timestamp}_{lane_type}_{unique_id}.png"
+                filename = f"{date_format}_{lane_type}_{unique_id}.png"
             
             # Full path to save the image
             file_path = os.path.join(target_dir, filename)

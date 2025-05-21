@@ -363,31 +363,71 @@ class SyncService(QObject):
         self.api_check_timer.start(30000)  # Check every 30 seconds
         
         # Schedule an initial sync check after startup
-        print("Scheduling initial sync check with 15-second delay")
-        QTimer.singleShot(15000, self._check_initial_sync)  # Increased from 5000ms to 15000ms
+        print("Scheduling initial sync check with 30-second delay")
+        QTimer.singleShot(30000, self._check_initial_sync)  # Increased from 15000ms to 30000ms
     
     def _check_initial_sync(self):
         """Perform initial sync after app startup"""
         print("\n=== CHECKING FOR INITIAL SYNC ===")
         
-        # Only proceed if API is available
+        # First ensure we have fresh token and API is actually available
         if not self.api_available:
-            print("API not available for initial sync, scheduling retry in 10 seconds")
-            # Schedule a retry in 10 seconds
-            QTimer.singleShot(10000, self._check_initial_sync)
+            print("API not available for initial sync, scheduling retry in 15 seconds")
+            # Schedule a retry with a longer delay (15 seconds instead of 10)
+            QTimer.singleShot(15000, self._check_initial_sync)
             # Don't emit completion signal yet as we'll retry
             return
             
-        # Get pending counts
-        counts = self.get_pending_sync_counts()
+        # Double-check API status with a direct health check
+        print("Performing direct API check before initial sync...")
+        try:
+            is_api_healthy = self.api_client.check_health(timeout=(3.0, 5.0))
+            if not is_api_healthy:
+                print("API direct health check failed, scheduling retry in 15 seconds")
+                self.api_available = False
+                QTimer.singleShot(15000, self._check_initial_sync)
+                return
+                
+            print("API direct health check successful, proceeding with token refresh")
+            # Ensure we have a valid token
+            token_valid = self._ensure_fresh_token()
+            if not token_valid:
+                print("Token refresh failed before initial sync, scheduling retry in 15 seconds")
+                QTimer.singleShot(15000, self._check_initial_sync)
+                return
+                
+            print("Token is valid, checking for unsynced items...")
+        except Exception as e:
+            print(f"Error during pre-sync checks: {str(e)}, scheduling retry in 15 seconds")
+            QTimer.singleShot(15000, self._check_initial_sync)
+            return
         
-        if counts["total"] > 0:
-            print(f"Found {counts['total']} items to sync at startup")
-            # Use the startup context for initial sync
-            self.sync_now(context="startup")
-        else:
-            print("No items to sync at startup")
-            # Still notify with startup context so UI can update properly
+        # Get pending counts - with small delay to ensure DB is ready
+        print("Getting pending sync counts...")
+        QTimer.singleShot(500, self._perform_initial_sync_after_delay)
+    
+    def _perform_initial_sync_after_delay(self):
+        """Perform the actual initial sync after a small delay to ensure DB is ready"""
+        try:
+            # Check API status again after the delay
+            if not self.api_available:
+                print("API became unavailable during initial sync delay, scheduling retry")
+                QTimer.singleShot(15000, self._check_initial_sync)
+                return
+                
+            counts = self.get_pending_sync_counts()
+            
+            if counts["total"] > 0:
+                print(f"Found {counts['total']} items to sync at startup")
+                # Use the startup context for initial sync
+                self.sync_now(context="startup")
+            else:
+                print("No items to sync at startup")
+                # Still notify with startup context so UI can update properly
+                self.sync_all_complete.emit(0, "startup")
+        except Exception as e:
+            print(f"Error during initial sync after delay: {str(e)}")
+            # Signal completion with error
             self.sync_all_complete.emit(0, "startup")
     
     def check_api_connection(self):

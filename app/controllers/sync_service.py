@@ -71,7 +71,7 @@ class SyncWorker(QThread):
                         self._sync_requested = False
                         self._sync_type = None
                         self.mutex.unlock()
-        
+                        
                         # Signal completion with error
                         self.sync_service.last_sync_count = 0
                         self.sync_service.sync_all_complete.emit(0, self.context)
@@ -198,7 +198,7 @@ class SyncWorker(QThread):
                     if paused:
                         print("SYNC WORKER: Sync paused, stopping")
                         break
-                    
+                        
                     # Report progress
                     completed = idx
                     self.sync_progress.emit("logs", completed, total_count)
@@ -254,10 +254,19 @@ class SyncWorker(QThread):
                     )
                     
                     if success:
-                        # Mark as synced in local DB
+                        # Mark as synced in local DB regardless of the status field
+                        # This includes cases where the API returns a 'denied' status
+                        # as long as the HTTP response was successful (200 OK)
                         remote_id = response.get('id') if isinstance(response, dict) else None
+                        
+                        # Check if the response contains a denied status but still mark as synced
+                        if isinstance(response, dict) and response.get('status') == 'denied':
+                            print(f"SYNC WORKER: Log {log_id} was denied by server but marked as synced locally")
+                        else:
+                            print(f"SYNC WORKER: Successfully synced log {log_id}")
+                            
+                        # Mark as synced in both cases
                         self.db_manager.mark_log_synced(log_id)
-                        print(f"SYNC WORKER: Successfully synced log {log_id}")
                         synced_count += 1
                     else:
                         error_msg = response if response else "Unknown error"
@@ -266,7 +275,7 @@ class SyncWorker(QThread):
                         if "Connection" in str(error_msg) or "timeout" in str(error_msg).lower():
                             print("SYNC WORKER: API connection error, stopping sync")
                             break
-                            
+                    
                 except Exception as e:
                     print(f"SYNC WORKER: Error processing log: {str(e)}")
                     
@@ -593,7 +602,7 @@ class SyncService(QObject):
                 self.api_available = False
                 self.sync_all_complete.emit(0, "shutdown")
                 return
-                
+            
             # Check if we have a valid token before syncing
             print("DEBUG: Ensuring fresh token before shutdown sync")
             if not self._ensure_fresh_token():
@@ -619,7 +628,7 @@ class SyncService(QObject):
                 print("DEBUG: No valid logs to sync after filtering for shutdown")
                 self.sync_all_complete.emit(0, "shutdown")
                 return
-            
+                
             print(f"DEBUG: Beginning sync of {len(filtered_logs)} logs during shutdown")
             
             synced_count = 0
@@ -682,9 +691,18 @@ class SyncService(QObject):
                     )
                     
                     if success:
-                        # Mark as synced in local DB
+                        # Mark as synced in local DB regardless of the status field
+                        # This includes cases where the API returns a 'denied' status
+                        # as long as the HTTP response was successful (200 OK)
+                        
+                        # Check if the response contains a denied status but still mark as synced
+                        if isinstance(response, dict) and response.get('status') == 'denied':
+                            print(f"DEBUG: Log {log_id} was denied by server but marked as synced locally during shutdown")
+                        else:
+                            print(f"DEBUG: Successfully synced log {log_id} during shutdown")
+                        
+                        # Mark as synced in both cases
                         self.db_manager.mark_log_synced(log_id)
-                        print(f"DEBUG: Successfully synced log {log_id} during shutdown")
                         synced_count += 1
                     else:
                         error_msg = response if response else "Unknown error"
@@ -694,7 +712,7 @@ class SyncService(QObject):
                         if "Connection" in str(error_msg) or "timeout" in str(error_msg).lower():
                             print("DEBUG: API connection error during shutdown sync, stopping")
                             break
-                            
+                
                 except Exception as e:
                     print(f"DEBUG: Error processing log during shutdown: {str(e)}")
                     
@@ -727,7 +745,7 @@ class SyncService(QObject):
         if not self.api_available:
             print("Can't sync: API not available")
             return False
-        
+
         # Log timing for debugging
         current_time = time.time()
         time_since_last = current_time - self.last_sync_time
@@ -774,8 +792,8 @@ class SyncService(QObject):
             # Attempt login to get fresh token
             try:
                 success, message, _ = self.api_client.login(
-                        auth_manager.username,
-                        auth_manager.password,
+                    auth_manager.username,
+                    auth_manager.password,
                     timeout=(3.0, 5.0)
                 )
                 
@@ -844,4 +862,4 @@ class SyncService(QObject):
         try:
             self.stop()
         except Exception as e:
-            print(f"Error during sync service cleanup: {str(e)}") 
+            print(f"Error during sync service cleanup: {str(e)}")

@@ -209,7 +209,30 @@ class SyncWorker(QThread):
                     plate_id = log['plate_id']
                     entry_type = log['type']
                     timestamp = log['timestamp']
-                    formatted_time = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S.%f')
+                    
+                    # Handle timestamp properly - make sure we're dealing with a number
+                    try:
+                        # If timestamp is a string, convert it to float
+                        if isinstance(timestamp, str):
+                            # Try parsing as float first (timestamps stored as strings)
+                            try:
+                                timestamp = float(timestamp)
+                            except ValueError:
+                                # If not a float string, try parsing as a datetime
+                                try:
+                                    dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f")
+                                    timestamp = dt.timestamp()
+                                except ValueError:
+                                    # Try without microseconds
+                                    dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+                                    timestamp = dt.timestamp()
+                        
+                        # Now format it properly
+                        formatted_time = datetime.fromtimestamp(float(timestamp)).strftime('%Y-%m-%d %H:%M:%S.%f')
+                    except Exception as ts_err:
+                        print(f"DEBUG: Error formatting timestamp {timestamp}: {str(ts_err)}")
+                        # Use current time as fallback
+                        formatted_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
                     
                     # Get image if available
                     image_path = log.get('image_path')
@@ -340,8 +363,8 @@ class SyncService(QObject):
         self.api_check_timer.start(30000)  # Check every 30 seconds
         
         # Schedule an initial sync check after startup
-        print("Scheduling initial sync check")
-        QTimer.singleShot(5000, self._check_initial_sync)
+        print("Scheduling initial sync check with 15-second delay")
+        QTimer.singleShot(15000, self._check_initial_sync)  # Increased from 5000ms to 15000ms
     
     def _check_initial_sync(self):
         """Perform initial sync after app startup"""
@@ -349,8 +372,10 @@ class SyncService(QObject):
         
         # Only proceed if API is available
         if not self.api_available:
-            print("API not available, skipping initial sync")
-            self.sync_all_complete.emit(0, "startup")
+            print("API not available for initial sync, scheduling retry in 10 seconds")
+            # Schedule a retry in 10 seconds
+            QTimer.singleShot(10000, self._check_initial_sync)
+            # Don't emit completion signal yet as we'll retry
             return
             
         # Get pending counts
@@ -649,7 +674,30 @@ class SyncService(QObject):
                     plate_id = log['plate_id']
                     entry_type = log['type']
                     timestamp = log['timestamp']
-                    formatted_time = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S.%f')
+                    
+                    # Handle timestamp properly - make sure we're dealing with a number
+                    try:
+                        # If timestamp is a string, convert it to float
+                        if isinstance(timestamp, str):
+                            # Try parsing as float first (timestamps stored as strings)
+                            try:
+                                timestamp = float(timestamp)
+                            except ValueError:
+                                # If not a float string, try parsing as a datetime
+                                try:
+                                    dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f")
+                                    timestamp = dt.timestamp()
+                                except ValueError:
+                                    # Try without microseconds
+                                    dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+                                    timestamp = dt.timestamp()
+                        
+                        # Now format it properly
+                        formatted_time = datetime.fromtimestamp(float(timestamp)).strftime('%Y-%m-%d %H:%M:%S.%f')
+                    except Exception as ts_err:
+                        print(f"DEBUG: Error formatting timestamp {timestamp}: {str(ts_err)}")
+                        # Use current time as fallback
+                        formatted_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
                     
                     # Get image if available
                     image_path = log.get('image_path')

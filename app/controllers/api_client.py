@@ -2,10 +2,12 @@ import time
 import requests
 from io import BytesIO
 import cv2
-from PyQt5.QtCore import pyqtSignal, QObject, QThread, QMutex, QThreadPool, QRunnable, pyqtSlot
+from PyQt5.QtCore import pyqtSignal, QObject, QThread, QMutex, QThreadPool, QRunnable, pyqtSlot, QMetaObject
+from PyQt5.QtWidgets import QApplication
 from config import PLATE_RECOGNIZER_API_KEY, PLATE_RECOGNIZER_URL, OCR_RATE_LIMIT, API_BASE_URL
 import json
 from app.utils.auth_manager import AuthManager
+from PyQt5.QtCore import Qt
 
 class PlateRecognizer(QObject):
     error_signal = pyqtSignal(str)
@@ -128,6 +130,36 @@ class ApiWorker(QRunnable):
             self.signals.finished.emit(True, result)
         except Exception as e:
             self.signals.finished.emit(False, str(e))
+
+class RefreshWorker(QRunnable):
+    def __init__(self, api_client, callback):
+        super().__init__()
+        self.api_client = api_client
+        self.callback = callback
+        # Results to be returned to main thread
+        self.success = False
+        self.result_message = ""
+        
+    def run(self):
+        try:
+            # First clear any cached headers to ensure fresh values
+            self.api_client._cached_headers = {}
+            
+            # Direct call to refresh token - this may block but it's in a separate thread
+            self.success = self.api_client._refresh_token()
+            self.result_message = "Token refresh completed"
+            
+            # Use QMetaObject.invokeMethod instead of a timer to call back on main thread
+            QMetaObject.invokeMethod(QApplication.instance(), 
+                                    lambda: self.callback(self.success, self.result_message),
+                                    Qt.QueuedConnection)
+        except Exception as e:
+            self.success = False
+            self.result_message = str(e)
+            # Schedule error callback on main thread
+            QMetaObject.invokeMethod(QApplication.instance(),
+                                    lambda: self.callback(self.success, self.result_message),
+                                    Qt.QueuedConnection)
 
 class ApiClient(QObject):
     """

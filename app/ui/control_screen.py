@@ -7,7 +7,7 @@ import threading
 from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE_PATTERN, API_BASE_URL, LOT_ID
 from app.controllers.lane_controller import LaneWorker, LaneState
 import cv2
-from app.controllers.api_client import ApiClient
+from app.controllers.api_client import ApiClient, RefreshWorker
 from PyQt5.QtWidgets import QApplication
 from datetime import datetime
 from app.utils.db_manager import DBManager
@@ -1385,34 +1385,37 @@ class ControlScreen(QWidget):
                             # Only if we previously thought it was unavailable, check auth
                             print("API server is reachable, checking authentication...")
                             
-                            # Check authentication with a lightweight request using a local callback
+                            # Define authentication check callback
                             def handle_auth_check(auth_success, auth_result):
-                                if auth_success:
-                                    # Auth is valid, update status
-                                    self.api_available = True
-                                    self.api_retry_count = 0
-                                    self._update_api_status(True)
-                                    print("Authentication is valid, API marked as available")
-                                    # Try to update occupancy after regaining connectivity
-                                    self._update_occupancy()
-                                else:
-                                    # Auth failed but server is up - don't auto-reconnect
-                                    # This requires manual intervention as it might be a token expiry
-                                    print("Authentication check failed despite server being available")
-                                    if not self.api_reconnect_button.isVisible():
-                                        self.api_available = False
-                                        self._update_api_status(False)
+                                try:
+                                    if auth_success:
+                                        # Auth is valid, update status
+                                        self.api_available = True
+                                        self.api_retry_count = 0
+                                        self._update_api_status(True)
+                                        print("Authentication is valid, API marked as available")
+                                        # Try to update occupancy after regaining connectivity
+                                        self._update_occupancy()
+                                    else:
+                                        # Auth failed but server is up - don't auto-reconnect
+                                        # This requires manual intervention as it might be a token expiry
+                                        print("Authentication check failed despite server being available")
+                                        if not self.api_reconnect_button.isVisible():
+                                            self.api_available = False
+                                            self._update_api_status(False)
+                                except Exception as e:
+                                    print(f"Error in auth check callback: {str(e)}")
                         
-                            # Use async API call for auth check
-                            self._perform_async_api_call(
-                                "auth_check",
-                                lambda: self.api_client.get(
-                                    'vehicles/blacklisted/', 
-                                    params={'skip': 0, 'limit': 1},
-                                    timeout=api_check_timeout
-                                ),
-                                callback=handle_auth_check
-                            )
+                        # Use async API call for auth check
+                        self._perform_async_api_call(
+                            "auth_check",
+                            lambda: self.api_client.get(
+                                'vehicles/blacklisted/', 
+                                params={'skip': 0, 'limit': 1},
+                                timeout=api_check_timeout
+                            ),
+                            handle_auth_check
+                        )
                     else:
                         # Server not reachable
                         self.consecutive_failures += 1
@@ -1577,44 +1580,8 @@ class ControlScreen(QWidget):
                 self.api_reconnect_button.setText("Reconnect")
                 self.api_reconnect_button.setEnabled(True)
         
-        # Instead of directly calling api_client._refresh_token which may block,
-        # we'll create a custom worker that safely handles the token refresh
-        class RefreshWorker(QRunnable):
-            def __init__(self, api_client, callback):
-                super().__init__()
-                self.api_client = api_client
-                self.callback = callback
-                # Create a QTimer that will execute on the main thread
-                self.timer = QTimer()
-                self.timer.setSingleShot(True)
-                self.timer.timeout.connect(self._execute_callback)
-                # Store main thread results
-                self.success = False
-                self.result_message = ""
-                
-            def run(self):
-                try:
-                    # First clear any cached headers to ensure fresh values
-                    self.api_client._cached_headers = {}
-                    
-                    # Direct call to refresh token - this may block but it's in a separate thread
-                    self.success = self.api_client._refresh_token()
-                    self.result_message = "Token refresh completed"
-                    
-                    # Schedule callback on main thread using a timer
-                    # This is safer than QMetaObject.invokeMethod
-                    self.timer.start(0)  # Execute as soon as possible on main thread
-                except Exception as e:
-                    self.success = False
-                    self.result_message = str(e)
-                    # Schedule error callback on main thread
-                    self.timer.start(0)
-            
-            def _execute_callback(self):
-                try:
-                    self.callback(self.success, self.result_message)
-                except Exception as e:
-                    print(f"Error in refresh callback: {str(e)}")
+        # Use the RefreshWorker class from api_client.py
+        from app.controllers.api_client import RefreshWorker
         
         # Create and start the worker
         worker = RefreshWorker(self.api_client, handle_refresh_result)
@@ -2038,7 +2005,7 @@ class ControlScreen(QWidget):
         self.status_label.setText("Blacklist refreshed")
         QTimer.singleShot(3000, lambda: self.status_label.setText(""))
 
-    def _perform_async_api_call(self, operation_type, api_func, *args, **kwargs):
+    def _perform_async_api_call(self, operation_type, api_func, callback=None):
         """Perform API call in a non-blocking way with visual feedback"""
         # Create operation ID
         operation_id = f"{operation_type}_{time.time()}"
@@ -2051,19 +2018,18 @@ class ControlScreen(QWidget):
             finished = pyqtSignal(str, bool, object)
             api_status_changed = pyqtSignal(bool)
             
-            def __init__(self, op_id, func, args, kwargs, parent=None):
+            def __init__(self, op_id, func, callback, parent=None):
                 super().__init__()
                 self.op_id = op_id
                 self.func = func
-                self.args = args
-                self.kwargs = kwargs
+                self.callback = callback
                 self._running = True
                 self._parent = parent
                 
             def run(self):
                 try:
                     if self._running and not self.isInterruptionRequested():
-                        result = self.func(*self.args, **self.kwargs)
+                        result = self.func()
                         if self._running and not self.isInterruptionRequested():
                             # Check for backend API call errors
                             if isinstance(result, tuple) and len(result) >= 2 and result[0] is False:
@@ -2108,7 +2074,7 @@ class ControlScreen(QWidget):
                 self.requestInterruption()
         
         # Create and start worker
-        worker = ApiWorker(operation_id, api_func, args, kwargs, self)
+        worker = ApiWorker(operation_id, api_func, callback, self)
         
         # Store reference to prevent garbage collection - do this before connecting signal
         if not hasattr(self, '_api_workers'):
@@ -2129,7 +2095,7 @@ class ControlScreen(QWidget):
         
         # Connect signal after thread is stored and before starting
         worker.finished.connect(lambda op_id, success, result: 
-                               self._handle_async_result(op_id, success, result))
+                               self._handle_async_result(op_id, success, result, worker.callback))
         
         # Add worker cleanup when finished
         worker.finished.connect(lambda op_id, success, result: 
@@ -2167,13 +2133,27 @@ class ControlScreen(QWidget):
         except Exception as e:
             print(f"Error cleaning up API worker {worker_id}: {str(e)}")
 
-    def _handle_async_result(self, operation_id, success, result):
+    def _handle_async_result(self, operation_id, success, result, callback=None):
         """Handle the result from an async API call"""
         # Extract operation type from ID
         operation_type = operation_id.split('_')[0]
         
         # Hide loading indicator
         self._safe_update_ui(lambda: self._show_loading_indicator(operation_type, False))
+        
+        # If a custom callback was provided, call it with the result
+        if callback is not None:
+            try:
+                if isinstance(result, tuple) and len(result) >= 2:
+                    # API calls typically return (success_bool, data) tuple
+                    callback(result[0], result[1])
+                else:
+                    # For other results, pass through the success flag and result
+                    callback(success, result)
+                # If callback was executed, we're done - don't process further
+                return
+            except Exception as e:
+                print(f"Error executing callback for {operation_type}: {str(e)}")
         
         # Process result based on operation type
         try:

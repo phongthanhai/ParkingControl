@@ -174,15 +174,25 @@ class PlateRecognizerWorker(QThread):
                 # Debug the response structure
                 print(f"PlateRecognizer API response: {results}")
                 
+                # Extract plate information from the response structure
                 if results.get('results') and len(results['results']) > 0:
+                    # Get the first license plate result
                     plate_data = results['results'][0]
-                    if 'plate' in plate_data and 'score' in plate_data:
-                        self.result_signal.emit((plate_data['plate'], plate_data['score']))
+                    
+                    if 'plate' in plate_data:
+                        plate_text = plate_data['plate']
+                        # Use score as confidence (between 0 and 1)
+                        confidence = plate_data.get('score', 0.0)
+                        
+                        print(f"Successfully extracted plate: {plate_text}, confidence: {confidence}")
+                        self.result_signal.emit((plate_text, confidence))
                         return
                     else:
-                        print(f"Missing expected keys in response: {plate_data.keys()}")
+                        print(f"Missing 'plate' key in response: {plate_data.keys()}")
                 else:
-                    print("No results found in API response")
+                    print("No plate results found in API response")
+            else:
+                print(f"Unexpected status code: {response.status_code}")
             
             # If we get here, there was no valid result
             self.result_signal.emit((None, None))

@@ -868,10 +868,7 @@ class SyncService(QObject):
             loop = QEventLoop()
             refresh_result = [False]  # Use a list for mutable reference
             
-            # Create refresh worker
-            worker = RefreshWorker(self.api_client)
-            
-            # Connect signal to handle result and quit event loop
+            # Define refresh result handler
             def handle_refresh_result(success, message):
                 refresh_result[0] = success
                 if success:
@@ -880,8 +877,8 @@ class SyncService(QObject):
                     print(f"Token refresh failed: {message}")
                 loop.quit()
             
-            # Connect signal to handler
-            worker.signals.finished.connect(handle_refresh_result)
+            # Create refresh worker with callback
+            worker = RefreshWorker(self.api_client, handle_refresh_result)
             
             # Start worker and wait for completion with timeout
             from PyQt5.QtCore import QThreadPool

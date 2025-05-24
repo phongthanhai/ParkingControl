@@ -58,6 +58,11 @@ class LaneWorker(QThread):
         
         # Store last detection data for manual verification
         self.last_detection_data = None
+        
+        # Store current processing frame for async API callbacks
+        self.current_processing_frame = None
+        self.current_display_frame = None
+        self.current_plate_img = None
     
     def run(self):
         self._initialize_resources()
@@ -71,6 +76,9 @@ class LaneWorker(QThread):
             self.recognizer.error_signal.connect(
                 lambda msg: self.error_signal.emit(self.lane_type, f"API Error: {msg}")
             )
+            
+            # Connect to the result signal to handle asynchronous results
+            self.recognizer.result_signal.connect(self._handle_recognition_result)
             
             self._init_camera()
         except Exception as e:
@@ -221,22 +229,57 @@ class LaneWorker(QThread):
             # Detection
             display_frame, plate_img = self.detector.detect(frame)
             
+            # Store frames for async processing
+            self.current_processing_frame = frame
+            self.current_display_frame = display_frame
+            self.current_plate_img = plate_img
+            
             # OCR processing with rate limiting
-            plate_text, confidence = None, 0.0
             api_timeout = False
             
             if plate_img is not None and (time.time() - self.last_api_call) > OCR_RATE_LIMIT:
                 try:
-                    result = self.recognizer.process(plate_img)
-                    if result is not None:
-                        plate_text, confidence = result
-                        self.last_api_call = time.time()
-                    else:
-                        # API timeout or rate limit with the PlateRecognizer external API
-                        api_timeout = True
+                    # Call process which will return None but trigger an async operation
+                    # The result will come back via self._handle_recognition_result
+                    self.recognizer.process(plate_img)
+                    self.last_api_call = time.time()
+                    
+                    # Show "Scanning..." while waiting for OCR result
+                    self.detection_signal.emit(
+                        self.lane_type,
+                        display_frame,
+                        "Scanning...",
+                        0.0,
+                        False
+                    )
+                    
                 except Exception as e:
                     api_timeout = True
                     self.error_signal.emit(self.lane_type, f"PlateRecognizer API Error: {str(e)}")
+            else:
+                # If we don't send to OCR, still update the display
+                self.detection_signal.emit(
+                    self.lane_type,
+                    display_frame,
+                    "Scanning...",
+                    0.0,
+                    False
+                )
+                
+        except Exception as e:
+            self.error_signal.emit(self.lane_type, f"Processing Error: {str(e)}")
+            
+    def _handle_recognition_result(self, result):
+        """Handle the asynchronous result from PlateRecognizer"""
+        try:
+            plate_text, confidence = result
+            
+            # Make sure we have the frames we were processing
+            if self.current_display_frame is None or self.current_plate_img is None:
+                return
+                
+            display_frame = self.current_display_frame
+            plate_img = self.current_plate_img
             
             # Ensure we have valid data types for signal
             plate_text = plate_text if plate_text is not None else "Scanning..."
@@ -267,16 +310,16 @@ class LaneWorker(QThread):
                     "is_valid": is_valid
                 }
                 
-                # Case 1: API timeout
-                if api_timeout:
+                # Case 1: Not valid text (API timeout or failed recognition)
+                if plate_text is None or plate_text == "Scanning...":
                     self._pause_processing()
                     self.status_signal.emit(
                         self.lane_type,
                         "requires_manual",
-                        {"reason": "API timeout", "image": display_frame, "text": plate_text if plate_text != "Scanning..." else ""}
+                        {"reason": "API timeout", "image": display_frame, "text": ""}
                     )
                 # Case 2: Successfully detected plate but confidence too low
-                elif plate_text and plate_text != "Scanning..." and confidence < 0.9:
+                elif plate_text and confidence < 0.9:
                     self._pause_processing()
                     self.status_signal.emit(
                         self.lane_type,
@@ -284,7 +327,7 @@ class LaneWorker(QThread):
                         {"reason": "low confidence", "text": plate_text, "confidence": confidence, "image": display_frame}
                     )
                 # Case 3: Successfully detected plate but doesn't match regex
-                elif plate_text and plate_text != "Scanning..." and not is_valid:
+                elif plate_text and not is_valid:
                     self._pause_processing()
                     self.status_signal.emit(
                         self.lane_type,
@@ -299,9 +342,9 @@ class LaneWorker(QThread):
                         "success",
                         {"text": plate_text, "confidence": confidence, "image": display_frame}
                     )
-                
+            
         except Exception as e:
-            self.error_signal.emit(self.lane_type, f"Processing Error: {str(e)}")
+            self.error_signal.emit(self.lane_type, f"Recognition Result Error: {str(e)}")
     
     def _pause_processing(self):
         self.mutex.lock()
@@ -324,6 +367,8 @@ class LaneWorker(QThread):
         
         # Clear last detection data
         self.last_detection_data = None
+        self.current_plate_img = None
+        self.current_display_frame = None
         
         self.mutex.lock()
         self._paused = False

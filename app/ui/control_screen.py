@@ -1341,23 +1341,30 @@ class ControlScreen(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-    def _check_api_health(self):
+    def _check_api_health(self, force=False):
         """
         Unified health check method with debounce mechanism to prevent false status changes
+        
+        Args:
+            force (bool): If True, bypass the rate limiting check
         """
         try:
             # Implement rate limiting to reduce excessive checks
             current_time = time.time()
             time_since_last_check = current_time - self.last_api_check_time
             
-            # Must wait at least 3 seconds between checks
-            if time_since_last_check < 3:
+            # Must wait at least 3 seconds between checks, unless forced
+            if not force and time_since_last_check < 3:
                 return
                 
+            # Always update the last check time
             self.last_api_check_time = current_time
             
-            # Simple health check timeouts
-            health_check_timeout = (2.0, 3.0)
+            # Simple health check timeouts - use shorter timeouts for forced checks
+            if force:
+                health_check_timeout = (1.5, 2.0)  # Faster timeout for forced checks
+            else:
+                health_check_timeout = (2.0, 3.0)  # Normal timeouts for regular checks
             
             # Use the asynchronous health check method
             self.api_client.check_health_async(
@@ -1378,9 +1385,13 @@ class ControlScreen(QWidget):
             if success:
                 # Server is reachable
                 self.last_successful_connection = current_time
-                self.consecutive_failures = 0
                 
+                # Fast recovery - if we get a successful health check while in offline state,
+                # we want to recover quickly without waiting for multiple consecutive checks
                 if not self.api_available:
+                    # Reset consecutive failures immediately to allow quick recovery
+                    self.consecutive_failures = 0
+                    
                     # Detected a transition from offline to online
                     print("API server is reachable, checking authentication...")
                     
@@ -1407,6 +1418,9 @@ class ControlScreen(QWidget):
                         # Authentication failed, try to refresh token
                         print("Authentication failed despite server being reachable")
                         self._attempt_token_refresh((3.0, 5.0))
+                else:
+                    # Just a regular successful check while already online
+                    self.consecutive_failures = 0
             else:
                 # Server not reachable
                 self.consecutive_failures += 1
@@ -1508,10 +1522,7 @@ class ControlScreen(QWidget):
                     print(f"Login failed: {login_msg}")
                     # Show error message to user
                     QMessageBox.warning(self, "Authentication Error", 
-                                       f"Could not reconnect: {login_msg}\nYou may need to restart the application.")
-                    # Reset button
-                    self.api_reconnect_button.setText("Reconnect")
-                    self.api_reconnect_button.setEnabled(True)
+                                       f"Authentication failed: {login_msg}\nYou may need to restart the application.")
             
             # Perform login asynchronously
             self._perform_async_api_call(
@@ -1521,15 +1532,12 @@ class ControlScreen(QWidget):
                     auth_manager.password,
                     timeout=timeout
                 ),
-                callback=handle_login_result
+                handle_login_result
             )
         else:
             print("No stored credentials for authentication")
             QMessageBox.warning(self, "Connection Error", 
                                "Session expired. Please restart the application to log in again.")
-            # Reset button
-            self.api_reconnect_button.setText("Reconnect")
-            self.api_reconnect_button.setEnabled(True)
 
     def _update_occupancy(self):
         """Update the occupancy display with data from API asynchronously"""
@@ -2046,6 +2054,15 @@ class ControlScreen(QWidget):
                 return
             except Exception as e:
                 print(f"Error executing callback for {operation_type}: {str(e)}")
+        
+        # For non-health check operations, detect connection failures and trigger immediate health check
+        if operation_type != "health" and not success:
+            # Check if this is a connection failure
+            if isinstance(result, str) and any(msg in result.lower() for msg in ["connection", "timeout", "failed"]):
+                # This looks like a connection failure - trigger immediate health check
+                print(f"Detected possible connection failure: {result}")
+                # Use a very short delay to avoid race conditions but still be responsive
+                QTimer.singleShot(100, lambda: self._check_api_health(force=True))
         
         # Process result based on operation type
         try:

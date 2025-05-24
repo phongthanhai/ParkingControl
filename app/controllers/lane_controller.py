@@ -227,12 +227,13 @@ class LaneWorker(QThread):
             
             if plate_img is not None and (time.time() - self.last_api_call) > OCR_RATE_LIMIT:
                 try:
+                    # Call the synchronous PlateRecognizer process method
                     result = self.recognizer.process(plate_img)
                     if result is not None:
                         plate_text, confidence = result
                         self.last_api_call = time.time()
                     else:
-                        # API timeout or rate limit with the PlateRecognizer external API
+                        # API timeout, rate limit or error with the PlateRecognizer API
                         api_timeout = True
                 except Exception as e:
                     api_timeout = True

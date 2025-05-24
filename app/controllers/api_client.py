@@ -21,9 +21,6 @@ class PlateRecognizer(QObject):
         # Add rate limiting lock
         self.rate_limit_mutex = QMutex()
         
-        # Keep track of workers
-        self._active_workers = []
-        
         # Add a flag to indicate destruction
         self._shutting_down = False
 
@@ -36,7 +33,7 @@ class PlateRecognizer(QObject):
             timeout (float or tuple): Connection and read timeout in seconds
         """
         try:
-            # Don't start new workers if shutting down
+            # Don't process if shutting down
             if self._shutting_down:
                 print("PlateRecognizer is shutting down, rejecting new process request")
                 return None
@@ -52,143 +49,63 @@ class PlateRecognizer(QObject):
             finally:
                 self.rate_limit_mutex.unlock()
             
-            # Start worker thread for API call
-            worker = PlateRecognizerWorker(image, timeout or (self.connect_timeout, self.read_timeout))
-            worker.error_signal.connect(self.error_signal)
-            worker.result_signal.connect(self._handle_result)
-            worker.finished.connect(lambda: self._cleanup_worker(worker))
+            # Convert image to bytes
+            _, img_encoded = cv2.imencode('.jpg', image)
+            img_bytes = BytesIO(img_encoded.tobytes())
             
-            # Track worker to prevent garbage collection
-            self._active_workers.append(worker)
-            
-            # Clean up completed workers
-            self._cleanup_workers()
-            
-            # Start worker
-            worker.start()
-            
-            # Return None immediately - results will come via signal
-            return None
+            # Make synchronous API request with timeout
+            try:
+                response = requests.post(
+                    PLATE_RECOGNIZER_URL,
+                    files={'upload': img_bytes},
+                    headers={'Authorization': f'Token {PLATE_RECOGNIZER_API_KEY}'},
+                    timeout=timeout or (self.connect_timeout, self.read_timeout)
+                )
+                
+                if response.status_code == 429:
+                    self.error_signal.emit("API rate limit exceeded")
+                    return None
+                    
+                if response.status_code == 201:
+                    results = response.json()
+                    if results['results']:
+                        plate_data = results['results'][0]
+                        result = (plate_data['plate'], plate_data['score'])
+                        # Also emit the result signal for any listeners
+                        self.result_signal.emit(result)
+                        return result
+                
+                # If we get here, there was no valid result
+                self.result_signal.emit((None, None))
+                return None
+                
+            except requests.exceptions.ConnectTimeout:
+                self.error_signal.emit("Connection timeout to plate recognition API")
+                self.result_signal.emit((None, None))
+                return None
+            except requests.exceptions.ReadTimeout:
+                self.error_signal.emit("Read timeout from plate recognition API")
+                self.result_signal.emit((None, None))
+                return None
+            except requests.exceptions.RequestException as e:
+                self.error_signal.emit(f"Connection error: {str(e)}")
+                self.result_signal.emit((None, None))
+                return None
                 
         except Exception as e:
             self.error_signal.emit(f"PlateRecognizer thread error: {str(e)}")
+            self.result_signal.emit((None, None))
             return None
-    
-    def _handle_result(self, result):
-        """Handle result from worker thread"""
-        # Forward to any listeners
-        self.result_signal.emit(result)
-    
-    def _cleanup_worker(self, worker):
-        """Remove a specific worker when it's finished"""
-        if worker in self._active_workers:
-            self._active_workers.remove(worker)
-    
-    def _cleanup_workers(self):
-        """Remove completed workers"""
-        self._active_workers = [w for w in self._active_workers if w.isRunning()]
-    
-    def stop_all_workers(self):
-        """Stop all running workers with proper cleanup"""
-        self._shutting_down = True
-        
-        # Make a copy of the list to avoid modification during iteration
-        workers = self._active_workers.copy()
-        for worker in workers:
-            try:
-                if worker.isRunning():
-                    worker.requestInterruption()  # Signal the thread to stop
-                    if not worker.wait(300):  # Wait up to 300ms
-                        print("Worker thread could not be terminated gracefully")
-                        worker.terminate()  # Force termination as last resort
-                        worker.wait(100)  # Give it a chance to terminate
-            except Exception as e:
-                print(f"Error stopping worker thread: {str(e)}")
-        
-        # Clear the list
-        self._active_workers.clear()
     
     def __del__(self):
         """Clean up properly when object is destroyed"""
         try:
-            # Set the shutdown flag first to prevent new workers from starting
+            # Set the shutdown flag first to prevent new processing
             self._shutting_down = True
-            
-            # Explicitly stop all workers with proper cleanup
-            if hasattr(self, '_active_workers') and self._active_workers:
-                self.stop_all_workers()
-                
-            # Clear any circular references that might prevent garbage collection
-            if hasattr(self, '_active_workers'):
-                self._active_workers.clear()
                 
         except Exception as e:
             print(f"Error cleaning up PlateRecognizer: {str(e)}")
 
-class PlateRecognizerWorker(QThread):
-    """Worker thread for making plate recognition API calls"""
-    error_signal = pyqtSignal(str)
-    result_signal = pyqtSignal(tuple)  # (plate_text, confidence) or (None, None)
-    
-    def __init__(self, image, timeout):
-        super().__init__()
-        self.image = image
-        self.timeout = timeout
-    
-    def run(self):
-        try:
-            # Check for interruption request
-            if self.isInterruptionRequested():
-                return
-                
-            # Convert image to bytes
-            _, img_encoded = cv2.imencode('.jpg', self.image)
-            img_bytes = BytesIO(img_encoded.tobytes())
-            
-            # Check for interruption again before network call
-            if self.isInterruptionRequested():
-                return
-                
-            # Make API request with timeout
-            response = requests.post(
-                PLATE_RECOGNIZER_URL,
-                files={'upload': img_bytes},
-                headers={'Authorization': f'Token {PLATE_RECOGNIZER_API_KEY}'},
-                timeout=self.timeout
-            )
-            
-            # Check for interruption after network call
-            if self.isInterruptionRequested():
-                return
-                
-            if response.status_code == 429:
-                self.error_signal.emit("API rate limit exceeded")
-                self.result_signal.emit((None, None))
-                return
-                
-            if response.status_code == 201:
-                results = response.json()
-                if results['results']:
-                    plate_data = results['results'][0]
-                    self.result_signal.emit((plate_data['plate'], plate_data['score']))
-                    return
-            
-            # If we get here, there was no valid result
-            self.result_signal.emit((None, None))
-                    
-        except requests.exceptions.ConnectTimeout:
-            self.error_signal.emit("Connection timeout to plate recognition API")
-            self.result_signal.emit((None, None))
-        except requests.exceptions.ReadTimeout:
-            self.error_signal.emit("Read timeout from plate recognition API")
-            self.result_signal.emit((None, None))
-        except requests.exceptions.RequestException as e:
-            self.error_signal.emit(f"Connection error: {str(e)}")
-            self.result_signal.emit((None, None))
-        except Exception as e:
-            self.error_signal.emit(f"Processing error: {str(e)}")
-            self.result_signal.emit((None, None))
-    
 # Add a new ApiWorker class for threaded API operations
 class ApiWorker(QRunnable):
     """Worker for executing API calls in a separate thread"""

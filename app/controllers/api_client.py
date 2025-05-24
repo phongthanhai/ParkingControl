@@ -132,34 +132,49 @@ class ApiWorker(QRunnable):
             self.signals.finished.emit(False, str(e))
 
 class RefreshWorker(QRunnable):
-    def __init__(self, api_client, callback):
+    """Worker for refreshing authentication token in a separate thread"""
+    
+    class Signals(QObject):
+        finished = pyqtSignal(bool, str)  # success, message
+    
+    def __init__(self, api_client, callback=None):
         super().__init__()
         self.api_client = api_client
         self.callback = callback
-        # Results to be returned to main thread
-        self.success = False
-        self.result_message = ""
+        self.signals = self.Signals()
+        if callback:
+            self.signals.finished.connect(callback)
+        self.setAutoDelete(True)
         
     def run(self):
         try:
             # First clear any cached headers to ensure fresh values
             self.api_client._cached_headers = {}
             
-            # Direct call to refresh token - this may block but it's in a separate thread
-            self.success = self.api_client._refresh_token()
-            self.result_message = "Token refresh completed"
+            # Check if refresh is already in progress
+            if ApiClient._refresh_in_progress:
+                print("Token refresh already in progress, skipping duplicate refresh")
+                self.signals.finished.emit(False, "Token refresh already in progress")
+                return
+                
+            # Add a timeout to prevent infinite blocking
+            timeout = 10  # 10 second timeout
+            start_time = time.time()
             
-            # Use QMetaObject.invokeMethod instead of a timer to call back on main thread
-            QMetaObject.invokeMethod(QApplication.instance(), 
-                                    lambda: self.callback(self.success, self.result_message),
-                                    Qt.QueuedConnection)
+            # Direct call to refresh token - this may block but it's in a separate thread
+            success = self.api_client._refresh_token()
+            result_message = "Token refresh completed"
+            
+            # Check if we've exceeded the timeout
+            if time.time() - start_time > timeout:
+                print(f"Token refresh took too long ({time.time() - start_time:.1f}s), but completed with success={success}")
+            
+            # Emit signal for thread-safe callback
+            self.signals.finished.emit(success, result_message)
+            
         except Exception as e:
-            self.success = False
-            self.result_message = str(e)
-            # Schedule error callback on main thread
-            QMetaObject.invokeMethod(QApplication.instance(),
-                                    lambda: self.callback(self.success, self.result_message),
-                                    Qt.QueuedConnection)
+            # Emit signal with error
+            self.signals.finished.emit(False, str(e))
 
 class ApiClient(QObject):
     """

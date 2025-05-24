@@ -1488,10 +1488,8 @@ class ControlScreen(QWidget):
             except Exception as e:
                 print(f"Error handling refresh result: {str(e)}")
         
-        # Create a refresh worker with signals
-        worker = RefreshWorker(self.api_client)
-        # Connect the finished signal to our handler
-        worker.signals.finished.connect(handle_refresh_result)
+        # Create a refresh worker with callback
+        worker = RefreshWorker(self.api_client, handle_refresh_result)
         
         # Start the worker in the thread pool
         QThreadPool.globalInstance().start(worker)

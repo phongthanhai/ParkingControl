@@ -856,14 +856,49 @@ class SyncService(QObject):
             
         print("Pre-sync token refresh check")
         
-        token_refreshed = False
-        
         # First try to use refresh token if available
         if auth_manager.has_refresh_token():
             print("Using refresh token for pre-sync token refresh")
-            token_refreshed = self.api_client._refresh_token()
+            
+            # Instead of directly calling _refresh_token, use the updated RefreshWorker class
+            from app.controllers.api_client import RefreshWorker
+            from PyQt5.QtCore import QEventLoop, QTimer
+            
+            # Create event loop for synchronous operation
+            loop = QEventLoop()
+            refresh_result = [False]  # Use a list for mutable reference
+            
+            # Create refresh worker
+            worker = RefreshWorker(self.api_client)
+            
+            # Connect signal to handle result and quit event loop
+            def handle_refresh_result(success, message):
+                refresh_result[0] = success
+                if success:
+                    print("Token refreshed successfully using refresh token before sync")
+                else:
+                    print(f"Token refresh failed: {message}")
+                loop.quit()
+            
+            # Connect signal to handler
+            worker.signals.finished.connect(handle_refresh_result)
+            
+            # Start worker and wait for completion with timeout
+            from PyQt5.QtCore import QThreadPool
+            QThreadPool.globalInstance().start(worker)
+            
+            # Use a timer to prevent infinite blocking
+            timeout_timer = QTimer()
+            timeout_timer.setSingleShot(True)
+            timeout_timer.timeout.connect(loop.quit)
+            timeout_timer.start(5000)  # 5 second timeout
+            
+            # Wait for either completion signal or timeout
+            loop.exec_()
+            
+            # Update state based on result
+            token_refreshed = refresh_result[0]
             if token_refreshed:
-                print("Token refreshed successfully using refresh token before sync")
                 self.last_token_refresh_time = current_time
                 # Set API as available when refresh succeeds
                 self.api_available = True

@@ -166,12 +166,23 @@ class PlateRecognizerWorker(QThread):
                 self.result_signal.emit((None, None))
                 return
                 
-            if response.status_code == 201:
+            # Debug response
+            print(f"PlateRecognizer API response status: {response.status_code}")
+                
+            if response.status_code in [200, 201]:  # Accept both 200 and 201 as success
                 results = response.json()
-                if results['results']:
+                # Debug the response structure
+                print(f"PlateRecognizer API response: {results}")
+                
+                if results.get('results') and len(results['results']) > 0:
                     plate_data = results['results'][0]
-                    self.result_signal.emit((plate_data['plate'], plate_data['score']))
-                    return
+                    if 'plate' in plate_data and 'score' in plate_data:
+                        self.result_signal.emit((plate_data['plate'], plate_data['score']))
+                        return
+                    else:
+                        print(f"Missing expected keys in response: {plate_data.keys()}")
+                else:
+                    print("No results found in API response")
             
             # If we get here, there was no valid result
             self.result_signal.emit((None, None))

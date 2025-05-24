@@ -1403,7 +1403,7 @@ class ControlScreen(QWidget):
                                         self.api_available = False
                                         self._update_api_status(False)
                         
-                            # Use async API call for auth check
+                            # Use async API call for auth check - don't pass callback in lambda
                             self._perform_async_api_call(
                                 "auth_check",
                                 lambda: self.api_client.get(
@@ -1411,7 +1411,8 @@ class ControlScreen(QWidget):
                                     params={'skip': 0, 'limit': 1},
                                     timeout=api_check_timeout
                                 ),
-                                callback=handle_auth_check
+                                # Pass the callback as a separate parameter
+                                handle_auth_check
                             )
                     else:
                         # Server not reachable
@@ -1510,7 +1511,8 @@ class ControlScreen(QWidget):
                             timeout=api_check_timeout,
                             retry_on_auth_fail=False
                         ),
-                        callback=handle_auth_check
+                        # Pass callback separately instead of as a keyword arg in the lambda
+                        handle_auth_check
                     )
                 else:
                     self.api_available = False
@@ -1557,11 +1559,12 @@ class ControlScreen(QWidget):
                         return
                     
                     # Default behavior - update data after reconnection
-                    QTimer.singleShot(500, self._update_occupancy)
-                    QTimer.singleShot(1000, self._fetch_logs)
-                    self.api_reconnect_button.setText("Reconnect")
-                    self.api_reconnect_button.setEnabled(True)
-                    self.api_reconnect_button.setVisible(False)
+                    # Use ui_update_signal to safely schedule timers from background threads
+                    self._safe_update_ui(lambda: QTimer.singleShot(500, self._update_occupancy))
+                    self._safe_update_ui(lambda: QTimer.singleShot(1000, self._fetch_logs))
+                    self._safe_update_ui(lambda: self.api_reconnect_button.setText("Reconnect"))
+                    self._safe_update_ui(lambda: self.api_reconnect_button.setEnabled(True))
+                    self._safe_update_ui(lambda: self.api_reconnect_button.setVisible(False))
                 else:
                     print(f"Token refresh failed: {refresh_result}")
                     
@@ -1574,21 +1577,19 @@ class ControlScreen(QWidget):
                     self._attempt_relogin(timeout)
             except Exception as e:
                 print(f"Error handling refresh result: {str(e)}")
-                self.api_reconnect_button.setText("Reconnect")
-                self.api_reconnect_button.setEnabled(True)
+                self._safe_update_ui(lambda: self.api_reconnect_button.setText("Reconnect"))
+                self._safe_update_ui(lambda: self.api_reconnect_button.setEnabled(True))
         
         # Instead of directly calling api_client._refresh_token which may block,
         # we'll create a custom worker that safely handles the token refresh
         class RefreshWorker(QRunnable):
-            def __init__(self, api_client, callback):
+            def __init__(self, api_client, callback, parent):
                 super().__init__()
                 self.api_client = api_client
                 self.callback = callback
-                # Create a QTimer that will execute on the main thread
-                self.timer = QTimer()
-                self.timer.setSingleShot(True)
-                self.timer.timeout.connect(self._execute_callback)
-                # Store main thread results
+                # Use parent's signal for thread safety
+                self.parent = parent
+                # Store results
                 self.success = False
                 self.result_message = ""
                 
@@ -1601,23 +1602,22 @@ class ControlScreen(QWidget):
                     self.success = self.api_client._refresh_token()
                     self.result_message = "Token refresh completed"
                     
-                    # Schedule callback on main thread using a timer
-                    # This is safer than QMetaObject.invokeMethod
-                    self.timer.start(0)  # Execute as soon as possible on main thread
+                    # Use parent's signal to safely execute callback on main thread
+                    if self.parent and hasattr(self.parent, 'ui_update_signal'):
+                        self.parent.ui_update_signal.emit(
+                            lambda: self.callback(self.success, self.result_message)
+                        )
                 except Exception as e:
                     self.success = False
                     self.result_message = str(e)
-                    # Schedule error callback on main thread
-                    self.timer.start(0)
-            
-            def _execute_callback(self):
-                try:
-                    self.callback(self.success, self.result_message)
-                except Exception as e:
-                    print(f"Error in refresh callback: {str(e)}")
+                    # Use parent's signal to safely execute error callback on main thread
+                    if self.parent and hasattr(self.parent, 'ui_update_signal'):
+                        self.parent.ui_update_signal.emit(
+                            lambda: self.callback(self.success, self.result_message)
+                        )
         
-        # Create and start the worker
-        worker = RefreshWorker(self.api_client, handle_refresh_result)
+        # Create and start the worker with self as parent
+        worker = RefreshWorker(self.api_client, handle_refresh_result, self)
         QThreadPool.globalInstance().start(worker)
 
     def _attempt_relogin(self, timeout):
@@ -2564,8 +2564,8 @@ class ControlScreen(QWidget):
         # This is more reliable than checking the existing token
         print("Forcing token refresh after reconnection")
         
-        # Define token refresh callback
-        def handle_refresh_result(refresh_success, refresh_result):
+        # Define token refresh callback - this will be called from the main thread via ui_update_signal
+        def handle_refresh_after_reconnect(refresh_success, refresh_result):
             try:
                 if refresh_success:
                     print("Authentication refreshed successfully after reconnection")
@@ -2579,7 +2579,7 @@ class ControlScreen(QWidget):
                     QApplication.processEvents()
                     
                     # Now that we have a refreshed token, we can update data
-                    # Use a slight delay to ensure the token is fully applied
+                    # Safe to use QTimer directly since we're in the main thread
                     QTimer.singleShot(750, self._update_occupancy)
                     QTimer.singleShot(1500, self._fetch_logs)
                 else:
@@ -2590,5 +2590,8 @@ class ControlScreen(QWidget):
             except Exception as e:
                 print(f"Error handling refresh result after reconnection: {str(e)}")
         
-        # Instead of checking token validity first, just refresh it
-        self._attempt_token_refresh((3.0, 5.0), handle_refresh_result)
+        # Use a custom timeout for this reconnection attempt
+        custom_timeout = (3.0, 5.0)
+        
+        # Call _attempt_token_refresh with our callback
+        self._attempt_token_refresh(custom_timeout, handle_refresh_after_reconnect)

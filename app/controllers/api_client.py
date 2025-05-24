@@ -480,7 +480,7 @@ class ApiClient(QObject):
 
     def put(self, endpoint, data=None, json_data=None, timeout=None, retry_on_auth_fail=True):
         """
-        Send a PUT request to the API.
+        Send a PUT request to the API with improved error handling.
         
         Args:
             endpoint (str): API endpoint
@@ -513,7 +513,7 @@ class ApiClient(QObject):
                     return True, response.json()
                 return True, {}
             elif response.status_code == 401 and retry_on_auth_fail:
-                print(f"Authentication failed for {url} - attempting to refresh token and retry")
+                print(f"Authentication failed for {url} - attempting to refresh token")
                 
                 # Clear header cache immediately when 401 is detected
                 self.auth_mutex.lock()
@@ -537,17 +537,19 @@ class ApiClient(QObject):
                         return False, error_data['detail']
                 except:
                     return False, f"HTTP Error: {response.status_code}"
-                    
+                
         except requests.exceptions.ConnectTimeout:
             return False, "Connection timeout. The server is not responding."
         except requests.exceptions.ReadTimeout:
             return False, "Read timeout. The server took too long to respond."
+        except requests.exceptions.ConnectionError:
+            return False, "Connection failed. Please check your network connection."
         except Exception as e:
             return False, f"An error occurred: {str(e)}"
 
     def delete(self, endpoint, timeout=None, retry_on_auth_fail=True):
         """
-        Send a DELETE request to the API.
+        Send a DELETE request to the API with improved error handling.
         
         Args:
             endpoint (str): API endpoint
@@ -574,7 +576,7 @@ class ApiClient(QObject):
                     return True, response.json()
                 return True, {}
             elif response.status_code == 401 and retry_on_auth_fail:
-                print(f"Authentication failed for {url} - attempting to refresh token and retry")
+                print(f"Authentication failed for {url} - attempting to refresh token")
                 
                 # Clear header cache immediately when 401 is detected
                 self.auth_mutex.lock()
@@ -603,12 +605,14 @@ class ApiClient(QObject):
             return False, "Connection timeout. The server is not responding."
         except requests.exceptions.ReadTimeout:
             return False, "Read timeout. The server took too long to respond."
+        except requests.exceptions.ConnectionError:
+            return False, "Connection failed. Please check your network connection."
         except Exception as e:
             return False, f"An error occurred: {str(e)}"
 
     def post_with_files(self, endpoint, data=None, files=None, timeout=None, retry_on_auth_fail=True):
         """
-        Send a POST request with multipart/form-data including file uploads.
+        Send a POST request with multipart/form-data including file uploads with improved error handling.
         
         Args:
             endpoint (str): API endpoint
@@ -636,7 +640,7 @@ class ApiClient(QObject):
             if response.status_code in [200, 201]:
                 return True, response.json()
             elif response.status_code == 401 and retry_on_auth_fail:
-                print(f"Authentication failed for {url} - attempting to refresh token and retry")
+                print(f"Authentication failed for {url} - attempting to refresh token")
                 
                 # Clear header cache immediately when 401 is detected
                 self.auth_mutex.lock()
@@ -665,6 +669,8 @@ class ApiClient(QObject):
             return False, "Connection timeout. The server is not responding."
         except requests.exceptions.ReadTimeout:
             return False, "Read timeout. The server took too long to respond."
+        except requests.exceptions.ConnectionError:
+            return False, "Connection failed. Please check your network connection."
         except Exception as e:
             return False, f"An error occurred: {str(e)}"
     

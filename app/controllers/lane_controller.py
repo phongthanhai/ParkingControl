@@ -32,7 +32,7 @@ class LaneWorker(QThread):
         self.condition = QWaitCondition()
         self.camera_lock = threading.Lock()
         
-        # Processing objects - initialize here, but don't connect signals until in thread
+        # Processing objects
         self.detector = None
         self.recognizer = None
         
@@ -58,9 +58,6 @@ class LaneWorker(QThread):
         
         # Store last detection data for manual verification
         self.last_detection_data = None
-        
-        # Flag to check if signals are connected
-        self._signals_connected = False
     
     def run(self):
         self._initialize_resources()
@@ -69,41 +66,14 @@ class LaneWorker(QThread):
     def _initialize_resources(self):
         try:
             # Initialize processing resources in the worker thread
-            print(f"{self.lane_type}: Initializing resources in thread {threading.current_thread().name}")
             self.detector = PlateDetector()
-            
-            # Create recognizer and connect signals
             self.recognizer = PlateRecognizer()
-            
-            # Connect signals directly in the thread
-            if not self._signals_connected:
-                print(f"{self.lane_type}: Connecting PlateRecognizer signals")
-                # Ensure we disconnect any existing connections first to avoid duplicates
-                try:
-                    self.recognizer.error_signal.disconnect()
-                    self.recognizer.result_signal.disconnect()
-                except TypeError:
-                    # No connections exist yet, which is fine
-                    pass
-                    
-                # Connect with direct connection type for best performance within the same thread
-                self.recognizer.error_signal.connect(
-                    lambda msg: self.error_signal.emit(self.lane_type, f"API Error: {msg}"),
-                    type=Qt.DirectConnection
-                )
-                
-                # Connect the result signal to handle OCR results asynchronously
-                self.recognizer.result_signal.connect(
-                    self._handle_ocr_result,
-                    type=Qt.DirectConnection
-                )
-                
-                self._signals_connected = True
-                print(f"{self.lane_type}: Signals connected successfully")
+            self.recognizer.error_signal.connect(
+                lambda msg: self.error_signal.emit(self.lane_type, f"API Error: {msg}")
+            )
             
             self._init_camera()
         except Exception as e:
-            print(f"{self.lane_type}: Resource initialization failed: {str(e)}")
             self.error_signal.emit(self.lane_type, f"Initialization Error: {str(e)}")
             self.state = LaneState.ERROR
     
@@ -248,171 +218,90 @@ class LaneWorker(QThread):
                         self.cooldown_active = False
                 return
                 
-            # Only process frames if we're in DETECTING state
-            if self.state != LaneState.DETECTING:
-                # Skip processing for other states
-                return
-                
             # Detection
             display_frame, plate_img = self.detector.detect(frame)
             
-            # Ensure we have valid data types for signal
-            plate_text = "Scanning..."
-            confidence = 0.0
+            # OCR processing with rate limiting
+            plate_text, confidence = None, 0.0
+            api_timeout = False
             
-            # Emit detection signal with initial values
+            if plate_img is not None and (time.time() - self.last_api_call) > OCR_RATE_LIMIT:
+                try:
+                    result = self.recognizer.process(plate_img)
+                    if result is not None:
+                        plate_text, confidence = result
+                        self.last_api_call = time.time()
+                    else:
+                        # API timeout or rate limit with the PlateRecognizer external API
+                        api_timeout = True
+                except Exception as e:
+                    api_timeout = True
+                    self.error_signal.emit(self.lane_type, f"PlateRecognizer API Error: {str(e)}")
+            
+            # Ensure we have valid data types for signal
+            plate_text = plate_text if plate_text is not None else "Scanning..."
+            confidence = float(confidence) if confidence is not None else 0.0
+            
+            # Validation
+            is_valid = False
+            if plate_text and plate_text != "Scanning...":
+                is_valid = VIETNAMESE_PLATE_PATTERN.match(plate_text) is not None
+            
+            # Emit detection signal with safe values
             self.detection_signal.emit(
                 self.lane_type,
                 display_frame,
                 plate_text,
                 confidence,
-                False
+                is_valid
             )
             
-            # OCR processing with rate limiting
-            if plate_img is not None and (time.time() - self.last_api_call) > OCR_RATE_LIMIT:
-                print(f"{self.lane_type}: License plate detected, starting OCR")
-                
+            # State management for manual entry cases
+            if plate_img is not None:
                 # Store the last detection data for potential manual entry
                 self.last_detection_data = {
-                    "text": "",
-                    "confidence": 0.0,
+                    "text": plate_text if plate_text != "Scanning..." else "",
+                    "confidence": confidence,
                     "image": display_frame,  # Store the display frame with the rectangle drawn
                     "plate_img": plate_img,  # Store the cropped plate image separately
-                    "is_valid": False
+                    "is_valid": is_valid
                 }
                 
-                # Set state to processing
-                print(f"{self.lane_type}: Changing state from {self.state} to {LaneState.PROCESSING}")
-                self.state = LaneState.PROCESSING
-                
-                try:
-                    # This will start the async API call, results will come through _handle_ocr_result
-                    result = self.recognizer.process(plate_img)
-                    if result is not None:
-                        print(f"{self.lane_type}: PlateRecognizer returned result directly (not async): {result}")
-                    else:
-                        print(f"{self.lane_type}: PlateRecognizer API call started - waiting for async result")
-                    
-                    # Start a timeout timer to handle the case where the API doesn't respond
-                    # This prevents us from getting stuck waiting for a response
-                    QTimer.singleShot(5000, lambda: self._check_ocr_timeout())
-                    
-                except Exception as e:
-                    print(f"{self.lane_type}: Error starting OCR: {str(e)}")
-                    self.error_signal.emit(self.lane_type, f"PlateRecognizer API Error: {str(e)}")
-                    # Handle as API timeout
-                    self._handle_api_timeout(display_frame)
-                
-        except Exception as e:
-            self.error_signal.emit(self.lane_type, f"Processing Error: {str(e)}")
-    
-    def _check_ocr_timeout(self):
-        """Check if we've been waiting too long for OCR results"""
-        # Only run this check if we're still in processing state
-        if self.state == LaneState.PROCESSING:
-            print(f"{self.lane_type}: OCR timeout detected - still in PROCESSING state after 5s")
-            # We've waited too long, handle as a timeout
-            if self.last_detection_data:
-                display_frame = self.last_detection_data.get("image")
-                self._handle_api_timeout(display_frame)
-    
-    def _handle_api_timeout(self, display_frame):
-        """Handle API timeout scenario"""
-        print(f"{self.lane_type}: Handling API timeout - changing state to PAUSED and requesting manual entry")
-        self.state = LaneState.PAUSED  # Update state
-        self._pause_processing()
-        self.status_signal.emit(
-            self.lane_type,
-            "requires_manual",
-            {"reason": "API timeout", "image": display_frame, "text": ""}
-        )
-    
-    def _handle_ocr_result(self, result):
-        """Handle OCR result from the PlateRecognizer API"""
-        # Unpack the result
-        plate_text, confidence = result
-
-        # Skip if we got a null result
-        if plate_text is None:
-            # If we're in PROCESSING state, this is a timeout
-            if self.state == LaneState.PROCESSING:
-                self.state = LaneState.DETECTING
-                # Handle as an API timeout if we have detection data
-                if self.last_detection_data:
-                    display_frame = self.last_detection_data.get("image")
-                    self._handle_api_timeout(display_frame)
-            return
-        
-        # Update last API call time
-        self.last_api_call = time.time()
-        
-        # Process the result if we have valid data
-        if self.last_detection_data:
-            # Update the last detection data
-            self.last_detection_data["text"] = plate_text
-            self.last_detection_data["confidence"] = confidence
-            is_valid = VIETNAMESE_PLATE_PATTERN.match(plate_text) is not None
-            self.last_detection_data["is_valid"] = is_valid
-            
-            # Get the display frame from the stored data
-            display_frame = self.last_detection_data.get("image")
-            
-            # Change state based on result - do this BEFORE emitting signals
-            if is_valid and confidence >= 0.9:
-                # High confidence valid plate - proceed automatically
-                self.state = LaneState.PAUSED  # Pause processing while gate operates
-                
-                # CRITICAL FIX: First emit the detection signal with updated text/confidence
-                self.detection_signal.emit(
-                    self.lane_type,
-                    display_frame,
-                    plate_text,
-                    confidence,
-                    is_valid
-                )
-                
-                # Then emit success signal to trigger guard control
-                print(f"Emitting success signal for {plate_text} with confidence {confidence}")
-                self._pause_processing()
-                self.status_signal.emit(
-                    self.lane_type,
-                    "success",
-                    {"text": plate_text, "confidence": confidence, "image": display_frame}
-                )
-            else:
-                # Low confidence or invalid plate - require manual verification
-                self.state = LaneState.PAUSED
-                
-                # First emit the detection signal with updated text/confidence
-                self.detection_signal.emit(
-                    self.lane_type,
-                    display_frame,
-                    plate_text,
-                    confidence,
-                    is_valid
-                )
-                
-                # Then emit manual verification needed
-                self._pause_processing()
-                if not is_valid:
-                    print(f"Emitting manual required (invalid format) for {plate_text}")
+                # Case 1: API timeout
+                if api_timeout:
+                    self._pause_processing()
                     self.status_signal.emit(
                         self.lane_type,
                         "requires_manual",
-                        {"reason": "invalid format", "text": plate_text, "confidence": confidence, "image": display_frame}
+                        {"reason": "API timeout", "image": display_frame, "text": plate_text if plate_text != "Scanning..." else ""}
                     )
-                else:  # confidence < 0.9
-                    print(f"Emitting manual required (low confidence) for {plate_text} with confidence {confidence}")
+                # Case 2: Successfully detected plate but confidence too low
+                elif plate_text and plate_text != "Scanning..." and confidence < 0.9:
+                    self._pause_processing()
                     self.status_signal.emit(
                         self.lane_type,
                         "requires_manual",
                         {"reason": "low confidence", "text": plate_text, "confidence": confidence, "image": display_frame}
                     )
-        else:
-            # No detection data available - this shouldn't happen but handle gracefully
-            print("Warning: OCR result received but no detection data available")
-            self.state = LaneState.DETECTING
+                # Case 3: Successfully detected plate but doesn't match regex
+                elif plate_text and plate_text != "Scanning..." and not is_valid:
+                    self._pause_processing()
+                    self.status_signal.emit(
+                        self.lane_type,
+                        "requires_manual",
+                        {"reason": "invalid format", "text": plate_text, "confidence": confidence, "image": display_frame}
+                    )
+                # Case 4: Success case - high confidence valid plate
+                elif is_valid and confidence >= 0.9:
+                    self._pause_processing()
+                    self.status_signal.emit(
+                        self.lane_type,
+                        "success",
+                        {"text": plate_text, "confidence": confidence, "image": display_frame}
+                    )
+                
+        except Exception as e:
+            self.error_signal.emit(self.lane_type, f"Processing Error: {str(e)}")
     
     def _pause_processing(self):
         self.mutex.lock()
@@ -421,9 +310,6 @@ class LaneWorker(QThread):
         self.mutex.unlock()
     
     def resume_processing(self):
-        """Resume processing after a pause (used after user action)"""
-        print(f"{self.lane_type}: Resuming processing, previous state: {self.state}")
-        
         # Start cooldown timer
         self.cooldown_active = True
         # Clear existing cooldown timer
@@ -439,36 +325,20 @@ class LaneWorker(QThread):
         # Clear last detection data
         self.last_detection_data = None
         
-        # Make sure we reset state to DETECTING when cooldown ends
         self.mutex.lock()
-        try:
-            self._paused = False
-            # Set the state explicitly to DETECTING if not in error
-            if self.state != LaneState.ERROR:
-                self.state = LaneState.DETECTING
-            self.condition.wakeAll()
-        finally:
-            self.mutex.unlock()
-        
-        print(f"{self.lane_type}: Processing resumed, new state: {self.state}, cooldown active")
+        self._paused = False
+        self.condition.wakeAll()
+        self.mutex.unlock()
     
     def _end_cooldown(self):
-        """End cooldown period and resume normal detection"""
-        print(f"{self.lane_type}: Ending cooldown period, resuming detection")
         self.cooldown_active = False
         self.frame_buffer_clear_count = 0
         
-        # Resume detection explicitly
+        #resume detection
         self.mutex.lock()
-        try:
-            if self.state != LaneState.ERROR:
-                self.state = LaneState.DETECTING
-                print(f"{self.lane_type}: State set to DETECTING after cooldown")
-        finally:
-            self.mutex.unlock()
-            
-        # Clear last detection data if it's still lingering
-        self.last_detection_data = None
+        if self.state != LaneState.ERROR:
+            self.state = LaneState.DETECTING
+        self.mutex.unlock()
     
     def restart_camera(self):
         """Attempt to restart the camera after an error"""

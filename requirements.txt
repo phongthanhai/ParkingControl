@@ -15,4 +15,4 @@ sympy==1.13.3
 urllib3==2.4.0
 # Added for offline support
 uuid==1.30
-pillow==9.5.0  # For image processing
+pillow==9.5.0  

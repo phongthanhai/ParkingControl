@@ -87,46 +87,73 @@ Unknown property transition
 Unknown property transition
 Unknown property transition
 Occupancy updated: 0.0% (0/100)
-Circuit failure recorded: consecutive=1, operation=api-call, error=API error: HTTP 404
-Circuit staying CLOSED: consecutive=1/5, rate=1/3 attempts
-❌ Failed to fetch occupancy: API error: HTTP 404
-Circuit failure recorded: consecutive=2, operation=api-call, error=API error: HTTP 404
-Circuit staying CLOSED: consecutive=2/5, rate=2/4 attempts
-❌ Failed to fetch blacklist: API error: HTTP 404
-Circuit failure recorded: consecutive=3, operation=api-call, error=API error: HTTP 404
-Circuit staying CLOSED: consecutive=3/5, rate=3/5 attempts
-❌ Failed to fetch history: API error: HTTP 404
-Updating blacklist cache - current entries: 0
+Occupancy updated: 0.0% (0/100)
+✅ Smart occupancy updated: 0/0
+✅ Smart blacklist updated: 2 entries
+💾 Blacklist cached locally: 2 entries
+❌ Failed to fetch history: [{'date': '2025-06-25', 'time': '17:11:55.119987', 'lane': 'exit', 'license_plate': '51g99999', 'type': 'manual', 'lot_id': 1}, {'date': '2025-06-25', 'time': '14:40:22.801332', 'lane': 'entry', 'license_plate': '51g99999', 'type': 'manual', 'lot_id': 1}, {'date': '2025-06-25', 'time': '13:05:11.634261', 'lane': 'exit', 'license_plate': '30g69999', 'type': 'manual', 'lot_id': 1}, {'date': '2025-06-25', 'time': '13:04:40.702011', 'lane': 'entry', 'license_plate': '30g69999', 'type': 'manual', 'lot_id': 1}]
+Updating blacklist cache - current entries: 2
 Sending blacklist API request...
-UI blocked for 2227 ms
+UI blocked for 2283 ms
 Blacklist API response - success: True, data: [{'plate_id': '99a99999', 'is_blacklisted': True, 'created_at': '2025-05-13T11:23:01.515455'}, {'plate_id': '76a07676', 'is_blacklisted': True, 'created_at': '2025-05-13T20:39:18.219271'}]
 Adding blacklisted plate: 99A99999
 Adding blacklisted plate: 76A07676
-Updating blacklist: old count=0, new count=2
+Updating blacklist: old count=2, new count=2
 Blacklist updated: 2 vehicles
 🔄 Initial smart data refresh...
-Circuit failure recorded: consecutive=1, operation=api-call, error=API error: HTTP 404
-Circuit staying CLOSED: consecutive=1/5, rate=4/7 attempts
-❌ Failed to fetch occupancy: API error: HTTP 404
-Circuit failure recorded: consecutive=2, operation=api-call, error=API error: HTTP 404
-Circuit staying CLOSED: consecutive=2/5, rate=5/8 attempts
-❌ Failed to fetch blacklist: API error: HTTP 404
-Circuit failure recorded: consecutive=3, operation=api-call, error=API error: HTTP 404
-Circuit staying CLOSED: consecutive=3/5, rate=6/9 attempts
-❌ Failed to fetch history: API error: HTTP 404
-Health check error: 'ControlScreen' object has no attribute 'last_api_check_time'
+Occupancy updated: 0.0% (0/100)
+✅ Smart occupancy updated: 0/0
+✅ Smart blacklist updated: 2 entries
+💾 Blacklist cached locally: 2 entries
+❌ Failed to fetch history: [{'date': '2025-06-25', 'time': '17:11:55.119987', 'lane': 'exit', 'license_plate': '51g99999', 'type': 'manual', 'lot_id': 1}, {'date': '2025-06-25', 'time': '14:40:22.801332', 'lane': 'entry', 'license_plate': '51g99999', 'type': 'manual', 'lot_id': 1}, {'date': '2025-06-25', 'time': '13:05:11.634261', 'lane': 'exit', 'license_plate': '30g69999', 'type': 'manual', 'lot_id': 1}, {'date': '2025-06-25', 'time': '13:04:40.702011', 'lane': 'entry', 'license_plate': '30g69999', 'type': 'manual', 'lot_id': 1}]
 🔍 OCR Request URL: https://api.platerecognizer.com/v1/plate-reader/
 🔑 API Key present: Yes
-📸 Image size: (88, 188, 3)
+📸 Image size: (83, 174, 3)
 📡 Response status: 201
-📋 Response content: {"processing_time":44.533,"results":[{"box":{"xmin":6,"ymin":10,"xmax":179,"ymax":72},"plate":"76a07676","region":{"code":"vn","score":0.178},"score":0.948,"candidates":[{"score":0.948,"plate":"76a076...
-❌ PlateRecognizer error: PlateRecognizer HTTP 201: {"processing_time":44.533,"results":[{"box":{"xmin":6,"ymin":10,"xmax":179,"ymax":72},"plate":"76a07676","region":{"code":"vn","score":0.178},"score":0.948,"candidates":[{"score":0.948,"plate":"76a07676"},{"score":0.848,"plate":"75a07676"},{"score":0.84,"plate":"76k07676"},{"score":0.83,"plate":"76ao7676"},{"score":0.739,"plate":"75k07676"},{"score":0.729,"plate":"75ao7676"},{"score":0.722,"plate":"76ko7676"},{"score":0.621,"plate":"75ko7676"}],"dscore":0.783,"vehicle":{"score":0.0,"type":"Unknown","box":{"xmin":0,"ymin":0,"xmax":0,"ymax":0}}}],"filename":"1045_2lUvY_image.jpg","version":1,"camera_id":null,"timestamp":"2025-06-25T10:45:33.268549Z","image_width":188,"image_height":88}
-OCR Service Error: PlateRecognizer HTTP 201: {"processing_time":44.533,"results":[{"box":{"xmin":6,"ymin":10,"xmax":179,"ymax":72},"plate":"76a07676","region":{"code":"vn","score":0.178},"score":0.948,"candidates":[{"score":0.948,"plate":"76a07676"},{"score":0.848,"plate":"75a07676"},{"score":0.84,"plate":"76k07676"},{"score":0.83,"plate":"76ao7676"},{"score":0.739,"plate":"75k07676"},{"score":0.729,"plate":"75ao7676"},{"score":0.722,"plate":"76ko7676"},{"score":0.621,"plate":"75ko7676"}],"dscore":0.783,"vehicle":{"score":0.0,"type":"Unknown","box":{"xmin":0,"ymin":0,"xmax":0,"ymax":0}}}],"filename":"1045_2lUvY_image.jpg","version":1,"camera_id":null,"timestamp":"2025-06-25T10:45:33.268549Z","image_width":188,"image_height":88}
+📋 Response content: {"processing_time":150.053,"results":[],"filename":"1056_XbIas_image.jpg","version":1,"camera_id":null,"timestamp":"2025-06-25T10:56:03.550307Z","image_width":174,"image_height":83}...
+❌ No plate detected in image
+OCR Service Error: No plate detected
 Unknown property transition
 Unknown property transition
-Health check error: 'ControlScreen' object has no attribute 'last_api_check_time'
-Health check error: 'ControlScreen' object has no attribute 'last_api_check_time'
+Circuit failure recorded: consecutive=1, operation=health-check, error=Health check connect timeout
+Circuit staying CLOSED: consecutive=1/5, rate=1/11 attempts
+Error handling health check result: 'ControlScreen' object has no attribute 'consecutive_failures'
+UI blocked for 505 ms
+Error handling health check result: 'ControlScreen' object has no attribute 'api_available'
+Error handling health check result: 'ControlScreen' object has no attribute 'api_available'
+Unknown property transition
+Vehicle skipped in entry lane - only shown in UI, not stored in database
+Skipping vehicle in entry lane
+🔍 OCR Request URL: https://api.platerecognizer.com/v1/plate-reader/
+🔑 API Key present: Yes
+📸 Image size: (82, 200, 3)
+📡 Response status: 201
+📋 Response content: {"processing_time":79.285,"results":[{"box":{"xmin":4,"ymin":15,"xmax":197,"ymax":72},"plate":"76a07676","region":{"code":"vn","score":0.513},"score":0.997,"candidates":[{"score":0.997,"plate":"76a076...
+✅ OCR Success: 76a07676 (confidence: 0.997)
+Log entry created: {'lane': 'entry', 'plate': '76a07676', 'confidence': 0.997, 'timestamp': 1750849059.0883582, 'formatted_time': '2025-06-25 17:57:39.088358', 'type': 'denied-blacklist', 'processed': False}
+Blacklisted vehicle entry - stored only in local UI, not sending to server
+Blacklisted vehicle in entry lane, will skip automatically
+GPIO 17 set HIGH for entry lane (relay INACTIVE)
+Unknown property transition
+Unknown property transition
+entry lane UI reset - resuming detection
+Error handling health check result: 'ControlScreen' object has no attribute 'api_available'
 Starting application shutdown...
 Database check timer stopped
 Cleaning up control screen...
-Error during application shutdown: 'ControlScreen' object has no attribute 'cleanup
+Cleaning up control screen...
+Stopping entry lane worker thread...
+Waiting for entry lane thread to finish...
+entry lane worker thread stopped
+Stopping exit lane worker thread...
+Waiting for exit lane thread to finish...
+exit lane worker thread stopped
+Control screen cleanup complete
+Stopping sync service...
+Stopping sync service...
+Stopping sync worker thread...
+Sync worker thread stopped
+Stopping sync service...
+Sync service stopped
+Database connection closed
+Application shutdown complete

@@ -328,9 +328,17 @@ class SimpleApiClient(QObject):
 
     def post_guard_control(self, data, files=None):
         """Send guard-control request with fast-fail behavior."""
-        if not self.connection_manager.should_attempt_operation("guard-control"):
-            print("Guard-control BLOCKED - circuit breaker OPEN (offline mode)")
-            return False, "API unavailable - using offline mode"
+        # DEADLOCK FIX: Check circuit breaker state with a quick timeout check first
+        # This prevents the hang when network is in a transitional state
+        try:
+            # Quick non-blocking check of circuit breaker state
+            if not self.connection_manager.should_attempt_operation("guard-control"):
+                print("Guard-control BLOCKED - circuit breaker OPEN (offline mode)")
+                return False, "API unavailable - using offline mode"
+        except Exception as e:
+            # If we can't check the circuit breaker state, assume offline for safety
+            print(f"Guard-control BLOCKED - circuit breaker check failed: {str(e)}")
+            return False, "Circuit breaker check failed - using offline mode"
         
         print("Guard-control proceeding - circuit breaker allows operation")
         
@@ -339,12 +347,17 @@ class SimpleApiClient(QObject):
             return False, "Authentication required"
         
         try:
+            # CRITICAL FIX: Use very fast timeout to prevent hanging during network transitions
+            # When WiFi is turned off, the connection might appear available briefly before
+            # the OS realizes it's down, causing long hangs
+            fast_guard_control_timeout = (1.0, 2.0)  # 1s connect, 2s read - very aggressive
+            
             response = self.session.post(
                 f"{self.base_url}/services/guard-control/",
                 data=data,
                 files=files,
                 headers=headers,
-                timeout=self.fast_timeout
+                timeout=fast_guard_control_timeout
             )
             
             if response.status_code in [200, 201]:
@@ -358,8 +371,19 @@ class SimpleApiClient(QObject):
                 self.connection_manager.record_failure(error_msg, "guard-control")
                 return False, error_msg
                 
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+            error_msg = "Guard-control timeout - network likely down"
+            print(f"Guard-control timed out after {fast_guard_control_timeout}s")
+            self.connection_manager.record_failure(error_msg, "guard-control")
+            return False, error_msg
+        except requests.exceptions.ConnectionError as e:
+            error_msg = f"Guard-control connection error: {str(e)}"
+            print(f"Guard-control connection failed: {str(e)}")
+            self.connection_manager.record_failure(error_msg, "guard-control")
+            return False, error_msg
         except Exception as e:
             error_msg = f"Guard-control error: {str(e)}"
+            print(f"Guard-control unexpected error: {str(e)}")
             self.connection_manager.record_failure(error_msg, "guard-control")
             return False, error_msg
 

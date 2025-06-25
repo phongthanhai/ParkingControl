@@ -23,6 +23,8 @@ class ConnectionManager(QObject):
     - CLOSED: Normal operation, all API calls proceed
     - OPEN: API is down, all calls fail immediately 
     - HALF_OPEN: Testing recovery, limited calls allowed
+    
+    DEADLOCK FIX: Uses RLock instead of Lock to prevent reentrancy deadlocks
     """
     
     # Signals for notifying components of state changes
@@ -68,8 +70,9 @@ class ConnectionManager(QObject):
         self.critical_operations = {'guard-control', 'login'}  # These need higher confidence
         self.critical_consecutive_threshold = 3    # Stricter for critical operations
         
-        # Threading protection
-        self.state_lock = threading.Lock()
+        # DEADLOCK FIX: Use RLock instead of Lock to prevent reentrancy issues
+        # This allows the same thread to acquire the lock multiple times
+        self.state_lock = threading.RLock()
         
         print("ConnectionManager initialized - Circuit CLOSED (online)")
         print(f"Config: consecutive_threshold={self.consecutive_failure_threshold}, "
@@ -106,18 +109,31 @@ class ConnectionManager(QObject):
         Returns:
             bool: True if operation should proceed, False for fast-fail
         """
-        with self.state_lock:
-            if self.state == ConnectionState.CLOSED:
-                return True
-            elif self.state == ConnectionState.OPEN:
-                # For critical operations during circuit OPEN, still block
-                # For non-critical operations, also block
-                return False
-            elif self.state == ConnectionState.HALF_OPEN:
-                # In half-open, allow health checks and critical operations only
-                return operation_type in {'health-check', 'guard-control', 'login'}
+        # DEADLOCK FIX: Use timeout on lock acquisition to prevent indefinite blocking
+        try:
+            acquired = self.state_lock.acquire(timeout=5.0)  # 5 second timeout
+            if not acquired:
+                print(f"WARNING: Failed to acquire state_lock for {operation_type} operation within 5s timeout")
+                return False  # Default to blocking the operation if we can't check state
             
-        return False
+            try:
+                if self.state == ConnectionState.CLOSED:
+                    return True
+                elif self.state == ConnectionState.OPEN:
+                    # For critical operations during circuit OPEN, still block
+                    # For non-critical operations, also block
+                    return False
+                elif self.state == ConnectionState.HALF_OPEN:
+                    # In half-open, allow health checks and critical operations only
+                    return operation_type in {'health-check', 'guard-control', 'login'}
+                
+                return False
+            finally:
+                self.state_lock.release()
+                
+        except Exception as e:
+            print(f"ERROR: Exception in should_attempt_operation: {str(e)}")
+            return False  # Default to blocking on any error
     
     def record_success(self, operation_type="general"):
         """
@@ -126,27 +142,39 @@ class ConnectionManager(QObject):
         Args:
             operation_type (str): Type of operation that succeeded
         """
-        with self.state_lock:
-            current_time = time.time()
-            self.last_success_time = current_time
+        # DEADLOCK FIX: Use timeout on lock acquisition
+        try:
+            acquired = self.state_lock.acquire(timeout=5.0)
+            if not acquired:
+                print(f"WARNING: Failed to acquire state_lock for recording success of {operation_type}")
+                return
             
-            # Add to success history
-            self.success_history.append((current_time,))
-            self._cleanup_history()
-            
-            # Reset consecutive failure counter on any success
-            self.consecutive_failures = 0
-            
-            if self.state == ConnectionState.HALF_OPEN:
-                self.consecutive_successes += 1
-                print(f"Circuit HALF_OPEN: Success {self.consecutive_successes}/{self.success_threshold} ({operation_type})")
+            try:
+                current_time = time.time()
+                self.last_success_time = current_time
                 
-                if self.consecutive_successes >= self.success_threshold:
-                    self._transition_to_closed()
-            elif self.state == ConnectionState.OPEN:
-                # Shouldn't happen in normal flow, but handle gracefully
-                print(f"Unexpected success during OPEN state ({operation_type}), transitioning to HALF_OPEN")
-                self._transition_to_half_open()
+                # Add to success history
+                self.success_history.append((current_time,))
+                self._cleanup_history()
+                
+                # Reset consecutive failure counter on any success
+                self.consecutive_failures = 0
+                
+                if self.state == ConnectionState.HALF_OPEN:
+                    self.consecutive_successes += 1
+                    print(f"Circuit HALF_OPEN: Success {self.consecutive_successes}/{self.success_threshold} ({operation_type})")
+                    
+                    if self.consecutive_successes >= self.success_threshold:
+                        self._transition_to_closed()
+                elif self.state == ConnectionState.OPEN:
+                    # Shouldn't happen in normal flow, but handle gracefully
+                    print(f"Unexpected success during OPEN state ({operation_type}), transitioning to HALF_OPEN")
+                    self._transition_to_half_open()
+            finally:
+                self.state_lock.release()
+                
+        except Exception as e:
+            print(f"ERROR: Exception in record_success: {str(e)}")
     
     def record_failure(self, error_msg="", operation_type="general"):
         """
@@ -156,28 +184,40 @@ class ConnectionManager(QObject):
             error_msg (str): Description of the failure
             operation_type (str): Type of operation that failed
         """
-        with self.state_lock:
-            current_time = time.time()
-            self.last_failure_time = current_time
-            self.consecutive_failures += 1
-            self.consecutive_successes = 0
+        # DEADLOCK FIX: Use timeout on lock acquisition  
+        try:
+            acquired = self.state_lock.acquire(timeout=5.0)
+            if not acquired:
+                print(f"WARNING: Failed to acquire state_lock for recording failure of {operation_type}")
+                return
             
-            # Add to failure history with context
-            self.failure_history.append((current_time, operation_type, error_msg))
-            self._cleanup_history()
-            
-            print(f"Circuit failure recorded: consecutive={self.consecutive_failures}, "
-                  f"operation={operation_type}, error={error_msg}")
-            
-            # Determine if we should open the circuit based on multiple criteria
-            should_open = self._should_open_circuit(operation_type)
-            
-            if self.state == ConnectionState.CLOSED and should_open:
-                self._transition_to_open()
-            elif self.state == ConnectionState.HALF_OPEN:
-                # Any failure in half-open goes back to open (this is correct)
-                print(f"HALF_OPEN test failed ({operation_type}), returning to OPEN")
-                self._transition_to_open()
+            try:
+                current_time = time.time()
+                self.last_failure_time = current_time
+                self.consecutive_failures += 1
+                self.consecutive_successes = 0
+                
+                # Add to failure history with context
+                self.failure_history.append((current_time, operation_type, error_msg))
+                self._cleanup_history()
+                
+                print(f"Circuit failure recorded: consecutive={self.consecutive_failures}, "
+                      f"operation={operation_type}, error={error_msg}")
+                
+                # Determine if we should open the circuit based on multiple criteria
+                should_open = self._should_open_circuit(operation_type)
+                
+                if self.state == ConnectionState.CLOSED and should_open:
+                    self._transition_to_open()
+                elif self.state == ConnectionState.HALF_OPEN:
+                    # Any failure in half-open goes back to open (this is correct)
+                    print(f"HALF_OPEN test failed ({operation_type}), returning to OPEN")
+                    self._transition_to_open()
+            finally:
+                self.state_lock.release()
+                
+        except Exception as e:
+            print(f"ERROR: Exception in record_failure: {str(e)}")
     
     def _should_open_circuit(self, operation_type):
         """
@@ -243,9 +283,21 @@ class ConnectionManager(QObject):
         Args:
             reason (str): Reason for forcing offline
         """
-        with self.state_lock:
-            print(f"Forcing circuit OPEN: {reason}")
-            self._transition_to_open()
+        # DEADLOCK FIX: Use timeout on lock acquisition
+        try:
+            acquired = self.state_lock.acquire(timeout=5.0)
+            if not acquired:
+                print(f"WARNING: Failed to acquire state_lock for force_offline")
+                return
+            
+            try:
+                print(f"Forcing circuit OPEN: {reason}")
+                self._transition_to_open()
+            finally:
+                self.state_lock.release()
+                
+        except Exception as e:
+            print(f"ERROR: Exception in force_offline: {str(e)}")
     
     def force_online(self, reason="Manual override"):
         """
@@ -255,11 +307,23 @@ class ConnectionManager(QObject):
         Args:
             reason (str): Reason for forcing online
         """
-        with self.state_lock:
-            print(f"Forcing circuit CLOSED: {reason}")
-            self.consecutive_failures = 0
-            self.consecutive_successes = 0
-            self._transition_to_closed()
+        # DEADLOCK FIX: Use timeout on lock acquisition
+        try:
+            acquired = self.state_lock.acquire(timeout=5.0)
+            if not acquired:
+                print(f"WARNING: Failed to acquire state_lock for force_online")
+                return
+            
+            try:
+                print(f"Forcing circuit CLOSED: {reason}")
+                self.consecutive_failures = 0
+                self.consecutive_successes = 0
+                self._transition_to_closed()
+            finally:
+                self.state_lock.release()
+                
+        except Exception as e:
+            print(f"ERROR: Exception in force_online: {str(e)}")
     
     def get_status(self):
         """
@@ -268,30 +332,43 @@ class ConnectionManager(QObject):
         Returns:
             dict: Status information including state, failure count, etc.
         """
-        with self.state_lock:
-            current_time = time.time()
+        # DEADLOCK FIX: Use timeout on lock acquisition
+        try:
+            acquired = self.state_lock.acquire(timeout=5.0)
+            if not acquired:
+                print(f"WARNING: Failed to acquire state_lock for get_status")
+                return {'error': 'Could not acquire lock'}
             
-            # Calculate recent failure statistics
-            window_start = current_time - self.failure_rate_window
-            recent_failures = [f for f in self.failure_history if f[0] >= window_start]
-            recent_successes = [s for s in self.success_history if s[0] >= window_start]
-            total_recent = len(recent_failures) + len(recent_successes)
-            failure_rate = len(recent_failures) / total_recent if total_recent > 0 else 0
-            
-            return {
-                'state': self.state.value,
-                'is_online': self.state != ConnectionState.OPEN,
-                'consecutive_failures': self.consecutive_failures,
-                'consecutive_failure_threshold': self.consecutive_failure_threshold,
-                'failure_rate': failure_rate,
-                'failure_rate_threshold': self.failure_rate_threshold,
-                'recent_attempts': total_recent,
-                'last_failure_time': self.last_failure_time,
-                'last_success_time': self.last_success_time,
-                'time_since_last_failure': current_time - self.last_failure_time if self.last_failure_time > 0 else -1,
-                'time_since_last_success': current_time - self.last_success_time,
-                'consecutive_successes': self.consecutive_successes
-            }
+            try:
+                current_time = time.time()
+                
+                # Calculate recent failure statistics
+                window_start = current_time - self.failure_rate_window
+                recent_failures = [f for f in self.failure_history if f[0] >= window_start]
+                recent_successes = [s for s in self.success_history if s[0] >= window_start]
+                total_recent = len(recent_failures) + len(recent_successes)
+                failure_rate = len(recent_failures) / total_recent if total_recent > 0 else 0
+                
+                return {
+                    'state': self.state.value,
+                    'is_online': self.state != ConnectionState.OPEN,
+                    'consecutive_failures': self.consecutive_failures,
+                    'consecutive_failure_threshold': self.consecutive_failure_threshold,
+                    'failure_rate': failure_rate,
+                    'failure_rate_threshold': self.failure_rate_threshold,
+                    'recent_attempts': total_recent,
+                    'last_failure_time': self.last_failure_time,
+                    'last_success_time': self.last_success_time,
+                    'time_since_last_failure': current_time - self.last_failure_time if self.last_failure_time > 0 else -1,
+                    'time_since_last_success': current_time - self.last_success_time,
+                    'consecutive_successes': self.consecutive_successes
+                }
+            finally:
+                self.state_lock.release()
+                
+        except Exception as e:
+            print(f"ERROR: Exception in get_status: {str(e)}")
+            return {'error': str(e)}
     
     def adjust_sensitivity(self, consecutive_threshold=None, failure_rate_threshold=None, 
                           failure_rate_window=None):
@@ -303,18 +380,30 @@ class ConnectionManager(QObject):
             failure_rate_threshold (float): Failure rate (0.0-1.0) before opening  
             failure_rate_window (int): Time window in seconds for rate calculation
         """
-        with self.state_lock:
-            if consecutive_threshold is not None:
-                self.consecutive_failure_threshold = consecutive_threshold
-                print(f"Adjusted consecutive failure threshold to {consecutive_threshold}")
+        # DEADLOCK FIX: Use timeout on lock acquisition
+        try:
+            acquired = self.state_lock.acquire(timeout=5.0)
+            if not acquired:
+                print(f"WARNING: Failed to acquire state_lock for adjust_sensitivity")
+                return
             
-            if failure_rate_threshold is not None:
-                self.failure_rate_threshold = failure_rate_threshold
-                print(f"Adjusted failure rate threshold to {failure_rate_threshold:.2%}")
-            
-            if failure_rate_window is not None:
-                self.failure_rate_window = failure_rate_window
-                print(f"Adjusted failure rate window to {failure_rate_window}s")
+            try:
+                if consecutive_threshold is not None:
+                    self.consecutive_failure_threshold = consecutive_threshold
+                    print(f"Adjusted consecutive failure threshold to {consecutive_threshold}")
+                
+                if failure_rate_threshold is not None:
+                    self.failure_rate_threshold = failure_rate_threshold
+                    print(f"Adjusted failure rate threshold to {failure_rate_threshold:.2%}")
+                
+                if failure_rate_window is not None:
+                    self.failure_rate_window = failure_rate_window
+                    print(f"Adjusted failure rate window to {failure_rate_window}s")
+            finally:
+                self.state_lock.release()
+                
+        except Exception as e:
+            print(f"ERROR: Exception in adjust_sensitivity: {str(e)}")
     
     def _transition_to_open(self):
         """Transition to OPEN state (offline)"""
@@ -359,19 +448,31 @@ class ConnectionManager(QObject):
     
     def reset(self):
         """Reset the circuit breaker to initial state"""
-        with self.state_lock:
-            old_state = self.state
-            self.state = ConnectionState.CLOSED
-            self.consecutive_failures = 0
-            self.consecutive_successes = 0
-            self.last_failure_time = 0
-            self.last_success_time = time.time()
+        # DEADLOCK FIX: Use timeout on lock acquisition
+        try:
+            acquired = self.state_lock.acquire(timeout=5.0)
+            if not acquired:
+                print(f"WARNING: Failed to acquire state_lock for reset")
+                return
             
-            # Clear history
-            self.failure_history.clear()
-            self.success_history.clear()
-            
-            print("Circuit breaker reset to CLOSED state")
-            if old_state != ConnectionState.CLOSED:
-                self.transition_detected.emit(old_state.value, "closed")
-                self.state_changed.emit(True)  # online 
+            try:
+                old_state = self.state
+                self.state = ConnectionState.CLOSED
+                self.consecutive_failures = 0
+                self.consecutive_successes = 0
+                self.last_failure_time = 0
+                self.last_success_time = time.time()
+                
+                # Clear history
+                self.failure_history.clear()
+                self.success_history.clear()
+                
+                print("Circuit breaker reset to CLOSED state")
+                if old_state != ConnectionState.CLOSED:
+                    self.transition_detected.emit(old_state.value, "closed")
+                    self.state_changed.emit(True)  # online
+            finally:
+                self.state_lock.release()
+                
+        except Exception as e:
+            print(f"ERROR: Exception in reset: {str(e)}") 

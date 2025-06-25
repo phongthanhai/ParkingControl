@@ -894,71 +894,109 @@ class ControlScreen(QWidget):
                     self._create_worker(lane)
 
     def _handle_manual_submit(self, lane):
+        """
+        Handle manual submit with deadlock prevention and timeout protection.
+        DEADLOCK FIX: Added thread safety and timeout mechanisms.
+        """
         widget = self.lane_widgets.get(lane)
         if not widget:
             return
         
-        # Clear manual input mode flag
-        self.lanes_in_manual_mode.pop(lane, None)
+        # DEADLOCK FIX: Immediately disable the submit button to prevent double-clicking
+        widget.submit_btn.setEnabled(False)
+        widget.submit_btn.setText("Processing...")
         
-        plate_text = widget.manual_input.text().strip()
-        if not plate_text:
-            widget.status_label.setText("Please enter a license plate number")
-            widget.status_label.setStyleSheet("font-size: 14px; color: #ffc107; font-weight: bold;")
-            return
-        
-        # Create data with the manually entered plate text (needed for both paths)
-        worker = self.lane_workers.get(lane)
-        image_data = None
-        if worker and hasattr(worker, "last_detection_data") and worker.last_detection_data:
-            image_data = worker.last_detection_data.get("image")
-        
-        plate_data = {
-            "text": plate_text,
-            "confidence": 1.0,  # Manual entry has full confidence
-            "image": image_data
-        }
-        
-        if self._is_blacklisted(plate_text):
-            # Handle blacklisted vehicle - auto-skip after showing message
-            widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
-            widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
+        try:
+            # Clear manual input mode flag
+            self.lanes_in_manual_mode.pop(lane, None)
             
-            # Hide all input controls, no skip button needed
-            widget.manual_input.setVisible(False)
-            widget.submit_btn.setVisible(False)
-            widget.skip_btn.setVisible(False)
+            plate_text = widget.manual_input.text().strip()
+            if not plate_text:
+                widget.status_label.setText("Please enter a license plate number")
+                widget.status_label.setStyleSheet("font-size: 14px; color: #ffc107; font-weight: bold;")
+                # Re-enable submit button for retry
+                widget.submit_btn.setEnabled(True)
+                widget.submit_btn.setText("Submit")
+                return
             
-            # Change the plate text color to indicate blacklist status
-            widget.plate_label.setText(f"BLACKLISTED: {plate_text}")
-            widget.plate_label.setStyleSheet("color: white; background-color: #dc3545; font-weight: bold;")
+            # DEADLOCK FIX: Force UI update before any potentially blocking operations
+            QApplication.processEvents()
             
-            # Log the denial - USE plate_data here, NOT data
-            self._log_entry(lane, plate_data, "denied-blacklist")
+            # Create data with the manually entered plate text (needed for both paths)
+            worker = self.lane_workers.get(lane)
+            image_data = None
+            if worker and hasattr(worker, "last_detection_data") and worker.last_detection_data:
+                image_data = worker.last_detection_data.get("image")
             
-            # Set timer to auto-skip after showing message (5 seconds)
-            if lane in self.active_timers and self.active_timers[lane].isActive():
-                self.active_timers[lane].stop()
+            plate_data = {
+                "text": plate_text,
+                "confidence": 1.0,  # Manual entry has full confidence
+                "image": image_data
+            }
             
-            denial_timer = QTimer(self)
-            denial_timer.timeout.connect(lambda: self._reset_lane(lane))
-            denial_timer.setSingleShot(True)
-            denial_timer.start(5000)  # 5 seconds
-            self.active_timers[lane] = denial_timer
-            print(f"Blacklisted vehicle in {lane} lane, will skip automatically")
-        else:
-            # Normal flow for non-blacklisted vehicles
-            self._activate_gate(lane)
-            
-            # Log the entry - plate_data is already created above
-            self._log_entry(lane, plate_data, "manual")
-            widget.status_label.setText("Access granted - manual entry")
-            widget.status_label.setStyleSheet("font-size: 14px; color: #28a745; font-weight: bold;")
+            if self._is_blacklisted(plate_text):
+                # Handle blacklisted vehicle - auto-skip after showing message
+                widget.status_label.setText("ACCESS DENIED - BLACKLISTED VEHICLE")
+                widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
+                
+                # Hide all input controls, no skip button needed
+                widget.manual_input.setVisible(False)
+                widget.submit_btn.setVisible(False)
+                widget.skip_btn.setVisible(False)
+                
+                # Change the plate text color to indicate blacklist status
+                widget.plate_label.setText(f"BLACKLISTED: {plate_text}")
+                widget.plate_label.setStyleSheet("color: white; background-color: #dc3545; font-weight: bold;")
+                
+                # Log the denial - USE plate_data here, NOT data
+                self._log_entry(lane, plate_data, "denied-blacklist")
+                
+                # Set timer to auto-skip after showing message (5 seconds)
+                if lane in self.active_timers and self.active_timers[lane].isActive():
+                    self.active_timers[lane].stop()
+                
+                denial_timer = QTimer(self)
+                denial_timer.timeout.connect(lambda: self._reset_lane(lane))
+                denial_timer.setSingleShot(True)
+                denial_timer.start(5000)  # 5 seconds
+                self.active_timers[lane] = denial_timer
+                print(f"Blacklisted vehicle in {lane} lane, will skip automatically")
+                
+            else:
+                # Normal flow for non-blacklisted vehicles
+                self._activate_gate(lane)
+                
+                # DEADLOCK FIX: Use QTimer.singleShot to defer potentially blocking log operation
+                # This prevents the UI from freezing while the circuit breaker is being checked
+                QTimer.singleShot(100, lambda: self._safe_log_entry(lane, plate_data, "manual"))
+                
+                widget.status_label.setText("Access granted - manual entry")
+                widget.status_label.setStyleSheet("font-size: 14px; color: #28a745; font-weight: bold;")
 
-            # Immediately hide input controls to prevent double submission
-            widget.manual_input.setVisible(False)
-            widget.submit_btn.setVisible(False)
-            widget.skip_btn.setVisible(False)
+                # Immediately hide input controls to prevent double submission
+                widget.manual_input.setVisible(False)
+                widget.submit_btn.setVisible(False)
+                widget.skip_btn.setVisible(False)
+                
+        except Exception as e:
+            print(f"Error in manual submit handler: {str(e)}")
+            # Reset UI on error
+            widget.submit_btn.setEnabled(True)
+            widget.submit_btn.setText("Submit")
+            widget.status_label.setText(f"Error: {str(e)}")
+            widget.status_label.setStyleSheet("font-size: 14px; color: #dc3545; font-weight: bold;")
+
+    def _safe_log_entry(self, lane, plate_data, entry_type):
+        """
+        Thread-safe wrapper for _log_entry that handles circuit breaker timeouts gracefully.
+        DEADLOCK FIX: Prevents UI freezing during network state transitions.
+        """
+        try:
+            # This will use the circuit breaker with timeout protection
+            self._log_entry(lane, plate_data, entry_type)
+        except Exception as e:
+            print(f"Error in safe log entry for {lane}: {str(e)}")
+            # Even if logging fails, the gate was already activated, so the user can proceed
 
     def _handle_manual_skip(self, lane):
         """Handle skip button press for manual entry"""

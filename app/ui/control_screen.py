@@ -773,6 +773,11 @@ class ControlScreen(QWidget):
                     widget.submit_btn.setVisible(True)
                     widget.skip_btn.setVisible(True)
                     
+                    # CRITICAL FIX: Ensure submit button is in correct state when entering manual mode
+                    # This prevents leftover "Processing..." state from previous submissions
+                    widget.submit_btn.setEnabled(True)
+                    widget.submit_btn.setText("Submit")
+                    
                     # Reset skip button to normal appearance
                     widget.skip_btn.setText("Skip")
                     widget.skip_btn.setStyleSheet("""
@@ -833,6 +838,13 @@ class ControlScreen(QWidget):
             widget = self.lane_widgets.get(lane)
             if widget:
                 widget.manual_input.clear()
+                
+                # CRITICAL FIX: Reset submit button state before hiding it
+                # This prevents the button from retaining "Processing..." state
+                widget.submit_btn.setEnabled(True)
+                widget.submit_btn.setText("Submit")
+                
+                # Now hide the input controls
                 widget.manual_input.setVisible(False)
                 widget.submit_btn.setVisible(False)
                 widget.skip_btn.setVisible(False)
@@ -1013,6 +1025,13 @@ class ControlScreen(QWidget):
         
         # Reset UI
         widget.manual_input.clear()
+        
+        # CRITICAL FIX: Reset submit button state before hiding it
+        # This prevents the button from retaining "Processing..." state
+        widget.submit_btn.setEnabled(True)
+        widget.submit_btn.setText("Submit")
+        
+        # Now hide the input controls
         widget.manual_input.setVisible(False)
         widget.submit_btn.setVisible(False)
         widget.skip_btn.setVisible(False)

@@ -44,6 +44,11 @@ class SimpleApiClient(QObject):
         self.auth_manager = AuthManager()
         self.connection_manager = ConnectionManager()
         
+        # User information for lot assignment
+        self.user_id = None
+        self.user_role = None
+        self.assigned_lots = []
+        
         # Connect to connection manager signals
         self.connection_manager.state_changed.connect(self.connection_changed.emit)
         
@@ -126,7 +131,7 @@ class SimpleApiClient(QObject):
             self.connection_manager.record_failure(f"Health check error: {str(e)}", "health-check")
             return False
 
-    def login(self, username, password):
+    def login(self, username, password, timeout=None):
         """Authenticate user and store the token."""
         if not self.connection_manager.should_attempt_operation("login"):
             return False, "API unavailable - circuit breaker OPEN", None
@@ -152,7 +157,7 @@ class SimpleApiClient(QObject):
                 login_url, 
                 data=form_data, 
                 headers=headers, 
-                timeout=self.fast_timeout
+                timeout=timeout or self.fast_timeout
             )
             
             if response.status_code == 200:
@@ -164,6 +169,14 @@ class SimpleApiClient(QObject):
                 self.auth_manager.refresh_token = data.get('refresh_token')
                 self.auth_manager.username = username
                 self.auth_manager.password = password
+                
+                # Store user information if provided
+                if 'user_id' in data:
+                    self.user_id = data['user_id']
+                if 'user_role' in data:
+                    self.user_role = data['user_role']
+                if 'assigned_lots' in data:
+                    self.assigned_lots = data['assigned_lots']
                 
                 self.connection_manager.record_success("login")
                 return True, "Login successful", data
@@ -184,6 +197,48 @@ class SimpleApiClient(QObject):
             error_msg = f"Login error: {str(e)}"
             self.connection_manager.record_failure(error_msg, "login")
             return False, error_msg, None
+
+    def is_lot_assigned(self, lot_id):
+        """Check if the current user is assigned to the specified lot."""
+        if not self.assigned_lots:
+            return False
+        
+        # Check if lot_id is in the assigned lots
+        # Handle both string and integer lot IDs
+        try:
+            # Convert to int for comparison if possible
+            lot_id_int = int(lot_id) if isinstance(lot_id, str) else lot_id
+            
+            for assigned_lot in self.assigned_lots:
+                if isinstance(assigned_lot, dict):
+                    # If assigned_lot is a dict, check the 'id' field
+                    assigned_id = assigned_lot.get('id')
+                else:
+                    # If assigned_lot is a simple value
+                    assigned_id = assigned_lot
+                
+                # Convert to int for comparison if possible
+                try:
+                    assigned_id_int = int(assigned_id) if isinstance(assigned_id, str) else assigned_id
+                    if lot_id_int == assigned_id_int:
+                        return True
+                except (ValueError, TypeError):
+                    # Fallback to string comparison
+                    if str(lot_id) == str(assigned_id):
+                        return True
+                        
+        except (ValueError, TypeError):
+            # Fallback to string comparison for all
+            for assigned_lot in self.assigned_lots:
+                if isinstance(assigned_lot, dict):
+                    assigned_id = assigned_lot.get('id')
+                else:
+                    assigned_id = assigned_lot
+                    
+                if str(lot_id) == str(assigned_id):
+                    return True
+        
+        return False
 
     def get(self, endpoint, params=None, timeout=None):
         """Perform synchronous GET request."""

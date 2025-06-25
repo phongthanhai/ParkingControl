@@ -2,7 +2,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
                             QPushButton, QLabel, QSpacerItem, QSizePolicy, QMessageBox)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QThread
 from PyQt5.QtGui import QPixmap, QPalette, QBrush
-from app.controllers.api_client import ApiClient
+from app.controllers.simple_api_client import SimpleApiClient
 from app.utils.auth_manager import AuthManager
 
 # Async login thread
@@ -35,7 +35,7 @@ class LoginScreen(QWidget):
         super().__init__()
         self.setup_ui()
         self.setup_styles()
-        self.api_client = ApiClient()
+        self.api_client = SimpleApiClient.get_instance()
         self.auth_manager = AuthManager()
 
     def setup_ui(self):
@@ -213,8 +213,8 @@ class LoginScreen(QWidget):
         # Use a more aggressive timeout for login to avoid UI freezing
         login_timeout = (5, 10)  # 5s connect, 10s read
         
-        # Create API client with the specified server URL
-        self.api_client = ApiClient()
+        # Use singleton SimpleApiClient instead of creating new instance
+        self.api_client = SimpleApiClient.get_instance()
         
         # Create and start the login thread
         self.login_thread = LoginThread(self.api_client, username, password)

@@ -311,7 +311,10 @@ class SimpleApiClient(QObject):
 
     def recognize_plate(self, image, timeout=None):
         """
-        Synchronous plate recognition with rate limiting and circuit breaker protection.
+        Synchronous plate recognition using external PlateRecognizer service.
+        
+        IMPORTANT: This method is INDEPENDENT of the server API circuit breaker.
+        PlateRecognizer failures do NOT affect server connectivity status.
         
         Returns:
             tuple: (success, (plate_text, confidence) or error_message)
@@ -327,7 +330,8 @@ class SimpleApiClient(QObject):
             _, img_encoded = cv2.imencode('.jpg', image)
             img_bytes = BytesIO(img_encoded.tobytes())
             
-            # Make API request
+            # Make API request to EXTERNAL PlateRecognizer service
+            # NOTE: This does NOT affect our server's circuit breaker state
             response = requests.post(
                 PLATE_RECOGNIZER_URL,
                 files={'upload': img_bytes},
@@ -348,6 +352,7 @@ class SimpleApiClient(QObject):
                 return False, f"PlateRecognizer API error: {response.status_code}"
                 
         except Exception as e:
+            # OCR service errors are independent of server API status
             return False, f"PlateRecognizer error: {str(e)}"
 
     def refresh_token(self):

@@ -5,7 +5,6 @@ import threading
 from datetime import datetime
 from PyQt5.QtCore import QObject, pyqtSignal, QThread, QTimer, QMutex, QMetaObject, Qt, Q_ARG
 from app.utils.db_manager import DBManager
-from app.controllers.api_client import ApiClient
 from config import LOT_ID, API_BASE_URL
 from app.utils.image_storage import ImageStorage
 from app.controllers.simple_api_client import SimpleApiClient
@@ -254,6 +253,9 @@ class SyncService(QObject):
         # Image storage
         self.image_storage = ImageStorage()
         
+        # Track offline state for auto-sync trigger
+        self._was_offline = True  # Start assuming offline until proven otherwise
+        
         # Initialize the sync worker
         self.sync_worker = SyncWorker(self)
         self.sync_worker.sync_progress.connect(self._handle_sync_progress)
@@ -263,8 +265,9 @@ class SyncService(QObject):
         self.sync_worker.start()
         print("Sync worker thread started")
         
-        # Connect API status changes 
+        # Connect API status changes for auto-sync
         self.api_client.connection_changed.connect(self.api_status_changed.emit)
+        self.api_client.connection_changed.connect(self._handle_connection_change)
         
         # Sync timers and timestamps
         self.last_sync_time = 0
@@ -283,7 +286,7 @@ class SyncService(QObject):
         self.health_check_timer.timeout.connect(self._perform_health_check)
         self.health_check_timer.start(30000)  # Check every 30 seconds
         
-        print("SyncService initialized - sync only on demand")
+        print("SyncService initialized - auto-sync enabled on connection restore")
 
     def can_sync(self):
         """Check if sync operations are allowed based on connection state"""
@@ -471,3 +474,36 @@ class SyncService(QObject):
             self.stop()
         except Exception as e:
             print(f"Error during sync service cleanup: {str(e)}")
+
+    def _handle_connection_change(self, is_online):
+        """Handle connection state changes for auto-sync"""
+        if is_online and self._was_offline:
+            print("Connection restored - triggering automatic sync")
+            # Small delay to ensure connection is stable (as requested)
+            QTimer.singleShot(3000, self._perform_auto_sync)
+            self._was_offline = False
+        elif not is_online:
+            self._was_offline = True
+            print("Connection lost - will auto-sync when restored")
+
+    def _perform_auto_sync(self):
+        """Perform automatic sync without UI dialogs (best effort)"""
+        try:
+            counts = self.get_pending_sync_counts()
+            if counts["total"] > 0:
+                print(f"Auto-sync: Found {counts['total']} items to sync")
+                
+                # Set context for automatic sync
+                self.sync_worker.context = "auto_reconnect"
+                
+                # Trigger sync (best effort - no blocking)
+                if counts["logs"] > 0:
+                    self.sync_worker.request_sync("logs")
+                    
+                print(f"Auto-sync triggered for {counts['total']} items")
+            else:
+                print("Auto-sync: No items to sync")
+                
+        except Exception as e:
+            print(f"Auto-sync error: {e}")
+            # Don't raise - this is best effort

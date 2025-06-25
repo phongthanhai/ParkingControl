@@ -365,49 +365,64 @@ class SimpleApiClient(QObject):
 
     def recognize_plate(self, image, timeout=None):
         """
-        Synchronous plate recognition using external PlateRecognizer service.
-        
-        IMPORTANT: This method is INDEPENDENT of the server API circuit breaker.
-        PlateRecognizer failures do NOT affect server connectivity status.
-        
-        Returns:
-            tuple: (success, (plate_text, confidence) or error_message)
+        Use PlateRecognizer service to recognize license plates from an image.
+        Uses singleton pattern and rate limiting.
         """
+        if PLATE_RECOGNIZER_API_KEY == "":
+            return False, "PlateRecognizer API key not configured"
+        
+        # Rate limiting
+        with self.plate_rate_limit_lock:
+            current_time = time.time()
+            time_since_last = current_time - self.last_plate_call
+            
+            if time_since_last < OCR_RATE_LIMIT:
+                sleep_time = OCR_RATE_LIMIT - time_since_last
+                print(f"Rate limiting: sleeping for {sleep_time:.2f} seconds")
+                time.sleep(sleep_time)
+            
+            self.last_plate_call = time.time()
+        
         try:
-            # Check rate limiting
-            with self.plate_rate_limit_lock:
-                if time.time() - self.last_plate_call < OCR_RATE_LIMIT:
-                    return False, "Rate limit - too many requests"
-                self.last_plate_call = time.time()
+            # ✅ FIXED: Proper image format for PlateRecognizer
+            _, img_encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            img_bytes = BytesIO(img_encoded)
             
-            # Convert image to bytes
-            _, img_encoded = cv2.imencode('.jpg', image)
-            img_bytes = BytesIO(img_encoded.tobytes())
+            # Add debugging as per guide
+            print(f"🔍 OCR Request URL: {PLATE_RECOGNIZER_URL}")
+            print(f"🔑 API Key present: {'Yes' if PLATE_RECOGNIZER_API_KEY else 'No'}")
+            print(f"📸 Image size: {image.shape if hasattr(image, 'shape') else 'Unknown'}")
             
-            # Make API request to EXTERNAL PlateRecognizer service
-            # NOTE: This does NOT affect our server's circuit breaker state
-            response = requests.post(
+            response = self.session.post(
                 PLATE_RECOGNIZER_URL,
-                files={'upload': img_bytes},
+                files={'upload': ('image.jpg', img_bytes, 'image/jpeg')},  # ✅ FIXED: Proper file tuple
                 headers={'Authorization': f'Token {PLATE_RECOGNIZER_API_KEY}'},
                 timeout=timeout or self.plate_recognizer_timeout
             )
             
-            if response.status_code == 201:
-                results = response.json()
-                if results['results']:
-                    plate_data = results['results'][0]
-                    return True, (plate_data['plate'], plate_data['score'])
-                else:
-                    return False, "No plate detected"
-            elif response.status_code == 429:
-                return False, "API rate limit exceeded"
+            print(f"📡 Response status: {response.status_code}")
+            print(f"📋 Response content: {response.text[:200]}...")
+            
+            if response.status_code == 200:
+                result = response.json()
+                return True, result
             else:
-                return False, f"PlateRecognizer API error: {response.status_code}"
+                error_msg = f"PlateRecognizer HTTP {response.status_code}: {response.text}"
+                print(f"❌ PlateRecognizer error: {error_msg}")
+                return False, error_msg
                 
+        except requests.exceptions.ConnectTimeout:
+            error_msg = "PlateRecognizer timeout - server not responding"
+            print(f"❌ PlateRecognizer timeout")
+            return False, error_msg
+        except requests.exceptions.ConnectionError:
+            error_msg = "PlateRecognizer connection error"
+            print(f"❌ PlateRecognizer connection error")
+            return False, error_msg
         except Exception as e:
-            # OCR service errors are independent of server API status
-            return False, f"PlateRecognizer error: {str(e)}"
+            error_msg = f"PlateRecognizer error: {str(e)}"
+            print(f"❌ PlateRecognizer error: {error_msg}")
+            return False, error_msg
 
     def refresh_token(self):
         """Enhanced token refresh with retry logic and fallback."""
@@ -532,3 +547,47 @@ class SimpleApiClient(QObject):
             self.session.close()
         except:
             pass
+
+    # === SMART API METHODS FOR EVENT-DRIVEN UPDATES ===
+    
+    def get_occupancy_async(self, lot_id, callback=None, context=None):
+        """Get parking lot occupancy - event-driven refresh"""
+        if not self.is_online():
+            if callback:
+                callback(False, "API offline - circuit breaker OPEN", context)
+            return
+        
+        endpoint = f"services/parking-lots/{lot_id}/occupancy/"
+        self.get_async(endpoint, callback=callback, context=context)
+    
+    def get_blacklist_async(self, lot_id, callback=None, context=None):
+        """Get blacklist for lot - event-driven refresh"""
+        if not self.is_online():
+            if callback:
+                callback(False, "API offline - circuit breaker OPEN", context)
+            return
+        
+        endpoint = f"services/parking-lots/{lot_id}/blacklist/"
+        self.get_async(endpoint, callback=callback, context=context)
+    
+    def get_vehicle_history_async(self, lot_id, limit=50, callback=None, context=None):
+        """Get recent vehicle history - event-driven refresh"""
+        if not self.is_online():
+            if callback:
+                callback(False, "API offline - circuit breaker OPEN", context)
+            return
+        
+        params = {
+            'lot_id': lot_id,
+            'limit': limit,
+            'order_by': '-entry_time'  # Most recent first
+        }
+        
+        self.get_async(
+            "services/vehicle-history/",
+            callback=callback,
+            params=params,
+            context=context
+        )
+
+    # === ASYNC METHODS (for non-blocking operations) ===

@@ -14,6 +14,7 @@ from app.ui.control_screen import ControlScreen
 from app.utils.db_manager import DBManager
 from app.utils.image_storage import ImageStorage
 from app.controllers.sync_service import SyncService
+from app.ui.sync_status_widget import SyncStatusWidget
 
 class ExitSyncDialog(QDialog):
     """Dialog that shows sync progress during application exit"""

@@ -247,20 +247,69 @@ class ControlScreen(QWidget):
         # Connect to connection manager for API status updates
         self.api_client.connection_changed.connect(self._handle_connection_state_change)
         
-        # Start health monitoring timer - simplified
-        self.health_timer = QTimer()
-        self.health_timer.timeout.connect(self._perform_health_check)
-        self.health_timer.start(5000)  # Check every 5 seconds
+        # Setup timers for health checks and data refresh
+        self.health_timer = QTimer(self)
+        self.health_timer.timeout.connect(self._check_api_health)
+        self.health_timer.start(30000)  # Check every 30 seconds
+        
+        # Initial connections check and data loading using smart refresh
+        if self.api_client.is_online():
+            print("API is online - performing initial smart data refresh...")
+            QTimer.singleShot(500, self.initialize_smart_data_refresh)
         
         # Start UI responsiveness check
         self.ui_timer = QTimer()
         self.ui_timer.timeout.connect(self._check_ui_responsiveness)
         self.ui_timer.start(200)  # Check every 200ms
         
-        # Initial data loading with delays to prevent overwhelming
-        QTimer.singleShot(1000, self._update_occupancy)
-        QTimer.singleShot(2000, self._fetch_logs)
-        QTimer.singleShot(3000, self._update_blacklist_cache)
+        # Smart data refresh will be initialized after cache setup
+        
+        # Smart data refresh replaces the old timer-based approach
+        # QTimer.singleShot calls removed - using event-driven updates instead
+        
+        # Initialize data caching for offline support
+        self.occupancy_cache = {}
+        self.blacklist_cache = []
+        self.history_cache = []
+        self.cache_dir = "data"
+        self._ensure_cache_directory()
+        
+        # Load cached data on startup
+        self._load_cached_data()
+
+        # Initialize smart data refresh system instead of timer-based
+        self.initialize_smart_data_refresh()
+
+    def _ensure_cache_directory(self):
+        """Ensure cache directory exists"""
+        import os
+        if not os.path.exists(self.cache_dir):
+            os.makedirs(self.cache_dir)
+    
+    def _load_cached_data(self):
+        """Load cached data for offline use"""
+        import json
+        import os
+        
+        try:
+            # Load blacklist cache
+            blacklist_file = os.path.join(self.cache_dir, "blacklist_cache.json")
+            if os.path.exists(blacklist_file):
+                with open(blacklist_file, 'r') as f:
+                    cache_data = json.load(f)
+                    self.blacklist_cache = cache_data.get('blacklist', [])
+                    print(f"📱 Loaded {len(self.blacklist_cache)} blacklist entries from cache")
+            
+            # Load history cache
+            history_file = os.path.join(self.cache_dir, "history_cache.json")
+            if os.path.exists(history_file):
+                with open(history_file, 'r') as f:
+                    cache_data = json.load(f)
+                    self.history_cache = cache_data.get('records', [])
+                    print(f"📱 Loaded {len(self.history_cache)} history records from cache")
+                    
+        except Exception as e:
+            print(f"❌ Failed to load cached data: {e}")
 
     def _setup_gpio(self):
         try:
@@ -943,6 +992,7 @@ class ControlScreen(QWidget):
         """
         CRITICAL FIX: Simplified log entry method that uses circuit breaker for fast-fail.
         This eliminates the race condition vulnerability.
+        ENHANCED: Now includes smart data refresh on vehicle events.
         """
         try:
             # Current timestamp with ms precision
@@ -960,6 +1010,16 @@ class ControlScreen(QWidget):
                 "processed": False  # Add a processed flag to track this entry 
             }
             print(f"Log entry created: {log_data}")
+            
+            # 🚗 SMART REFRESH: Trigger data updates on actual vehicle movement
+            if entry_type in ['auto', 'manual']:
+                vehicle_data = {
+                    'plate_number': data.get('text', 'N/A'),
+                    'lane': lane,
+                    'confidence': data.get('confidence', 0.0)
+                }
+                event_type = 'entry' if lane == 'entry' else 'exit'
+                self.on_vehicle_event(event_type, vehicle_data)
             
             # Store denied-blacklist entries locally only in UI, not in DB
             if entry_type == "denied-blacklist":
@@ -1827,25 +1887,8 @@ class ControlScreen(QWidget):
         )
 
     def _is_blacklisted(self, plate):
-        """Check if a license plate is blacklisted using local cache"""
-        if not plate:
-            return False
-            
-        # Normalize plate format for comparison
-        normalized_plate = plate.upper().strip()
-        
-        # Check if the plate is in the blacklist set
-        result = normalized_plate in self.blacklisted_plates
-        
-        # Add debug logging - only log when plate is actually found to avoid noise
-        if result:
-            print(f"BLACKLIST CHECK: Plate {normalized_plate} IS blacklisted")
-        
-        # Print current blacklist when making a check (for debugging purposes)
-        if hasattr(self, 'debug_blacklist') and self.debug_blacklist:
-            print(f"Current blacklist: {self.blacklisted_plates}")
-            
-        return result
+        """Enhanced blacklist check with smart caching"""
+        return self._enhanced_is_blacklisted(plate)
 
     def force_refresh_blacklist(self):
         """Force an immediate refresh of the blacklist data"""
@@ -2162,3 +2205,181 @@ class ControlScreen(QWidget):
             QTimer.singleShot(1000, self._update_occupancy)
             QTimer.singleShot(2000, self._fetch_logs)
             QTimer.singleShot(3000, self._update_blacklist_cache)
+
+    # === SMART DATA REFRESH METHODS (Event-Driven) ===
+    
+    def _smart_update_occupancy(self):
+        """Smart occupancy refresh - called on vehicle events"""
+        if not self.api_client.is_online():
+            print("Cannot fetch occupancy - API offline")
+            return
+        
+        def handle_occupancy_result(success, result, context):
+            if success and isinstance(result, dict):
+                # Update UI with occupancy data
+                total_spaces = result.get('total_spaces', 0)
+                occupied_spaces = result.get('occupied_spaces', 0)
+                available_spaces = total_spaces - occupied_spaces
+                
+                # Update occupancy display
+                self._process_occupancy_data(result)
+                print(f"✅ Smart occupancy updated: {occupied_spaces}/{total_spaces}")
+            else:
+                print(f"❌ Failed to fetch occupancy: {result}")
+        
+        # Use smart API method
+        self.api_client.get_occupancy_async(
+            LOT_ID,
+            callback=handle_occupancy_result,
+            context="smart_occupancy_refresh"
+        )
+    
+    def _smart_update_blacklist_cache(self):
+        """Smart blacklist refresh - called on vehicle events"""
+        if not self.api_client.is_online():
+            print("Cannot fetch blacklist - using cached data")
+            return
+        
+        def handle_blacklist_result(success, result, context):
+            if success and isinstance(result, list):
+                # Update local blacklist cache
+                self.blacklist_cache = result
+                print(f"✅ Smart blacklist updated: {len(result)} entries")
+                
+                # Save to local storage for offline use
+                self._save_blacklist_cache(result)
+            else:
+                print(f"❌ Failed to fetch blacklist: {result}")
+        
+        # Use smart API method
+        self.api_client.get_blacklist_async(
+            LOT_ID,
+            callback=handle_blacklist_result,
+            context="smart_blacklist_refresh"
+        )
+    
+    def _smart_update_vehicle_history(self, limit=50):
+        """Smart vehicle history refresh - called on vehicle events"""
+        if not self.api_client.is_online():
+            print("Cannot fetch history - showing local data")
+            self._show_local_history()
+            return
+        
+        def handle_history_result(success, result, context):
+            if success and isinstance(result, dict):
+                history_records = result.get('records', [])
+                total_count = result.get('total', 0)
+                
+                # Update history display (refresh the log table)
+                self._clear_log_table()
+                for log_entry in history_records:
+                    self._add_log_entry(log_entry)
+                
+                print(f"✅ Smart history updated: {len(history_records)} records")
+                
+                # Cache for offline use
+                self._save_history_cache(history_records)
+            else:
+                print(f"❌ Failed to fetch history: {result}")
+        
+        # Use smart API method
+        self.api_client.get_vehicle_history_async(
+            LOT_ID,
+            limit=limit,
+            callback=handle_history_result,
+            context="smart_history_refresh"
+        )
+    
+    def _save_blacklist_cache(self, blacklist_data):
+        """Save blacklist to local storage for offline access"""
+        import json
+        import os
+        from datetime import datetime
+        
+        try:
+            cache_file = os.path.join(self.cache_dir, "blacklist_cache.json")
+            
+            with open(cache_file, 'w') as f:
+                json.dump({
+                    'updated_at': datetime.now().isoformat(),
+                    'blacklist': blacklist_data
+                }, f)
+            print(f"💾 Blacklist cached locally: {len(blacklist_data)} entries")
+        except Exception as e:
+            print(f"❌ Failed to cache blacklist: {e}")
+    
+    def _save_history_cache(self, history_records):
+        """Save recent history for offline viewing"""
+        import json
+        import os
+        from datetime import datetime
+        
+        try:
+            cache_file = os.path.join(self.cache_dir, "history_cache.json")
+            
+            with open(cache_file, 'w') as f:
+                json.dump({
+                    'updated_at': datetime.now().isoformat(),
+                    'records': history_records[:20]  # Keep last 20 records
+                }, f)
+            print(f"💾 History cached locally: {len(history_records)} records")
+        except Exception as e:
+            print(f"❌ Failed to cache history: {e}")
+    
+    def _show_local_history(self):
+        """Show cached history when offline"""
+        import json
+        import os
+        
+        try:
+            cache_file = os.path.join(self.cache_dir, "history_cache.json")
+            if os.path.exists(cache_file):
+                with open(cache_file, 'r') as f:
+                    cache_data = json.load(f)
+                    history_records = cache_data.get('records', [])
+                    
+                    # Update history display
+                    self._clear_log_table()
+                    for log_entry in history_records:
+                        self._add_log_entry(log_entry)
+                    
+                    print(f"📱 Showing cached history: {len(history_records)} records")
+            else:
+                print("No cached history available")
+        except Exception as e:
+            print(f"❌ Failed to load history cache: {e}")
+    
+    def _enhanced_is_blacklisted(self, plate_number):
+        """Enhanced blacklist check with offline support"""
+        if self.api_client.is_online():
+            # Use fresh blacklist cache
+            blacklist = self.blacklist_cache
+        else:
+            # Use cached data when offline
+            blacklist = self.blacklist_cache
+        
+        return any(entry.get('plate_number') == plate_number for entry in blacklist)
+    
+    def on_vehicle_event(self, event_type, vehicle_data):
+        """Unified handler for vehicle events - triggers smart refresh"""
+        print(f"🚗 Vehicle event: {event_type} - {vehicle_data.get('plate_number', 'Unknown')}")
+        
+        if event_type in ['entry', 'exit']:
+            # Smart refresh on actual vehicle movement
+            print("🔄 Triggering smart data refresh...")
+            self._smart_update_occupancy()        # Real-time occupancy
+            self._smart_update_blacklist_cache()  # Fresh blacklist data
+            self._smart_update_vehicle_history()  # Updated history
+            
+            print("✅ Smart data refresh triggered by vehicle event")
+
+    def initialize_smart_data_refresh(self):
+        """Initial data load when control screen starts"""
+        if self.api_client.is_online():
+            print("🔄 Initial smart data refresh...")
+            self._smart_update_occupancy()
+            self._smart_update_blacklist_cache()
+            self._smart_update_vehicle_history()
+        else:
+            print("📱 Using cached data - offline mode")
+            self._show_local_history()

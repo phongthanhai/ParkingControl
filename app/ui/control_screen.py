@@ -217,6 +217,13 @@ class ControlScreen(QWidget):
         # FIXED: Initialize local blacklist logs for UI display
         self.local_blacklist_logs = []
         
+        # ✅ FIXED: Add missing attributes for health check handling
+        self.api_available = True  # Start optimistic, will be updated by health checks
+        self.consecutive_failures = 0
+        self.max_api_retries = 5  # Match the connection manager threshold
+        self.last_successful_connection = time.time()
+        self.api_retry_count = 0
+        
         # Initialize database manager
         self.db_manager = DBManager()
         
@@ -1594,10 +1601,23 @@ class ControlScreen(QWidget):
             return
         
         def handle_result(success, result, context):
-            if success and isinstance(result, list):
-                # FIXED: Clear existing logs and add new ones using the new UI structure
+            if success:
+                history_records = []
+                
+                # ✅ FIXED: Handle both list and dict response formats
+                if isinstance(result, list):
+                    # API returned a list directly
+                    history_records = result
+                elif isinstance(result, dict):
+                    # API returned dict with 'records' field
+                    history_records = result.get('records', [])
+                else:
+                    print(f"Failed to fetch logs: Unexpected response format {type(result)}")
+                    return
+                
+                # Clear existing logs and add new ones
                 self._clear_log_table()
-                for log_entry in result:
+                for log_entry in history_records:
                     self._add_log_entry(log_entry)
             else:
                 print(f"Failed to fetch logs: {result}")
@@ -2311,16 +2331,27 @@ class ControlScreen(QWidget):
             return
         
         def handle_history_result(success, result, context):
-            if success and isinstance(result, dict):
-                history_records = result.get('records', [])
-                total_count = result.get('total', 0)
+            if success:
+                history_records = []
+                
+                # ✅ FIXED: Handle both list and dict response formats
+                if isinstance(result, list):
+                    # API returned a list directly (actual format)
+                    history_records = result
+                    print(f"✅ Smart history updated: {len(history_records)} records")
+                elif isinstance(result, dict):
+                    # API returned dict with 'records' field (expected format)
+                    history_records = result.get('records', [])
+                    total_count = result.get('total', 0)
+                    print(f"✅ Smart history updated: {len(history_records)} records of {total_count} total")
+                else:
+                    print(f"❌ Unexpected history response format: {type(result)}")
+                    return
                 
                 # Update history display (refresh the log table)
                 self._clear_log_table()
                 for log_entry in history_records:
                     self._add_log_entry(log_entry)
-                
-                print(f"✅ Smart history updated: {len(history_records)} records")
                 
                 # Cache for offline use
                 self._save_history_cache(history_records)

@@ -260,7 +260,12 @@ class ControlScreen(QWidget):
         # Setup timers for health checks and data refresh
         self.health_timer = QTimer(self)
         self.health_timer.timeout.connect(self._check_api_health)
-        self.health_timer.start(30000)  # Check every 30 seconds
+        self.health_timer.start(5000)  # ⚡ FASTER: Check every 5 seconds (was 30s)
+        
+        # ⚡ NEW: Periodic data refresh timer (every 2 minutes when online)
+        self.data_refresh_timer = QTimer(self)
+        self.data_refresh_timer.timeout.connect(self._periodic_data_refresh)
+        self.data_refresh_timer.start(120000)  # 2 minutes = 120,000 ms
         
         # Initial connections check and data loading using smart refresh
         if self.api_client.is_online():
@@ -2104,6 +2109,9 @@ class ControlScreen(QWidget):
             self.ui_timer.stop()
         if hasattr(self, 'blacklist_timer') and self.blacklist_timer.isActive():
             self.blacklist_timer.stop()
+        if hasattr(self, 'data_refresh_timer') and self.data_refresh_timer.isActive():
+            self.data_refresh_timer.stop()
+            print("Periodic data refresh timer stopped")
         
         # Stop workers
         with self.worker_guard:
@@ -2227,6 +2235,11 @@ class ControlScreen(QWidget):
                 self.api_status_indicator.setStyleSheet("background-color: green; border-radius: 7px;")
                 self.api_status_label.setText("Server: Connected")
                 print("UI updated: API status set to CONNECTED")
+                
+                # 🚀 IMMEDIATE REFRESH: Update all data when connection is restored
+                print("🔄 Connection restored - performing immediate data refresh")
+                QTimer.singleShot(1000, self._immediate_full_refresh)  # 1 second delay to ensure connection is stable
+                
             else:
                 self.api_status_indicator.setStyleSheet("background-color: red; border-radius: 7px;")
                 self.api_status_label.setText("Server: Disconnected")
@@ -2236,6 +2249,13 @@ class ControlScreen(QWidget):
             QApplication.processEvents()
         except Exception as e:
             print(f"Error updating API status UI: {str(e)}")
+
+    def _immediate_full_refresh(self):
+        """Immediate full data refresh when connection is restored"""
+        print("🚀 Performing immediate full data refresh after connection restore")
+        self._smart_update_occupancy()        # Real-time occupancy
+        self._smart_update_blacklist_cache()  # Fresh blacklist data  
+        self._smart_update_vehicle_history(limit=50)  # Recent history
 
     def _handle_connection_transition(self, from_state, to_state):
         """
@@ -2259,21 +2279,32 @@ class ControlScreen(QWidget):
     def _smart_update_occupancy(self):
         """Smart occupancy refresh - called on vehicle events"""
         if not self.api_client.is_online():
-            print("Cannot fetch occupancy - API offline")
+            print("⛔ Cannot fetch occupancy - API offline")
             return
+        
+        print("📊 Fetching occupancy data...")
         
         def handle_occupancy_result(success, result, context):
             if success and isinstance(result, dict):
                 # Update UI with occupancy data
-                total_spaces = result.get('total_spaces', 0)
-                occupied_spaces = result.get('occupied_spaces', 0)
-                available_spaces = total_spaces - occupied_spaces
-                
-                # Update occupancy display
                 self._process_occupancy_data(result)
-                print(f"✅ Smart occupancy updated: {occupied_spaces}/{total_spaces}")
+                
+                # Add timestamp indicator
+                current_time = datetime.now().strftime("%H:%M:%S")
+                print(f"✅ Smart occupancy updated at {current_time}")
             else:
                 print(f"❌ Failed to fetch occupancy: {result}")
+                # Show error in UI
+                self.occupancy_label.setText("Occupancy data unavailable")
+                self.occupancy_label.setStyleSheet("""
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: white;
+                    background-color: #e74c3c;
+                    padding: 10px;
+                    border-radius: 4px;
+                    margin: 10px 0;
+                """)
         
         # Use smart API method
         self.api_client.get_occupancy_async(
@@ -2285,8 +2316,10 @@ class ControlScreen(QWidget):
     def _smart_update_blacklist_cache(self):
         """Smart blacklist refresh - called on vehicle events"""
         if not self.api_client.is_online():
-            print("Cannot fetch blacklist - using cached data")
+            print("⛔ Cannot fetch blacklist - using cached data")
             return
+        
+        print("🚫 Fetching blacklist data...")
         
         def handle_blacklist_result(success, result, context):
             if success and isinstance(result, list):
@@ -2309,7 +2342,8 @@ class ControlScreen(QWidget):
                 self.blacklisted_plates = new_blacklist  # For old compatibility
                 self.blacklist_cache = blacklist_cache   # For new smart caching
                 
-                print(f"✅ Smart blacklist updated: {len(blacklist_cache)} entries")
+                current_time = datetime.now().strftime("%H:%M:%S")
+                print(f"✅ Smart blacklist updated at {current_time}: {len(blacklist_cache)} entries")
                 
                 # Save to local storage for offline use
                 self._save_blacklist_cache(blacklist_cache)
@@ -2326,9 +2360,11 @@ class ControlScreen(QWidget):
     def _smart_update_vehicle_history(self, limit=50):
         """Smart vehicle history refresh - called on vehicle events"""
         if not self.api_client.is_online():
-            print("Cannot fetch history - showing local data")
+            print("⛔ Cannot fetch history - showing local data")
             self._show_local_history()
             return
+        
+        print(f"📋 Fetching vehicle history (limit: {limit})...")
         
         def handle_history_result(success, result, context):
             if success:
@@ -2338,12 +2374,14 @@ class ControlScreen(QWidget):
                 if isinstance(result, list):
                     # API returned a list directly (actual format)
                     history_records = result
-                    print(f"✅ Smart history updated: {len(history_records)} records")
+                    current_time = datetime.now().strftime("%H:%M:%S")
+                    print(f"✅ Smart history updated at {current_time}: {len(history_records)} records")
                 elif isinstance(result, dict):
                     # API returned dict with 'records' field (expected format)
                     history_records = result.get('records', [])
                     total_count = result.get('total', 0)
-                    print(f"✅ Smart history updated: {len(history_records)} records of {total_count} total")
+                    current_time = datetime.now().strftime("%H:%M:%S")
+                    print(f"✅ Smart history updated at {current_time}: {len(history_records)} records of {total_count} total")
                 else:
                     print(f"❌ Unexpected history response format: {type(result)}")
                     return
@@ -2466,3 +2504,15 @@ class ControlScreen(QWidget):
         else:
             print("📱 Using cached data - offline mode")
             self._show_local_history()
+
+    def _periodic_data_refresh(self):
+        """Periodic background refresh of occupancy and history data (every 2 minutes)"""
+        if not self.api_client.is_online():
+            print("⏸️ Periodic refresh skipped - offline mode")
+            return
+        
+        print("🔄 Periodic data refresh triggered (2-minute interval)")
+        # Only refresh occupancy and history periodically
+        # Blacklist doesn't change as frequently, so we only refresh it on vehicle events
+        self._smart_update_occupancy()
+        self._smart_update_vehicle_history(limit=30)  # Smaller limit for periodic updates

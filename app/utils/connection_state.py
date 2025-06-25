@@ -51,7 +51,7 @@ class ConnectionManager(QObject):
         self.last_success_time = time.time()
         
         # ENHANCED: More robust configuration to prevent false positives
-        self.consecutive_failure_threshold = 5      # Require 5 consecutive failures (like original)
+        self.consecutive_failure_threshold = 3      # ⚡ FASTER: 3 consecutive failures (was 5)
         self.failure_rate_threshold = 0.8          # 80% failure rate in time window
         self.failure_rate_window = 60              # 60 second sliding window
         self.min_attempts_for_rate = 3             # Minimum attempts before rate calculation

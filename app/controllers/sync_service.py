@@ -284,7 +284,7 @@ class SyncService(QObject):
         print("Setting up health monitoring timer")
         self.health_check_timer = QTimer(self)
         self.health_check_timer.timeout.connect(self._perform_health_check)
-        self.health_check_timer.start(30000)  # Check every 30 seconds
+        self.health_check_timer.start(5000)  # ⚡ FASTER: Check every 5 seconds (was 30s)
         
         print("SyncService initialized - auto-sync enabled on connection restore")
 

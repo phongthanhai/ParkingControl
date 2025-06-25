@@ -18,6 +18,7 @@ class LaneState:
     ERROR = "error"
 
 class LaneWorker(QThread):
+    # Communication signals -> Update control screen UI
     detection_signal = pyqtSignal(str, object, str, float, bool)  # lane, frame, text, confidence, valid
     status_signal = pyqtSignal(str, str, dict)  # lane, status, data
     error_signal = pyqtSignal(str, str)  # lane, error
@@ -27,16 +28,16 @@ class LaneWorker(QThread):
         self.lane_type = lane_type
         self.state = LaneState.IDLE
         
-        # Thread safety objects
-        self.mutex = QMutex()
+        # Controls main processing loop, pausing and resuming functionality
+        self.mutex = QMutex() 
         self.condition = QWaitCondition()
         self.camera_lock = threading.Lock()
         
-        # Processing objects
+        # detector: 
         self.detector = None
         self.recognizer = None
         
-        # Control flags
+        # Flag for lane state, camera index
         self._running = True
         self._paused = False
         self._camera_index = CAMERA_SOURCES.get(lane_type)
@@ -65,7 +66,7 @@ class LaneWorker(QThread):
     
     def _initialize_resources(self):
         try:
-            # Initialize processing resources in the worker thread
+            # Initialize Yolo detector and PlateRecognizer
             self.detector = PlateDetector()
             self.recognizer = PlateRecognizer()
             self.recognizer.error_signal.connect(
@@ -84,7 +85,7 @@ class LaneWorker(QThread):
             
             # Set initial timeout for camera initialization
             init_start_time = time.time()
-            init_timeout = 5.0  # 5 seconds max for initialization
+            init_timeout = 5.0  # 5 seconds max for init
             
             with self.camera_lock:
                 if self._cap is not None and self._cap.isOpened():
@@ -100,7 +101,7 @@ class LaneWorker(QThread):
                     if time.time() - init_start_time > init_timeout:
                         raise RuntimeError(f"Camera {self._camera_index} initialization timed out")
                         
-                    # Wait a bit and retry
+                    # Retry camera init
                     time.sleep(0.5)
                     attempts += 1
                     self._cap = cv2.VideoCapture(self._camera_index)
@@ -108,14 +109,13 @@ class LaneWorker(QThread):
                 if not self._cap.isOpened():
                     raise RuntimeError(f"Camera {self._camera_index} not available after {max_attempts} attempts")
                 
-                # Camera configuration
+                # Camera config
                 self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
                 self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_RESOLUTION[0])
                 self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_RESOLUTION[1])
                 self._cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
                 
-                # Warm-up period - read a few frames to stabilize
-                # Add timeout to warm-up as well
+                # Warm-up camera
                 warmup_start = time.time()
                 warmup_timeout = 3.0  # 3 seconds max for warm-up
                 
@@ -189,7 +189,7 @@ class LaneWorker(QThread):
                 return None
                 
             self._error_count = 0
-            self._last_frame = frame.copy()  # Keep a copy for debugging
+            self._last_frame = frame.copy()  # Store last frame to debug
             return frame
             
         except Exception as e:
@@ -204,6 +204,7 @@ class LaneWorker(QThread):
             
         try:
             if self.cooldown_active:
+                # Cooldown period, wait for a new vehicle to enter the lane
                 self.detection_signal.emit(
                     self.lane_type,
                     frame,
@@ -239,11 +240,11 @@ class LaneWorker(QThread):
                     api_timeout = True
                     self.error_signal.emit(self.lane_type, f"PlateRecognizer API Error: {str(e)}")
             
-            # Ensure we have valid data types for signal
+            # Default values
             plate_text = plate_text if plate_text is not None else "Scanning..."
             confidence = float(confidence) if confidence is not None else 0.0
             
-            # Validation
+            # Validation check with regex
             is_valid = False
             if plate_text and plate_text != "Scanning...":
                 is_valid = VIETNAMESE_PLATE_PATTERN.match(plate_text) is not None

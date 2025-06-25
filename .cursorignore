@@ -1,7 +1,7 @@
-*.onnx
-**/__pycache__/
-venv/
-**/venv/
-**/venv/**
-
+/venv
+/dist
+/build
+.gitignore
+detect_lp_dynamic_nms_opset18.onnx
+local_data.db
 

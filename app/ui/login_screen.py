@@ -5,7 +5,7 @@ from PyQt5.QtGui import QPixmap, QPalette, QBrush
 from app.controllers.api_client import ApiClient
 from app.utils.auth_manager import AuthManager
 
-# Add LoginThread class to handle asynchronous login
+# Async login thread
 class LoginThread(QThread):
     login_result = pyqtSignal(bool, str, object)  # success, message, data
     
@@ -17,19 +17,18 @@ class LoginThread(QThread):
         
     def run(self):
         try:
-            # Use a reasonable timeout for login
             login_timeout = (5.0, 10.0)  # 5s connect, 10s read
             success, message, data = self.api_client.login(
                 self.username, self.password, timeout=login_timeout
             )
-            # Emit result signal with all data including potential refresh token
+            # Emit result signal with all data, can include refresh token
             self.login_result.emit(success, message, data)
         except Exception as e:
             # Handle any exceptions during login
             self.login_result.emit(False, str(e), None)
 
 class LoginScreen(QWidget):
-    login_success = pyqtSignal()  # Signal for screen navigation
+    login_success = pyqtSignal()  # Signal for screen switching
     login_failed = pyqtSignal(str)
 
     def __init__(self):
@@ -115,7 +114,7 @@ class LoginScreen(QWidget):
         self.setAutoFillBackground(True)
         
         # Set background image
-        self.set_background_image("/home/raspberrypi/Documents/ParkingControl/app/resources/parking.jpg")  # Update path as needed
+        self.set_background_image("/home/raspberrypi/Documents/ParkingControl/app/resources/parking.jpg")
 
     def set_background_image(self, image_path):
         try:

@@ -7,17 +7,13 @@ import threading
 from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE_PATTERN, API_BASE_URL, LOT_ID
 from app.controllers.lane_controller import LaneWorker, LaneState
 import cv2
-from app.controllers.api_client import ApiClient, RefreshWorker
-from PyQt5.QtWidgets import QApplication
-from datetime import datetime
+from app.controllers.simple_api_client import SimpleApiClient
+from app.utils.connection_state import ConnectionManager
 from app.utils.db_manager import DBManager
 from app.utils.image_storage import ImageStorage
-from app.controllers.sync_service import SyncService, SyncStatus
-from app.ui.sync_status_widget import SyncStatusWidget
-from app.utils.auth_manager import AuthManager
-import numpy as np
 from app.controllers.db_worker import DBWorker, DBOperationType
 from PyQt5.QtCore import QRunnable, QThreadPool
+from datetime import datetime
 
 class LaneWidget(QWidget):
     def __init__(self, title):
@@ -216,23 +212,22 @@ class ControlScreen(QWidget):
         self.db_worker.operation_complete.connect(self._handle_db_operation_complete)
         self.pending_db_operations = {}  # Track pending operations
         
-        # Initialize API client
-        self.api_client = ApiClient(base_url=API_BASE_URL)
+        # CRITICAL FIX: Replace complex API client with simple one
+        self.api_client = SimpleApiClient(base_url=API_BASE_URL)
         
-        # API connectivity status
-        self.api_available = True
-        self.api_retry_count = 0
-        self.max_api_retries = 5  # Increased from 3 to 5 to be more tolerant
+        # CRITICAL FIX: Use centralized connection manager instead of local api_available
+        self.connection_manager = ConnectionManager()
         
-        # Connectivity tracking
-        self.consecutive_failures = 0
-        self.last_successful_connection = time.time()
-        self.last_api_check_time = 0
-        self.min_api_check_interval = 5  # Minimum seconds between API checks
+        # Connect to connection state changes
+        self.connection_manager.state_changed.connect(self._handle_connection_state_change)
+        self.connection_manager.transition_detected.connect(self._handle_connection_transition)
         
-        # Setup more frequent API check timer directly in UI
+        # REMOVED: All the old api_available, consecutive_failures, api_retry_count logic
+        # The circuit breaker handles this now
+        
+        # Setup simplified health check timer
         self.health_check_timer = QTimer(self)
-        self.health_check_timer.timeout.connect(self._check_api_health)
+        self.health_check_timer.timeout.connect(self._perform_health_check)
         self.health_check_timer.start(5000)  # Check every 5 seconds
         
         # Debug flags
@@ -262,9 +257,6 @@ class ControlScreen(QWidget):
         
         # Setup refresh button
         self.add_refresh_button()
-        
-        # Track transition from offline to online
-        self.previously_offline = False
         
         # Initial data load
         QTimer.singleShot(1000, self.refresh_data)
@@ -947,6 +939,10 @@ class ControlScreen(QWidget):
                 self.lane_workers[lane].resume_processing()
 
     def _log_entry(self, lane, data, entry_type):
+        """
+        CRITICAL FIX: Simplified log entry method that uses circuit breaker for fast-fail.
+        This eliminates the race condition vulnerability.
+        """
         try:
             # Current timestamp with ms precision
             current_time = time.time()
@@ -987,21 +983,15 @@ class ControlScreen(QWidget):
             # Add entry to the log table display
             self._add_log_entry(log_data)
             
-            # CRITICAL FIX: Use a completely different approach for online vs offline
-            # to avoid any possible duplicate paths
-            
-            # Check if we're online or offline FIRST, then take completely separate paths
-            if self.api_available and entry_type in ('auto', 'manual'):
+            # CRITICAL FIX: Use circuit breaker for fast-fail decision
+            # Check if we're online or offline FIRST using circuit breaker
+            if self.connection_manager.is_online() and entry_type in ('auto', 'manual'):
                 #========================
-                # ONLINE MODE PATH
+                # ONLINE MODE PATH - with fast-fail
                 #========================
                 try:
                     # Extract image from data if available
                     frame_image = data.get('image')
-                    
-                    # Create a consistent timestamp (Unix timestamp as float)
-                    current_timestamp = time.time()
-                    formatted_timestamp = datetime.fromtimestamp(current_timestamp).strftime("%Y-%m-%d %H:%M:%S.%f")
                     
                     # Save image to local storage
                     db_manager = DBManager()
@@ -1014,7 +1004,7 @@ class ControlScreen(QWidget):
                             lane, 
                             data.get('text', 'N/A'), 
                             entry_type,
-                            timestamp=current_timestamp  # Pass timestamp for consistency
+                            timestamp=current_time  # Pass timestamp for consistency
                         )
                     
                     # Prepare form data for API
@@ -1035,21 +1025,13 @@ class ControlScreen(QWidget):
                             'image': ('frame.png', img_bytes, 'image/png')
                         }
                     
-                    # Try the API call
-                    print(f"Making direct API call to services/guard-control/ for {lane} lane, {entry_type} type")
-                    success, response = self.api_client.post_with_files(
-                        'services/guard-control/',
-                        data=form_data,
-                        files=files,
-                        timeout=(5.0, 15.0)
-                    )
+                    # CRITICAL FIX: Use new API client with circuit breaker
+                    print(f"Making guard-control API call for {lane} lane, {entry_type} type")
+                    success, response = self.api_client.post_guard_control(form_data, files)
                     
                     # Handle API success
                     if success:
-                        print(f"API log successful: {response}")
-                        self.api_available = True
-                        self.api_retry_count = 0
-                        self._update_api_status(True)
+                        print(f"Guard-control API successful: {response}")
                         
                         # Store in DB as already synced
                         db_manager.add_log_entry(
@@ -1059,7 +1041,7 @@ class ControlScreen(QWidget):
                             entry_type=entry_type,
                             image_path=local_image_path,
                             synced=True,
-                            timestamp=current_timestamp  # Use same timestamp for consistency
+                            timestamp=current_time  # Use same timestamp for consistency
                         )
                         
                         # Handle local session tracking (parking session)
@@ -1074,32 +1056,18 @@ class ControlScreen(QWidget):
                         return
                         
                     else:
-                        # API failed, fall through to offline mode
-                        error_msg = str(response) if response else "Unknown error"
-                        print(f"API log failed: {error_msg}")
+                        # API failed - circuit breaker already recorded the failure
+                        print(f"Guard-control API failed: {response}")
+                        # Fall through to offline mode - no retry logic needed
+                        # The circuit breaker handles failure detection
                         
-                        # Handle connectivity issues
-                        if "Connection" in error_msg or "timeout" in error_msg.lower():
-                            self.api_retry_count += 1
-                            if self.api_retry_count >= self.max_api_retries:
-                                self.api_available = False
-                                print(f"Backend API marked as unavailable after {self.max_api_retries} failed attempts")
-                                self._update_api_status(False)
-                                
                 except Exception as e:
-                    error_msg = str(e)
-                    print(f"API logging error: {error_msg}")
-                    
-                    # Handle connectivity issues
-                    if "Connection" in error_msg or "HTTPConnectionPool" in error_msg or "timeout" in error_msg.lower():
-                        self.api_retry_count += 1
-                        if self.api_retry_count >= self.max_api_retries:
-                            self.api_available = False
-                            print(f"Backend API marked as unavailable after {self.max_api_retries} failed attempts")
-                            self._update_api_status(False)
+                    print(f"Guard-control API error: {str(e)}")
+                    # Circuit breaker will handle the failure via the API client
+                    # Fall through to offline mode
             
             #========================
-            # OFFLINE MODE PATH - Use this path if online path didn't return
+            # OFFLINE MODE PATH - Use this path if online path didn't succeed
             #========================
             if not log_data["processed"] and entry_type in ('auto', 'manual'):
                 print(f"Using offline storage for {lane} lane, {entry_type} type")
@@ -2403,3 +2371,63 @@ class ControlScreen(QWidget):
         
         # Start token refresh with our callback
         self._attempt_token_refresh((3.0, 5.0), after_refresh)
+
+    def _perform_health_check(self):
+        """
+        Simplified health check that uses the circuit breaker.
+        No more complex consecutive failure tracking - the circuit breaker handles it.
+        """
+        try:
+            # Simply call the health check - circuit breaker manages the rest
+            is_healthy = self.api_client.health_check()
+            
+            # The circuit breaker automatically handles:
+            # - Recording failures/successes
+            # - State transitions (online/offline)
+            # - Fast-fail behavior
+            
+            # No need for manual state management here!
+            print(f"Health check result: {'PASS' if is_healthy else 'FAIL'}")
+            
+        except Exception as e:
+            print(f"Health check error: {str(e)}")
+
+    def _handle_connection_state_change(self, is_online):
+        """
+        Handle connection state changes from the circuit breaker.
+        This replaces the old _update_api_status method.
+        
+        Args:
+            is_online (bool): True if online, False if offline
+        """
+        try:
+            if is_online:
+                self.api_status_indicator.setStyleSheet("background-color: green; border-radius: 7px;")
+                self.api_status_label.setText("Server: Connected")
+                print("UI updated: API status set to CONNECTED")
+            else:
+                self.api_status_indicator.setStyleSheet("background-color: red; border-radius: 7px;")
+                self.api_status_label.setText("Server: Disconnected")
+                print("UI updated: API status set to DISCONNECTED")
+                
+            # Force UI update by processing all pending events
+            QApplication.processEvents()
+        except Exception as e:
+            print(f"Error updating API status UI: {str(e)}")
+
+    def _handle_connection_transition(self, from_state, to_state):
+        """
+        Handle specific connection state transitions.
+        
+        Args:
+            from_state (str): Previous state
+            to_state (str): New state
+        """
+        print(f"Connection transition: {from_state} -> {to_state}")
+        
+        if to_state == "closed" and from_state in ["open", "half_open"]:
+            # Transitioned back online - refresh data
+            print("Connection restored - refreshing data")
+            QTimer.singleShot(1000, self._update_occupancy)
+            QTimer.singleShot(2000, self._fetch_logs)
+            QTimer.singleShot(3000, self._update_blacklist_cache)

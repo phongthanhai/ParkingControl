@@ -1155,19 +1155,7 @@ class ControlScreen(QWidget):
             # Create a consistent timestamp (Unix timestamp as float)
             current_timestamp = time.time()
             
-            # Queue the log entry operation
-            operation_id = self.db_worker.queue_operation(
-                DBOperationType.LOG_ENTRY,
-                lane=lane,
-                plate_id=plate_id,
-                confidence=confidence,
-                entry_type=entry_type,
-                image_data=image,
-                timestamp=current_timestamp,
-                synced=False  # Explicitly mark as unsynced for offline storage
-            )
-            
-            # Save image if available
+            # Save image if available using ImageStorage helper
             image_path = existing_image_path
             if image is not None and existing_image_path is None:
                 # Use same timestamp in filename for consistency
@@ -1180,14 +1168,23 @@ class ControlScreen(QWidget):
                         entry_type,
                         timestamp=current_timestamp
                     )
-                    
-                    # Update the operation with image path
-                    self.db_worker.update_operation(
-                        operation_id,
-                        image_path=image_path
-                    )
+                    print(f"Image saved locally: {image_path}")
                 except Exception as img_err:
                     print(f"Error saving image: {str(img_err)}")
+                    # Continue without image if save fails
+                    image_path = None
+            
+            # Queue the log entry operation with all data including image_path
+            operation_id = self.db_worker.queue_operation(
+                DBOperationType.LOG_ENTRY,
+                lane=lane,
+                plate_id=plate_id,
+                confidence=confidence,
+                entry_type=entry_type,
+                image_path=image_path,  # Pass the saved image path
+                timestamp=current_timestamp,
+                synced=False  # Explicitly mark as unsynced for offline storage
+            )
             
             # Track this operation
             self.pending_db_operations[operation_id] = {

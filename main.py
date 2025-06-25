@@ -134,6 +134,12 @@ class ExitSyncDialog(QDialog):
         if api_available:
             self.progress_bar.setFormat("Preparing...")
         
+        # Add a safety timer to prevent dialog from hanging indefinitely
+        self.safety_timer = QTimer()
+        self.safety_timer.timeout.connect(self._safety_timeout)
+        self.safety_timer.setSingleShot(True)
+        self.safety_timer.start(25000)  # 25 seconds max before auto-exit
+        
     def update_progress(self, entity_type, completed, total):
         """Update the progress bar with current progress"""
         if not self.api_available:
@@ -186,6 +192,14 @@ class ExitSyncDialog(QDialog):
             # Set state and auto-close
             self.is_complete = True
             QTimer.singleShot(1500, self.accept)
+
+    def _safety_timeout(self):
+        """Safety timeout to prevent dialog from hanging"""
+        if not self.is_complete:
+            print("DEBUG: Safety timeout triggered - forcing dialog exit")
+            self.status_label.setText("Timeout - Forcing Exit")
+            self.detail_label.setText("Dialog timed out, exiting anyway")
+            self.reject()  # Force exit
 
 def initialize_local_storage():
     """Initialize local storage directories and database"""
@@ -383,10 +397,37 @@ class ParkingSystem(QMainWindow):
             
             # Check if we have unsynced data that needs to be synced
             if hasattr(self, 'sync_service') and self.sync_service:
-                # Get pending sync counts
+                # Get pending sync counts with timeout protection
                 try:
                     print("DEBUG: About to check for unsynced data...")
-                    counts = self.sync_service.get_pending_sync_counts()
+                    
+                    # Use a timeout mechanism to prevent hanging
+                    import signal
+                    
+                    def timeout_handler(signum, frame):
+                        raise TimeoutError("Database query timeout")
+                    
+                    # Set up timeout for database query (5 seconds max)
+                    old_handler = None
+                    try:
+                        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+                        signal.alarm(5)  # 5 second timeout
+                        
+                        counts = self.sync_service.get_pending_sync_counts()
+                        
+                        # Cancel timeout
+                        signal.alarm(0)
+                        
+                    except (TimeoutError, Exception) as timeout_err:
+                        print(f"DEBUG: Database query timeout or error: {str(timeout_err)}")
+                        # Fallback: assume no items to sync and continue with exit
+                        counts = {'total': 0, 'logs': 0, 'sessions': 0, 'actions': 0}
+                    finally:
+                        # Always restore the old signal handler
+                        if old_handler is not None:
+                            signal.signal(signal.SIGALRM, old_handler)
+                        signal.alarm(0)  # Make sure alarm is cancelled
+                    
                     print(f"DEBUG: Found {counts['total']} items that need sync before exit")
                     
                     # First check if there are unsynced items
@@ -411,30 +452,21 @@ class ParkingSystem(QMainWindow):
                         
                         # Center the dialog on screen for maximum visibility
                         try:
-                            # Qt5 way - may be deprecated in newer versions
-                            screen_geometry = QApplication.desktop().screenGeometry()
-                            x = (screen_geometry.width() - sync_dialog.width()) // 2
-                            y = (screen_geometry.height() - sync_dialog.height()) // 2
+                            # Simple centering approach that works on Raspberry Pi
+                            parent_geometry = self.geometry()
+                            x = parent_geometry.x() + (parent_geometry.width() - sync_dialog.width()) // 2
+                            y = parent_geometry.y() + (parent_geometry.height() - sync_dialog.height()) // 2
                             sync_dialog.move(x, y)
-                        except AttributeError:
-                            # For newer Qt versions that might not have desktop()
-                            sync_dialog.setGeometry(
-                                QStyle.alignedRect(
-                                    Qt.LeftToRight,
-                                    Qt.AlignCenter,
-                                    sync_dialog.size(),
-                                    QApplication.primaryScreen().availableGeometry()
-                                )
-                            )
+                        except Exception as pos_err:
+                            print(f"DEBUG: Could not position dialog: {str(pos_err)}")
+                            # Fallback: just show it normally
                         
-                        # Show the dialog and bring to front
+                        # Show the dialog - simplified for Raspberry Pi compatibility
                         self.sync_dialog_active = True
                         print("DEBUG: Showing exit sync dialog")
                         sync_dialog.show()
-                        sync_dialog.raise_()
-                        sync_dialog.activateWindow()
                         
-                        # Explicitly process some events to ensure dialog appears
+                        # Simplified event processing
                         print("DEBUG: Processing events to display dialog")
                         QApplication.processEvents()
                         
@@ -475,8 +507,25 @@ class ParkingSystem(QMainWindow):
                         # Wait for sync to complete or user to force exit
                         # The dialog will block until sync completes or user cancels
                         print("DEBUG: About to execute sync dialog")
-                        result = sync_dialog.exec_()
-                        print(f"DEBUG: Dialog finished with result: {result}")
+                        
+                        # Add a safety timeout for the dialog execution
+                        dialog_start_time = time.time()
+                        max_dialog_time = 30  # 30 seconds max for dialog
+                        
+                        try:
+                            result = sync_dialog.exec_()
+                            dialog_duration = time.time() - dialog_start_time
+                            print(f"DEBUG: Dialog finished with result: {result} (took {dialog_duration:.1f}s)")
+                            
+                            # Check if dialog took too long
+                            if dialog_duration > max_dialog_time:
+                                print(f"DEBUG: Dialog took too long ({dialog_duration:.1f}s), forcing exit")
+                                result = QDialog.Rejected
+                                
+                        except Exception as dialog_err:
+                            print(f"DEBUG: Dialog execution error: {str(dialog_err)}")
+                            result = QDialog.Rejected  # Force exit on any dialog error
+                            
                         self.sync_dialog_active = False
                         
                         # Disconnect signals to prevent callbacks during shutdown

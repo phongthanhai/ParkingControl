@@ -1,20 +1,17 @@
 QStandardPaths: wrong permissions on runtime directory /run/user/1000, 0770 instead of 0700
-Found 1 unsynced logs, checking for potential corruption...
-All 1 unsynced logs are recent (within 24 hours), not cleaning up
+No unsynced logs found, no cleanup needed
 AuthManager instance created
 ConnectionManager initialized - Circuit CLOSED (online)
 Config: consecutive_threshold=5, rate_threshold=0.8, window=60s
 SimpleApiClient initialized with circuit breaker integration
+Sync worker thread started
 Setting up health monitoring timer
-SyncService initialized - sync only on demand
-Attempting login at URL: http://192.168.1.13:8000/api/v1/login/access-token
-Clearing authentication token
+SyncService initialized - auto-sync enabled on connection restore
 Access token set: present
 Token type set to: bearer
 Refresh token set: present
 Username set to: guard
 Password set (value hidden)
-Login successful. Token type: bearer
 Refresh token set: present
 Refresh token stored successfully for future authentication
 User assigned lots: [1]
@@ -50,15 +47,15 @@ Unknown property transition
 Unknown property transition
 Unknown property transition
 Unknown property transition
-Database stats - Total logs: 3, Unsynced logs: 1
+API is online - performing initial smart data refresh...
+🔄 Initial smart data refresh...
 Fetching up to 1000 unsynced logs from database
-Found 1 unsynced logs in the database
-Found 1 unsynced logs in the database
-  Log 1: ID=3, Type=manual, Plate=30g69999
-After filtering for auto/manual entries: 1 logs need to be synced
+No unsynced logs found in the database
+Database query returned 0 unsynced logs
+No unsynced logs found in the database
+After filtering for auto/manual entries: 0 logs need to be synced
 Connecting control_screen.log_signal to sync_service
-Triggering initial sync after successful login
-=== INITIAL SYNC AFTER LOGIN STARTED ===
+Control screen ready - auto-sync enabled
 Unknown property transition
 Unknown property transition
 Unknown property transition
@@ -90,100 +87,46 @@ Unknown property transition
 Unknown property transition
 Unknown property transition
 Occupancy updated: 0.0% (0/100)
+Circuit failure recorded: consecutive=1, operation=api-call, error=API error: HTTP 404
+Circuit staying CLOSED: consecutive=1/5, rate=1/3 attempts
+❌ Failed to fetch occupancy: API error: HTTP 404
+Circuit failure recorded: consecutive=2, operation=api-call, error=API error: HTTP 404
+Circuit staying CLOSED: consecutive=2/5, rate=2/4 attempts
+❌ Failed to fetch blacklist: API error: HTTP 404
+Circuit failure recorded: consecutive=3, operation=api-call, error=API error: HTTP 404
+Circuit staying CLOSED: consecutive=3/5, rate=3/5 attempts
+❌ Failed to fetch history: API error: HTTP 404
 Updating blacklist cache - current entries: 0
 Sending blacklist API request...
+UI blocked for 2227 ms
 Blacklist API response - success: True, data: [{'plate_id': '99a99999', 'is_blacklisted': True, 'created_at': '2025-05-13T11:23:01.515455'}, {'plate_id': '76a07676', 'is_blacklisted': True, 'created_at': '2025-05-13T20:39:18.219271'}]
 Adding blacklisted plate: 99A99999
 Adding blacklisted plate: 76A07676
 Updating blacklist: old count=0, new count=2
 Blacklist updated: 2 vehicles
-UI blocked for 2150 ms
-Occupancy updated: 0.0% (0/100)
-
-==== SYNC OPERATION STARTED (startup) ====
-Triggered sync_now for entity_type: all
-Database stats - Total logs: 3, Unsynced logs: 1
-Fetching up to 1000 unsynced logs from database
-Found 1 unsynced logs in the database
-Found 1 unsynced logs in the database
-  Log 1: ID=3, Type=manual, Plate=30g69999
-After filtering for auto/manual entries: 1 logs need to be synced
-Found 1 items to sync
-Sync requested for entity_type: logs
-Updating blacklist cache - current entries: 2
-Sending blacklist API request...
-Blacklist API response - success: True, data: [{'plate_id': '99a99999', 'is_blacklisted': True, 'created_at': '2025-05-13T11:23:01.515455'}, {'plate_id': '76a07676', 'is_blacklisted': True, 'created_at': '2025-05-13T20:39:18.219271'}]
-Adding blacklisted plate: 99A99999
-Adding blacklisted plate: 76A07676
-Updating blacklist: old count=2, new count=2
-Blacklist updated: 2 vehicles
-Health check result: PASS
-Circuit failure recorded: consecutive=1, operation=health-check, error=Health check connection error: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
-Circuit staying CLOSED: consecutive=1/5, rate=1/8 attempts
-Health check result: FAIL
-Health check result: PASS
-Health check result: PASS
-Circuit failure recorded: consecutive=1, operation=health-check, error=Health check connection error: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
-Circuit staying CLOSED: consecutive=1/5, rate=2/11 attempts
-Health check result: FAIL
-Health check result: PASS
-Starting main application shutdown...
+🔄 Initial smart data refresh...
+Circuit failure recorded: consecutive=1, operation=api-call, error=API error: HTTP 404
+Circuit staying CLOSED: consecutive=1/5, rate=4/7 attempts
+❌ Failed to fetch occupancy: API error: HTTP 404
+Circuit failure recorded: consecutive=2, operation=api-call, error=API error: HTTP 404
+Circuit staying CLOSED: consecutive=2/5, rate=5/8 attempts
+❌ Failed to fetch blacklist: API error: HTTP 404
+Circuit failure recorded: consecutive=3, operation=api-call, error=API error: HTTP 404
+Circuit staying CLOSED: consecutive=3/5, rate=6/9 attempts
+❌ Failed to fetch history: API error: HTTP 404
+Health check error: 'ControlScreen' object has no attribute 'last_api_check_time'
+🔍 OCR Request URL: https://api.platerecognizer.com/v1/plate-reader/
+🔑 API Key present: Yes
+📸 Image size: (88, 188, 3)
+📡 Response status: 201
+📋 Response content: {"processing_time":44.533,"results":[{"box":{"xmin":6,"ymin":10,"xmax":179,"ymax":72},"plate":"76a07676","region":{"code":"vn","score":0.178},"score":0.948,"candidates":[{"score":0.948,"plate":"76a076...
+❌ PlateRecognizer error: PlateRecognizer HTTP 201: {"processing_time":44.533,"results":[{"box":{"xmin":6,"ymin":10,"xmax":179,"ymax":72},"plate":"76a07676","region":{"code":"vn","score":0.178},"score":0.948,"candidates":[{"score":0.948,"plate":"76a07676"},{"score":0.848,"plate":"75a07676"},{"score":0.84,"plate":"76k07676"},{"score":0.83,"plate":"76ao7676"},{"score":0.739,"plate":"75k07676"},{"score":0.729,"plate":"75ao7676"},{"score":0.722,"plate":"76ko7676"},{"score":0.621,"plate":"75ko7676"}],"dscore":0.783,"vehicle":{"score":0.0,"type":"Unknown","box":{"xmin":0,"ymin":0,"xmax":0,"ymax":0}}}],"filename":"1045_2lUvY_image.jpg","version":1,"camera_id":null,"timestamp":"2025-06-25T10:45:33.268549Z","image_width":188,"image_height":88}
+OCR Service Error: PlateRecognizer HTTP 201: {"processing_time":44.533,"results":[{"box":{"xmin":6,"ymin":10,"xmax":179,"ymax":72},"plate":"76a07676","region":{"code":"vn","score":0.178},"score":0.948,"candidates":[{"score":0.948,"plate":"76a07676"},{"score":0.848,"plate":"75a07676"},{"score":0.84,"plate":"76k07676"},{"score":0.83,"plate":"76ao7676"},{"score":0.739,"plate":"75k07676"},{"score":0.729,"plate":"75ao7676"},{"score":0.722,"plate":"76ko7676"},{"score":0.621,"plate":"75ko7676"}],"dscore":0.783,"vehicle":{"score":0.0,"type":"Unknown","box":{"xmin":0,"ymin":0,"xmax":0,"ymax":0}}}],"filename":"1045_2lUvY_image.jpg","version":1,"camera_id":null,"timestamp":"2025-06-25T10:45:33.268549Z","image_width":188,"image_height":88}
+Unknown property transition
+Unknown property transition
+Health check error: 'ControlScreen' object has no attribute 'last_api_check_time'
+Health check error: 'ControlScreen' object has no attribute 'last_api_check_time'
+Starting application shutdown...
 Database check timer stopped
-DEBUG: About to check for unsynced data...
-Database stats - Total logs: 3, Unsynced logs: 1
-Fetching up to 1000 unsynced logs from database
-Found 1 unsynced logs in the database
-Found 1 unsynced logs in the database
-  Log 1: ID=3, Type=manual, Plate=30g69999
-After filtering for auto/manual entries: 1 logs need to be synced
-DEBUG: Found 1 items that need sync before exit
-DEBUG: Will show exit dialog for 1 items
-DEBUG: Showing exit sync dialog
-DEBUG: Processing events to display dialog
-DEBUG: Starting final exit sync operation
-
-==== SYNC OPERATION STARTED (shutdown) ====
-Triggered sync_now for entity_type: all
-Database stats - Total logs: 3, Unsynced logs: 1
-Fetching up to 1000 unsynced logs from database
-Found 1 unsynced logs in the database
-Found 1 unsynced logs in the database
-  Log 1: ID=3, Type=manual, Plate=30g69999
-After filtering for auto/manual entries: 1 logs need to be synced
-Found 1 items to sync
-Sync requested for entity_type: logs
-DEBUG: About to execute sync dialog
-Health check result: PASS
-Health check result: PASS
-DEBUG: Dialog finished with result: 0 (took 10.7s)
-User forced exit during sync
-Closing control screen and its threads...
-Starting application shutdown and thread cleanup...
-Stopping DB worker thread...
-Stopping DB worker thread...
-Error in DB worker thread: 'NoneType' object has no attribute 'get'
-DB worker thread stopped
-DB worker thread stopped
-Stopping entry camera worker...
-Stopping entry lane worker thread...
-Waiting for entry lane thread to finish...
-entry lane worker thread stopped
-Stopping exit camera worker...
-Stopping exit lane worker thread...
-Waiting for exit lane thread to finish...
-exit lane worker thread stopped
-All camera workers stopped successfully
-Application shutdown complete
-Control screen threads cleaned up
-Cleared temporary blacklist logs
-Stopping sync service...
-Stopping sync service...
-Sync service stopped
-Stopping sync service...
-Closing database connection...
-Database connection closed
-Application shutdown complete
-UI blocked for 2010 ms
-Circuit failure recorded: consecutive=1, operation=health-check, error=Health check connection error: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
-Circuit staying CLOSED: consecutive=1/5, rate=3/16 attempts
-Health check result: FAIL
+Cleaning up control screen...
+Error during application shutdown: 'ControlScreen' object has no attribute 'cleanup

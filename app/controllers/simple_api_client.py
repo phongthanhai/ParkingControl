@@ -20,11 +20,10 @@ class SimpleApiClient(QObject):
     5. Simple callback-based async interface
     """
     
-    # Singleton implementation
+    # Singleton
     _instance = None
     _lock = threading.Lock()
     
-    # Simple signals for status updates
     connection_changed = pyqtSignal(bool)  # True = online, False = offline
     
     def __new__(cls, base_url=API_BASE_URL):
@@ -52,7 +51,7 @@ class SimpleApiClient(QObject):
         # Connect to connection manager signals
         self.connection_manager.state_changed.connect(self.connection_changed.emit)
         
-        # Simple timeouts for quick failure detection
+        # Timeout for api calls: Normal apis, health check and plate recognizer
         self.fast_timeout = (1.0, 2.0)      # Reduced for better responsiveness
         self.health_timeout = (0.5, 1.0)    # Very fast for health checks
         self.plate_recognizer_timeout = (2.0, 3.0)  # For external PlateRecognizer API

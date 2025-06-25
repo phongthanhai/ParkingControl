@@ -1,6 +1,7 @@
 import os
 import time
 import cv2
+import threading
 from datetime import datetime
 from PyQt5.QtCore import QObject, pyqtSignal, QThread, QTimer, QMutex, QMetaObject, Qt, Q_ARG
 from app.utils.db_manager import DBManager

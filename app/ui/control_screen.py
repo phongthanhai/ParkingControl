@@ -8,6 +8,7 @@ from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE
 from app.controllers.lane_controller import LaneWorker, LaneState
 import cv2
 from app.controllers.simple_api_client import SimpleApiClient
+from app.controllers.api_client import RefreshWorker
 from app.utils.connection_state import ConnectionManager
 from app.utils.db_manager import DBManager
 from app.utils.image_storage import ImageStorage

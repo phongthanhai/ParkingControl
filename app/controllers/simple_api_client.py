@@ -220,13 +220,14 @@ class SimpleApiClient(QObject):
             self.connection_manager.record_failure(error_msg, "guard-control")
             return False, error_msg
     
-    def get(self, endpoint, params=None):
+    def get(self, endpoint, params=None, timeout=None):
         """
         Send GET request with circuit breaker protection.
         
         Args:
             endpoint (str): API endpoint
             params (dict): Query parameters
+            timeout (tuple, optional): Connection and read timeout (ignored - uses fast_timeout)
             
         Returns:
             tuple: (success, response_data_or_error_message)
@@ -247,12 +248,16 @@ class SimpleApiClient(QObject):
         elif "logs" in endpoint:
             operation_type = "logs"
         
+        # Note: timeout parameter is accepted for compatibility but ignored
+        # SimpleApiClient always uses fast_timeout for consistent behavior
+        effective_timeout = self.fast_timeout
+        
         try:
             response = self.session.get(
                 f"{self.base_url}/{endpoint.lstrip('/')}",
                 params=params,
                 headers=headers,
-                timeout=self.fast_timeout
+                timeout=effective_timeout
             )
             
             if response.status_code == 200:

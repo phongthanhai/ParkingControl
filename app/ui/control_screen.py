@@ -15,6 +15,7 @@ from app.utils.image_storage import ImageStorage
 from app.controllers.db_worker import DBWorker, DBOperationType
 from PyQt5.QtCore import QRunnable, QThreadPool
 from datetime import datetime
+from app.ui.sync_status_widget import SyncStatusWidget
 
 class LaneWidget(QWidget):
     def __init__(self, title):

@@ -8,7 +8,7 @@ from config import (
     VIETNAMESE_PLATE_PATTERN, OCR_RATE_LIMIT
 )
 from app.models.detection import PlateDetector
-from app.controllers.api_client import PlateRecognizer
+from app.controllers.simple_api_client import SimpleApiClient
 
 class LaneState:
     IDLE = "idle"
@@ -68,10 +68,7 @@ class LaneWorker(QThread):
         try:
             # Initialize Yolo detector and PlateRecognizer
             self.detector = PlateDetector()
-            self.recognizer = PlateRecognizer()
-            self.recognizer.error_signal.connect(
-                lambda msg: self.error_signal.emit(self.lane_type, f"API Error: {msg}")
-            )
+            self.recognizer = SimpleApiClient.get_instance()
             
             self._init_camera()
         except Exception as e:
@@ -228,17 +225,19 @@ class LaneWorker(QThread):
             
             if plate_img is not None and (time.time() - self.last_api_call) > OCR_RATE_LIMIT:
                 try:
-                    # Call the synchronous PlateRecognizer process method
-                    result = self.recognizer.process(plate_img)
-                    if result is not None:
+                    # Call the SimpleApiClient recognize_plate method
+                    success, result = self.recognizer.recognize_plate(plate_img)
+                    if success:
                         plate_text, confidence = result
                         self.last_api_call = time.time()
                     else:
                         # API timeout, rate limit or error with the PlateRecognizer API
                         api_timeout = True
+                        if "Rate limit" not in result:  # Don't log rate limit as an error
+                            print(f"PlateRecognizer API Error: {result}")
                 except Exception as e:
                     api_timeout = True
-                    self.error_signal.emit(self.lane_type, f"PlateRecognizer API Error: {str(e)}")
+                    print(f"PlateRecognizer API Error: {str(e)}")
             
             # Default values
             plate_text = plate_text if plate_text is not None else "Scanning..."
@@ -372,11 +371,8 @@ class LaneWorker(QThread):
             # Safe cleanup of detector and recognizer
             if hasattr(self, 'recognizer') and self.recognizer is not None:
                 try:
-                    # Disconnect any signals
-                    self.recognizer.error_signal.disconnect()
-                    self.recognizer.result_signal.disconnect()
-                    # Stop recognizer threads
-                    self.recognizer.stop_all_workers()
+                    # SimpleApiClient is a singleton, so we don't need to clean it up
+                    # Just remove our reference
                     self.recognizer = None
                 except Exception as e:
                     print(f"Error cleaning up recognizer in {self.lane_type} lane: {str(e)}")

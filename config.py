@@ -30,11 +30,11 @@ INPUT_SIZE = (320, 320)
 CONFIDENCE_THRESHOLD = 0.25
 
 # API Settings
-#PLATE_RECOGNIZER_API_KEY = "48c3a3ab6f959e54b8019143ce087201fd32833c"
+#PLATE_RECOGNIZER_API_KEY = "626e979ee6fec42d8e0daf904db94a47422d2614"
 PLATE_RECOGNIZER_API_KEY = ""
 PLATE_RECOGNIZER_URL = "https://api.platerecognizer.com/v1/plate-reader"
 OCR_RATE_LIMIT = 5  # seconds between API calls
-API_BASE_URL = "http://192.168.1.8:8000/api/v1"  # Base URL for backend API on Raspberry Pi
+API_BASE_URL = "http://192.168.1.13:8000/api/v1"  # Base URL for backend API on Raspberry Pi
 
 # UI Settings
 UI_REFRESH_RATE = 100  # ms

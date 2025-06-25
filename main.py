@@ -303,20 +303,9 @@ class ParkingSystem(QMainWindow):
                 # First show the startup sync indicator
                 self.control_screen.sync_status_widget.show_startup_sync()
                 
-                # Use a direct thread for more reliable syncing
-                def initial_login_sync():
-                    # Give UI time to initialize
-                    import time
-                    time.sleep(2)
-                    print("\n=== INITIAL SYNC AFTER LOGIN STARTED ===")
-                    self.sync_service.sync_now(context="startup")
-                    
-                # Start thread for initial sync
-                import threading
-                sync_thread = threading.Thread(target=initial_login_sync)
-                sync_thread.daemon = True
-                sync_thread.start()
-                print("Initial sync scheduled in background thread")
+                # Use direct sync call instead of complex threading
+                print("=== INITIAL SYNC AFTER LOGIN STARTED ===")
+                QTimer.singleShot(2000, lambda: self.sync_service.sync_now(context="startup"))
             
             self.stack.addWidget(self.control_screen)
         

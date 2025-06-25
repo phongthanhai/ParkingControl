@@ -33,23 +33,41 @@ class SyncWorker(QThread):
         self._current_operation = None
         self.context = None  # Track context for completion messaging
         
+        # Add request queue for on-demand sync
+        self._sync_requested = False
+        self._sync_entity_type = None
+        
     def run(self):
-        """Main worker loop"""
+        """Main worker loop - only syncs when requested"""
         while self._running:
             self.mutex.lock()
-            if self._paused:
+            if self._paused or not self._sync_requested:
                 self.mutex.unlock()
-                self.msleep(1000)  # Sleep for 1 second when paused
+                self.msleep(1000)  # Sleep for 1 second when paused or no request
                 continue
+            
+            # Get sync request
+            sync_requested = self._sync_requested
+            entity_type = self._sync_entity_type
+            
+            # Reset request flag
+            self._sync_requested = False
+            self._sync_entity_type = None
             self.mutex.unlock()
             
-            # Check if sync service allows sync operations
-            if self.sync_service.can_sync():
-                self._sync_logs()
-            
-            # Sleep for a reasonable interval between sync attempts
-            self.msleep(30000)  # 30 seconds
+            # Perform sync if requested
+            if sync_requested:
+                if entity_type == "logs" or entity_type is None:
+                    self._sync_logs()
     
+    def request_sync(self, entity_type=None):
+        """Request a sync operation"""
+        self.mutex.lock()
+        self._sync_requested = True
+        self._sync_entity_type = entity_type
+        self.mutex.unlock()
+        print(f"Sync requested for entity_type: {entity_type}")
+        
     def stop(self):
         """Stop the worker thread"""
         self.mutex.lock()
@@ -258,12 +276,15 @@ class SyncService(QObject):
         self.health_check_timer.timeout.connect(self._perform_health_check)
         self.health_check_timer.start(30000)  # Check every 30 seconds
         
-        # Schedule an initial sync check after startup
-        print("Scheduling initial sync check with 30-second delay")
-        QTimer.singleShot(30000, self._check_initial_sync)  # Increased from 15000ms to 30000ms
+        print("SyncService initialized - sync only on demand")
 
     def can_sync(self):
         """Check if sync operations are allowed based on connection state"""
+        return self.connection_manager.is_online()
+
+    @property
+    def api_available(self):
+        """Property to check if API is available - delegates to connection manager"""
         return self.connection_manager.is_online()
 
     def _perform_health_check(self):
@@ -273,43 +294,6 @@ class SyncService(QObject):
             self.api_client.health_check()
         except Exception as e:
             print(f"SyncService health check error: {str(e)}")
-
-    def _check_initial_sync(self):
-        """Perform initial sync after app startup"""
-        print("\n=== CHECKING FOR INITIAL SYNC ===")
-        
-        # Check if we can sync
-        if not self.can_sync():
-            print("API not available for initial sync, scheduling retry in 15 seconds")
-            QTimer.singleShot(15000, self._check_initial_sync)
-            return
-            
-        print("API available, checking for unsynced items...")
-        QTimer.singleShot(500, self._perform_initial_sync_after_delay)
-    
-    def _perform_initial_sync_after_delay(self):
-        """Perform the actual initial sync after a small delay to ensure DB is ready"""
-        try:
-            # Check API status again after the delay
-            if not self.can_sync():
-                print("API became unavailable during initial sync delay, scheduling retry")
-                QTimer.singleShot(15000, self._check_initial_sync)
-                return
-                
-            counts = self.get_pending_sync_counts()
-            
-            if counts["total"] > 0:
-                print(f"Found {counts['total']} items to sync at startup")
-                # Use the startup context for initial sync
-                self.sync_now(context="startup")
-            else:
-                print("No items to sync at startup")
-                # Still notify with startup context so UI can update properly
-                self.sync_all_complete.emit(0, "startup")
-        except Exception as e:
-            print(f"Error during initial sync after delay: {str(e)}")
-            # Signal completion with error
-            self.sync_all_complete.emit(0, "startup")
 
     def sync_now(self, entity_type=None, context=None):
         """

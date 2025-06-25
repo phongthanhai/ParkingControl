@@ -200,6 +200,9 @@ class ControlScreen(QWidget):
         # Use singleton SimpleApiClient instead of separate instance
         self.api_client = SimpleApiClient.get_instance()
         
+        # Get connection manager from SimpleApiClient for offline/online detection
+        self.connection_manager = self.api_client.connection_manager
+        
         # Remove complex API worker tracking
         self.previously_offline = False
         
@@ -1160,7 +1163,8 @@ class ControlScreen(QWidget):
                 confidence=confidence,
                 entry_type=entry_type,
                 image_data=image,
-                timestamp=current_timestamp
+                timestamp=current_timestamp,
+                synced=False  # Explicitly mark as unsynced for offline storage
             )
             
             # Save image if available

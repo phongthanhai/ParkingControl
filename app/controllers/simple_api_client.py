@@ -403,9 +403,18 @@ class SimpleApiClient(QObject):
             print(f"📡 Response status: {response.status_code}")
             print(f"📋 Response content: {response.text[:200]}...")
             
-            if response.status_code == 200:
+            if response.status_code == 201:  # ✅ FIXED: PlateRecognizer returns 201, not 200
                 result = response.json()
-                return True, result
+                # ✅ FIXED: Parse PlateRecognizer response format correctly
+                if result.get('results') and len(result['results']) > 0:
+                    plate_data = result['results'][0]
+                    plate_text = plate_data.get('plate', '')
+                    confidence = plate_data.get('score', 0.0)
+                    print(f"✅ OCR Success: {plate_text} (confidence: {confidence:.3f})")
+                    return True, (plate_text, confidence)
+                else:
+                    print("❌ No plate detected in image")
+                    return False, "No plate detected"
             else:
                 error_msg = f"PlateRecognizer HTTP {response.status_code}: {response.text}"
                 print(f"❌ PlateRecognizer error: {error_msg}")
@@ -520,6 +529,15 @@ class SimpleApiClient(QObject):
                 callback(success, message, context)
         
         QTimer.singleShot(0, _perform_refresh)
+    
+    def check_health_async(self, callback=None, timeout=None, context=None):
+        """Perform health check asynchronously."""
+        def _perform_health_check():
+            success = self.health_check()
+            if callback:
+                callback(success)
+        
+        QTimer.singleShot(0, _perform_health_check)
 
     # === UTILITY METHODS ===
     
@@ -557,7 +575,7 @@ class SimpleApiClient(QObject):
                 callback(False, "API offline - circuit breaker OPEN", context)
             return
         
-        endpoint = f"services/parking-lots/{lot_id}/occupancy/"
+        endpoint = f"services/lot-occupancy/{lot_id}"
         self.get_async(endpoint, callback=callback, context=context)
     
     def get_blacklist_async(self, lot_id, callback=None, context=None):
@@ -567,7 +585,7 @@ class SimpleApiClient(QObject):
                 callback(False, "API offline - circuit breaker OPEN", context)
             return
         
-        endpoint = f"services/parking-lots/{lot_id}/blacklist/"
+        endpoint = "vehicles/blacklisted/"
         self.get_async(endpoint, callback=callback, context=context)
     
     def get_vehicle_history_async(self, lot_id, limit=50, callback=None, context=None):
@@ -578,13 +596,12 @@ class SimpleApiClient(QObject):
             return
         
         params = {
-            'lot_id': lot_id,
             'limit': limit,
-            'order_by': '-entry_time'  # Most recent first
+            'lot_id': lot_id
         }
         
         self.get_async(
-            "services/vehicle-history/",
+            "services/logs/",
             callback=callback,
             params=params,
             context=context

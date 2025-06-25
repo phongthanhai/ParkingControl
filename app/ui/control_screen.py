@@ -236,6 +236,9 @@ class ControlScreen(QWidget):
         self.last_ui_check.start()
         self.ui_blocked_threshold = 500  # 500ms threshold for UI blocking
         
+        # ✅ FIXED: Add missing attribute for health check timing
+        self.last_api_check_time = 0
+        
         # Connect UI update signal for thread-safe UI updates
         self.ui_update_signal.connect(self._process_ui_update)
         
@@ -2069,6 +2072,31 @@ class ControlScreen(QWidget):
         except Exception as e:
             print(f"Error during application shutdown: {str(e)}")
             event.accept()  # Accept anyway to ensure the app closes
+    
+    def cleanup(self):
+        """Cleanup method for graceful shutdown"""
+        print("Cleaning up control screen...")
+        
+        # Stop timers
+        if hasattr(self, 'health_timer') and self.health_timer.isActive():
+            self.health_timer.stop()
+        if hasattr(self, 'ui_timer') and self.ui_timer.isActive():
+            self.ui_timer.stop()
+        if hasattr(self, 'blacklist_timer') and self.blacklist_timer.isActive():
+            self.blacklist_timer.stop()
+        
+        # Stop workers
+        with self.worker_guard:
+            for lane, worker in list(self.lane_workers.items()):
+                if worker and worker.isRunning():
+                    worker.stop()
+                    worker.wait(2000)
+        
+        # Cleanup API client
+        if hasattr(self, 'api_client'):
+            self.api_client.cleanup()
+        
+        print("Control screen cleanup complete")
 
     def _handle_db_operation_complete(self, operation_id, success, result):
         """Handle completion of asynchronous database operations"""
@@ -2242,12 +2270,29 @@ class ControlScreen(QWidget):
         
         def handle_blacklist_result(success, result, context):
             if success and isinstance(result, list):
-                # Update local blacklist cache
-                self.blacklist_cache = result
-                print(f"✅ Smart blacklist updated: {len(result)} entries")
+                # ✅ FIXED: Process server response format correctly
+                new_blacklist = set()
+                blacklist_cache = []
+                
+                for vehicle in result:
+                    if vehicle.get('is_blacklisted', False):
+                        plate_id = vehicle.get('plate_id', '').upper()
+                        new_blacklist.add(plate_id)
+                        blacklist_cache.append({
+                            'plate_number': plate_id,
+                            'plate_id': plate_id,
+                            'is_blacklisted': True,
+                            'created_at': vehicle.get('created_at', '')
+                        })
+                
+                # Update both old and new blacklist formats
+                self.blacklisted_plates = new_blacklist  # For old compatibility
+                self.blacklist_cache = blacklist_cache   # For new smart caching
+                
+                print(f"✅ Smart blacklist updated: {len(blacklist_cache)} entries")
                 
                 # Save to local storage for offline use
-                self._save_blacklist_cache(result)
+                self._save_blacklist_cache(blacklist_cache)
             else:
                 print(f"❌ Failed to fetch blacklist: {result}")
         
@@ -2351,14 +2396,21 @@ class ControlScreen(QWidget):
     
     def _enhanced_is_blacklisted(self, plate_number):
         """Enhanced blacklist check with offline support"""
-        if self.api_client.is_online():
-            # Use fresh blacklist cache
-            blacklist = self.blacklist_cache
-        else:
-            # Use cached data when offline
-            blacklist = self.blacklist_cache
+        if not plate_number:
+            return False
+            
+        plate_upper = plate_number.upper().strip()
         
-        return any(entry.get('plate_number') == plate_number for entry in blacklist)
+        # Check both old format (set) and new format (list of dicts)
+        if plate_upper in self.blacklisted_plates:
+            return True
+            
+        # Also check the new blacklist cache format
+        return any(
+            entry.get('plate_number', '').upper() == plate_upper or 
+            entry.get('plate_id', '').upper() == plate_upper 
+            for entry in self.blacklist_cache
+        )
     
     def on_vehicle_event(self, event_type, vehicle_data):
         """Unified handler for vehicle events - triggers smart refresh"""

@@ -259,6 +259,10 @@ class SyncService(QObject):
         self.sync_worker.sync_progress.connect(self._handle_sync_progress)
         self.sync_worker.sync_complete.connect(self._handle_sync_complete)
         
+        # Start the sync worker thread
+        self.sync_worker.start()
+        print("Sync worker thread started")
+        
         # Connect API status changes 
         self.api_client.connection_changed.connect(self.api_status_changed.emit)
         
@@ -339,6 +343,9 @@ class SyncService(QObject):
                 
             print(f"Found {counts['total']} items to sync")
             
+            # Set context in sync worker before requesting sync
+            self.sync_worker.context = context
+            
             # Sync specific entity type or all
             if entity_type:
                 self.sync_worker.request_sync(entity_type)
@@ -402,29 +409,47 @@ class SyncService(QObject):
         status = SyncStatus.SUCCESS if success else SyncStatus.FAILED
         self.sync_status_changed.emit(entity_type, status)
         print(f"Sync {entity_type}: {status} - {message}")
+        
+        # Extract synced count from message if available
+        synced_count = 0
+        if success and "Synced" in message:
+            try:
+                # Parse count from message like "Synced 5/10 logs"
+                parts = message.split()
+                for part in parts:
+                    if '/' in part:
+                        synced_count = int(part.split('/')[0])
+                        break
+            except (ValueError, IndexError):
+                synced_count = 0
+        
+        # Emit completion with count and context
+        context = getattr(self.sync_worker, 'context', None) or "system"
+        self.sync_all_complete.emit(synced_count, context)
+        print(f"Sync completion emitted: count={synced_count}, context={context}")
     
     def get_pending_sync_counts(self):
         """Get counts of pending items for each sync category."""
         # Filter to count only auto and manual entries (not blacklist or skipped)
         try:
-            # Get raw DB counts first for debugging
-            raw_count = self.db_manager.get_log_entry_count()
-            unsynced_count = self.db_manager.get_log_entry_count(only_unsynced=True)
-            print(f"Database stats - Total logs: {raw_count}, Unsynced logs: {unsynced_count}")
-            
-            # Get detailed logs for filtering
+            # Use a single query to get unsynced logs and count them
+            # This avoids race conditions between separate count and fetch operations
             unsynced_logs = self.db_manager.get_unsynced_logs(limit=1000)
+            
+            print(f"Database query returned {len(unsynced_logs)} unsynced logs")
+            
             if unsynced_logs:
-                print(f"Found {len(unsynced_logs)} unsynced logs in the database")
-                for idx, log in enumerate(unsynced_logs[:5]):  # Just print first 5 for diagnostics
-                    print(f"  Log {idx+1}: ID={log.get('id')}, Type={log.get('type')}, Plate={log.get('plate_id')}")
-                if len(unsynced_logs) > 5:
-                    print(f"  ... and {len(unsynced_logs)-5} more")
+                # Debug: print first few logs for diagnostics
+                for idx, log in enumerate(unsynced_logs[:3]):  # Just print first 3 for diagnostics
+                    print(f"  Log {idx+1}: ID={log.get('id')}, Type={log.get('type')}, Plate={log.get('plate_id')}, Synced={log.get('synced', 'N/A')}")
+                if len(unsynced_logs) > 3:
+                    print(f"  ... and {len(unsynced_logs)-3} more")
             else:
                 print("No unsynced logs found in the database")
                 
+            # Filter for auto and manual entries only
             filtered_logs = [log for log in unsynced_logs 
-                           if log['type'] in ('auto', 'manual')]
+                           if log.get('type') in ('auto', 'manual')]
             total = len(filtered_logs)
             
             print(f"After filtering for auto/manual entries: {total} logs need to be synced")

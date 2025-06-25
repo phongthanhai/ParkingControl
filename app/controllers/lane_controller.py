@@ -221,7 +221,7 @@ class LaneWorker(QThread):
             
             # OCR processing with rate limiting
             plate_text, confidence = None, 0.0
-            api_timeout = False
+            ocr_unavailable = False  # Changed from api_timeout to be specific
             
             if plate_img is not None and (time.time() - self.last_api_call) > OCR_RATE_LIMIT:
                 try:
@@ -231,13 +231,13 @@ class LaneWorker(QThread):
                         plate_text, confidence = result
                         self.last_api_call = time.time()
                     else:
-                        # API timeout, rate limit or error with the PlateRecognizer API
-                        api_timeout = True
+                        # OCR service error - this is INDEPENDENT of server API status
+                        ocr_unavailable = True
                         if "Rate limit" not in result:  # Don't log rate limit as an error
-                            print(f"PlateRecognizer API Error: {result}")
+                            print(f"OCR Service Error: {result}")
                 except Exception as e:
-                    api_timeout = True
-                    print(f"PlateRecognizer API Error: {str(e)}")
+                    ocr_unavailable = True
+                    print(f"OCR Service Error: {str(e)}")
             
             # Default values
             plate_text = plate_text if plate_text is not None else "Scanning..."
@@ -268,13 +268,13 @@ class LaneWorker(QThread):
                     "is_valid": is_valid
                 }
                 
-                # Case 1: API timeout
-                if api_timeout:
+                # Case 1: OCR service unavailable (NOT server API issue)
+                if ocr_unavailable:
                     self._pause_processing()
                     self.status_signal.emit(
                         self.lane_type,
                         "requires_manual",
-                        {"reason": "API timeout", "image": display_frame, "text": plate_text if plate_text != "Scanning..." else ""}
+                        {"reason": "OCR unavailable", "image": display_frame, "text": plate_text if plate_text != "Scanning..." else ""}
                     )
                 # Case 2: Successfully detected plate but confidence too low
                 elif plate_text and plate_text != "Scanning..." and confidence < 0.9:

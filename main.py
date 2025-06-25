@@ -4,7 +4,6 @@ import time
 import sqlite3
 from datetime import datetime
 from PyQt5.QtWidgets import QApplication, QMainWindow, QStackedWidget, QMessageBox, QLabel, QHBoxLayout
-from PyQt5.QtWidgets import QDialog, QVBoxLayout, QProgressBar, QPushButton, QDialogButtonBox, QDesktopWidget
 from PyQt5.QtCore import Qt, QTimer, QEventLoop
 import atexit
 from PyQt5.QtWidgets import QStyle
@@ -15,191 +14,6 @@ from app.utils.db_manager import DBManager
 from app.utils.image_storage import ImageStorage
 from app.controllers.sync_service import SyncService
 from app.ui.sync_status_widget import SyncStatusWidget
-
-class ExitSyncDialog(QDialog):
-    """Dialog that shows sync progress during application exit"""
-    def __init__(self, parent=None, api_available=True):
-        super().__init__(parent, Qt.WindowSystemMenuHint | Qt.WindowTitleHint)
-        self.setWindowTitle("Syncing Data")
-        self.setWindowModality(Qt.ApplicationModal)
-        self.setFixedSize(400, 150)
-        
-        # Track API state
-        self.api_available = api_available
-        
-        # Apply simple styling
-        self.setStyleSheet("""
-            QDialog {
-                background-color: white;
-                border: 1px solid #ddd;
-            }
-            QLabel {
-                font-family: Arial, sans-serif;
-            }
-            QProgressBar {
-                border: 1px solid #ddd;
-                background-color: #f5f5f5;
-                text-align: center;
-                height: 20px;
-            }
-            QProgressBar::chunk {
-                background-color: #3498db;
-            }
-            QPushButton {
-                background-color: #e74c3c;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 6px 12px;
-            }
-            QPushButton:hover {
-                background-color: #c0392b;
-            }
-        """)
-        
-        # Set up layout
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(10)
-        
-        # Status label
-        if api_available:
-            status_text = "Syncing data before exit"
-        else:
-            status_text = "No connection to server"
-            
-        self.status_label = QLabel(status_text)
-        self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet("font-size: 14px; font-weight: bold;")
-        layout.addWidget(self.status_label)
-        
-        # Progress bar
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(True)
-        
-        if not api_available:
-            self.progress_bar.setFormat("Offline")
-            self.progress_bar.setEnabled(False)
-        else:
-            self.progress_bar.setFormat("%v/%m")
-            
-        layout.addWidget(self.progress_bar)
-        
-        # Detail label
-        if api_available:
-            detail_text = "Please wait..."
-        else:
-            detail_text = "Cannot sync data - no server connection"
-            
-        self.detail_label = QLabel(detail_text)
-        self.detail_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.detail_label)
-        
-        # Force exit button
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-        
-        if not api_available:
-            # When offline, we'll have two buttons
-            self.exit_anyway_button = QPushButton("Exit Anyway")
-            self.exit_anyway_button.setStyleSheet("""
-                QPushButton {
-                    background-color: #e74c3c;
-                    color: white;
-                    border: none;
-                    border-radius: 4px;
-                    padding: 6px 12px;
-                }
-                QPushButton:hover {
-                    background-color: #c0392b;
-                }
-            """)
-            button_layout.addWidget(self.exit_anyway_button)
-            self.exit_anyway_button.clicked.connect(self.reject)
-        else:
-            # Normal online case
-            self.force_exit_button = QPushButton("Force Exit")
-            button_layout.addWidget(self.force_exit_button)
-            self.force_exit_button.clicked.connect(self.reject)
-            
-        layout.addLayout(button_layout)
-        
-        # State
-        self.is_complete = False
-        self.progress_received = False
-        
-        # Simple progress indication for waiting period
-        if api_available:
-            self.progress_bar.setFormat("Preparing...")
-        
-        # Add a safety timer to prevent dialog from hanging indefinitely
-        self.safety_timer = QTimer()
-        self.safety_timer.timeout.connect(self._safety_timeout)
-        self.safety_timer.setSingleShot(True)
-        self.safety_timer.start(25000)  # 25 seconds max before auto-exit
-        
-    def update_progress(self, entity_type, completed, total):
-        """Update the progress bar with current progress"""
-        if not self.api_available:
-            return
-            
-        if entity_type == "logs":
-            self.progress_received = True
-            
-            # Update progress bar
-            self.progress_bar.setMaximum(total)
-            self.progress_bar.setValue(completed)
-            self.progress_bar.setFormat("%v/%m")
-            
-            # Update detail text
-            self.detail_label.setText(f"Syncing {completed} of {total} items...")
-
-    def sync_complete(self, count, context):
-        """Handle sync completion"""
-        if context == "shutdown":
-            if count > 0:
-                self.status_label.setText("Sync Complete")
-                self.detail_label.setText(f"Successfully synced {count} items")
-            else:
-                if self.api_available:
-                    self.status_label.setText("Nothing to Sync")
-                    self.detail_label.setText("No unsaved data found")
-                else:
-                    # Leave the original offline message
-                    pass
-            
-            # Complete the progress bar
-            self.progress_bar.setValue(self.progress_bar.maximum())
-            
-            # Update button
-            if hasattr(self, 'force_exit_button'):
-                self.force_exit_button.setText("Close")
-                self.force_exit_button.setStyleSheet("""
-                    QPushButton {
-                        background-color: #3498db;
-                        color: white;
-                        border: none;
-                        border-radius: 4px;
-                        padding: 6px 12px;
-                    }
-                    QPushButton:hover {
-                        background-color: #2980b9;
-                    }
-                """)
-            
-            # Set state and auto-close
-            self.is_complete = True
-            QTimer.singleShot(1500, self.accept)
-
-    def _safety_timeout(self):
-        """Safety timeout to prevent dialog from hanging"""
-        if not self.is_complete:
-            print("DEBUG: Safety timeout triggered - forcing dialog exit")
-            self.status_label.setText("Timeout - Forcing Exit")
-            self.detail_label.setText("Dialog timed out, exiting anyway")
-            self.reject()  # Force exit
 
 def initialize_local_storage():
     """Initialize local storage directories and database"""
@@ -311,15 +125,8 @@ class ParkingSystem(QMainWindow):
                 print("Connecting control_screen.log_signal to sync_service")
                 self.control_screen.log_signal.connect(self.handle_log_entry)
                 
-                # Trigger an immediate sync attempt after authentication with startup context
-                print("Triggering initial sync after successful login")
-                
-                # First show the startup sync indicator
-                self.control_screen.sync_status_widget.show_startup_sync()
-                
-                # Use direct sync call instead of complex threading
-                print("=== INITIAL SYNC AFTER LOGIN STARTED ===")
-                QTimer.singleShot(2000, lambda: self.sync_service.sync_now(context="startup"))
+                # Application ready - auto-sync will trigger when connection is available
+                print("Control screen ready - auto-sync enabled")
             
             self.stack.addWidget(self.control_screen)
         
@@ -376,254 +183,49 @@ class ParkingSystem(QMainWindow):
             print(f"Error handling log entry for sync: {str(e)}")
     
     def closeEvent(self, event):
-        """
-        Handle application close properly by showing exit sync dialog 
-        and performing final sync before shutting down
-        """
+        """Simple application close without sync dialogs"""
         # Prevent duplicate close handling
         if self.is_closing:
             event.accept()
             return
             
         self.is_closing = True
+        print("Starting application shutdown...")
         
         try:
-            print("Starting main application shutdown...")
-            
-            # Stop timers first to prevent any new operations
+            # Stop timers
             if hasattr(self, 'db_check_timer') and self.db_check_timer.isActive():
                 self.db_check_timer.stop()
                 print("Database check timer stopped")
             
-            # Check if we have unsynced data that needs to be synced
-            if hasattr(self, 'sync_service') and self.sync_service:
-                # Get pending sync counts with timeout protection
-                try:
-                    print("DEBUG: About to check for unsynced data...")
-                    
-                    # Use a timeout mechanism to prevent hanging
-                    import signal
-                    
-                    def timeout_handler(signum, frame):
-                        raise TimeoutError("Database query timeout")
-                    
-                    # Set up timeout for database query (5 seconds max)
-                    old_handler = None
-                    try:
-                        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-                        signal.alarm(5)  # 5 second timeout
-                        
-                        counts = self.sync_service.get_pending_sync_counts()
-                        
-                        # Cancel timeout
-                        signal.alarm(0)
-                        
-                    except (TimeoutError, Exception) as timeout_err:
-                        print(f"DEBUG: Database query timeout or error: {str(timeout_err)}")
-                        # Fallback: assume no items to sync and continue with exit
-                        counts = {'total': 0, 'logs': 0, 'sessions': 0, 'actions': 0}
-                    finally:
-                        # Always restore the old signal handler
-                        if old_handler is not None:
-                            signal.signal(signal.SIGALRM, old_handler)
-                        signal.alarm(0)  # Make sure alarm is cancelled
-                    
-                    print(f"DEBUG: Found {counts['total']} items that need sync before exit")
-                    
-                    # First check if there are unsynced items
-                    if counts["total"] > 0:
-                        print(f"DEBUG: Will show exit dialog for {counts['total']} items")
-                        
-                        # Check if API is available for sync
-                        api_available = self.sync_service.api_available 
-                        
-                        # Create and show the exit sync dialog with API availability status
-                        sync_dialog = ExitSyncDialog(self, api_available=api_available)
-                        
-                        # Connect signals if API is available
-                        if api_available:
-                            try:
-                                self.sync_service.sync_progress.connect(sync_dialog.update_progress)
-                                self.sync_service.sync_all_complete.connect(sync_dialog.sync_complete)
-                            except Exception as signal_err:
-                                print(f"DEBUG: Error connecting signals: {str(signal_err)}")
-                                # Don't proceed with sync if signals can't be connected
-                                api_available = False
-                        
-                        # Center the dialog on screen for maximum visibility
-                        try:
-                            # Simple centering approach that works on Raspberry Pi
-                            parent_geometry = self.geometry()
-                            x = parent_geometry.x() + (parent_geometry.width() - sync_dialog.width()) // 2
-                            y = parent_geometry.y() + (parent_geometry.height() - sync_dialog.height()) // 2
-                            sync_dialog.move(x, y)
-                        except Exception as pos_err:
-                            print(f"DEBUG: Could not position dialog: {str(pos_err)}")
-                            # Fallback: just show it normally
-                        
-                        # Show the dialog - simplified for Raspberry Pi compatibility
-                        self.sync_dialog_active = True
-                        print("DEBUG: Showing exit sync dialog")
-                        sync_dialog.show()
-                        
-                        # Simplified event processing
-                        print("DEBUG: Processing events to display dialog")
-                        QApplication.processEvents()
-                        
-                        # Show the shutdown sync indicator in the main window as well
-                        if hasattr(self, 'control_screen') and self.control_screen and hasattr(self.control_screen, 'sync_status_widget'):
-                            try:
-                                self.control_screen.sync_status_widget.show_shutdown_sync()
-                            except Exception as ui_err:
-                                print(f"DEBUG: Error showing shutdown sync in UI: {str(ui_err)}")
-                        
-                        # Start the sync operation with shutdown context if API is available
-                        if api_available:
-                            try:
-                                print("DEBUG: Starting final exit sync operation")
-                                self.sync_service.sync_now(context="shutdown")
-                            except Exception as sync_err:
-                                print(f"DEBUG: Error starting sync: {str(sync_err)}")
-                                # Handle error case - don't leave dialog hanging
-                                try:
-                                    sync_dialog.status_label.setText("Sync Error")
-                                    sync_dialog.detail_label.setText(f"Error: {str(sync_err)}")
-                                    sync_dialog.progress_bar.setValue(0)
-                                    if hasattr(sync_dialog, 'force_exit_button'):
-                                        sync_dialog.force_exit_button.setEnabled(True)
-                                except Exception:
-                                    pass
-                        else:
-                            # If API is not available, emit completion signal with 0 count
-                            # to ensure dialog handles offline state properly
-                            print("DEBUG: Cannot sync - API not available")
-                            # CRITICAL FIX: Make sure sync service exists before calling emit
-                            try:
-                                if hasattr(self, 'sync_service') and self.sync_service is not None:
-                                    self.sync_service.sync_all_complete.emit(0, "shutdown")
-                            except Exception as emit_err:
-                                print(f"DEBUG: Error emitting sync completion: {str(emit_err)}")
-                        
-                        # Wait for sync to complete or user to force exit
-                        # The dialog will block until sync completes or user cancels
-                        print("DEBUG: About to execute sync dialog")
-                        
-                        # Add a safety timeout for the dialog execution
-                        dialog_start_time = time.time()
-                        max_dialog_time = 30  # 30 seconds max for dialog
-                        
-                        try:
-                            result = sync_dialog.exec_()
-                            dialog_duration = time.time() - dialog_start_time
-                            print(f"DEBUG: Dialog finished with result: {result} (took {dialog_duration:.1f}s)")
-                            
-                            # Check if dialog took too long
-                            if dialog_duration > max_dialog_time:
-                                print(f"DEBUG: Dialog took too long ({dialog_duration:.1f}s), forcing exit")
-                                result = QDialog.Rejected
-                                
-                        except Exception as dialog_err:
-                            print(f"DEBUG: Dialog execution error: {str(dialog_err)}")
-                            result = QDialog.Rejected  # Force exit on any dialog error
-                            
-                        self.sync_dialog_active = False
-                        
-                        # Disconnect signals to prevent callbacks during shutdown
-                        try:
-                            if api_available:
-                                if hasattr(self, 'sync_service') and self.sync_service is not None:
-                                    self.sync_service.sync_progress.disconnect(sync_dialog.update_progress)
-                                    self.sync_service.sync_all_complete.disconnect(sync_dialog.sync_complete)
-                        except (TypeError, RuntimeError) as disconnect_err:
-                            # Ignore disconnect errors if signals were already disconnected
-                            print(f"DEBUG: Signal disconnect error (non-critical): {str(disconnect_err)}")
-                        
-                        # If user forced exit, still need to continue with shutdown
-                        if result == QDialog.Rejected and not sync_dialog.is_complete:
-                            print("User forced exit during sync")
-                    else:
-                        print(f"DEBUG: No sync needed - Items: {counts['total']}, API Available: {self.sync_service.api_available}")
-                except Exception as e:
-                    print(f"Error checking for unsynced data: {str(e)}")
-            
-            # If control screen exists, close it first to handle thread cleanup
+            # Clean shutdown of control screen components
             if hasattr(self, 'control_screen') and self.control_screen:
-                print("Closing control screen and its threads...")
-                # Disconnect signals to prevent callbacks during shutdown
-                if hasattr(self, 'sync_service') and self.sync_service:
-                    try:
-                        # Don't disconnect signals that are already being used by exit dialog
-                        if not self.sync_dialog_active:
-                            if hasattr(self.sync_service, 'api_status_changed'):
-                                self.sync_service.api_status_changed.disconnect()
-                            if hasattr(self.sync_service, 'sync_progress'):
-                                self.sync_service.sync_progress.disconnect()
-                            if hasattr(self.sync_service, 'sync_all_complete'):
-                                self.sync_service.sync_all_complete.disconnect()
-                    except (TypeError, RuntimeError) as e:
-                        # Ignore errors if signals were already disconnected
-                        print(f"Note: Some signals were already disconnected: {str(e)}")
-                    
-                if hasattr(self.control_screen, 'log_signal'):
-                    try:
-                        self.control_screen.log_signal.disconnect()
-                    except (TypeError, RuntimeError):
-                        pass
-                
-                # Let the control screen clean up its threads directly
-                try:
-                    # Call closeEvent directly rather than creating a new event
-                    self.control_screen.closeEvent(event)
-                    print("Control screen threads cleaned up")
-                except Exception as e:
-                    print(f"Error cleaning up control screen threads: {str(e)}")
-                
-                # Clear blacklist logs
-                if hasattr(self.control_screen, 'local_blacklist_logs'):
-                    self.control_screen.local_blacklist_logs = []
-                    print("Cleared temporary blacklist logs")
+                print("Cleaning up control screen...")
+                self.control_screen.cleanup()
             
-            # CRITICAL FIX: Protect against trying to access deleted C++ objects
-            # by using a copy of the sync_service reference and handling possible exceptions
-            sync_service = None
-            if hasattr(self, 'sync_service'):
-                sync_service = self.sync_service
-                # Clear the reference early to prevent later access to potentially deleted object
-                self.sync_service = None
-                
-            # Stop sync service after control screen is closed
-            if sync_service:
+            # Stop sync service
+            if hasattr(self, 'sync_service') and self.sync_service:
                 print("Stopping sync service...")
-                try:
-                    # Only call stop() if we didn't already do a sync in the exit dialog
-                    # This avoids duplicating the sync operation
-                    if not self.sync_dialog_active:
-                        sync_service.stop()  # This would perform a final sync with shutdown context
-                    print("Sync service stopped")
-                except Exception as e:
-                    print(f"Error stopping sync service: {str(e)}")
-                # Clear reference
-                sync_service = None
+                self.sync_service.stop()
+                self.sync_service = None
+                print("Sync service stopped")
             
-            # Close database connection - do this last as other components might need database access
-            print("Closing database connection...")
+            # Close database
             try:
                 db_manager = DBManager()
                 db_manager.close()
                 print("Database connection closed")
             except Exception as e:
-                print(f"Error closing database: {str(e)}")
+                print(f"Error closing database: {e}")
             
             print("Application shutdown complete")
             
         except Exception as e:
-            print(f"Error during application shutdown: {str(e)}")
-        
-        # Reset flag
-        self.is_closing = False
-        
-        # Always accept the close event
-        event.accept()
+            print(f"Error during application shutdown: {e}")
+        finally:
+            # Reset flag and accept close event
+            self.is_closing = False
+            event.accept()
 
     def cleanup_unsynced_logs(self):
         """One-time cleanup of potentially corrupted unsynced logs"""

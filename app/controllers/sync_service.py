@@ -242,15 +242,25 @@ class SyncService(QObject):
     def __init__(self):
         super().__init__()
         
-        # CRITICAL FIX: Use simple API client and centralized connection manager
-        self.api_client = SimpleApiClient(base_url=API_BASE_URL)
-        self.connection_manager = ConnectionManager()
+        # Use singleton SimpleApiClient for consistency
+        self.api_client = SimpleApiClient.get_instance()
         
-        # Connect to connection manager signals
-        self.connection_manager.state_changed.connect(self.api_status_changed.emit)
+        # Use shared connection manager from the API client
+        self.connection_manager = self.api_client.connection_manager
         
-        # Initialize DB manager for local database operations
+        # Database manager
         self.db_manager = DBManager()
+        
+        # Image storage
+        self.image_storage = ImageStorage()
+        
+        # Initialize the sync worker
+        self.sync_worker = SyncWorker(self)
+        self.sync_worker.sync_progress.connect(self._handle_sync_progress)
+        self.sync_worker.sync_complete.connect(self._handle_sync_complete)
+        
+        # Connect API status changes 
+        self.api_client.connection_changed.connect(self.api_status_changed.emit)
         
         # Sync timers and timestamps
         self.last_sync_time = 0
@@ -262,13 +272,6 @@ class SyncService(QObject):
         
         # Count tracking
         self.last_sync_count = 0
-        
-        # Create and start the sync worker thread
-        print("Starting sync worker thread")
-        self.sync_worker = SyncWorker(self)
-        self.sync_worker.sync_progress.connect(self._handle_sync_progress)
-        self.sync_worker.sync_complete.connect(self._handle_sync_complete)
-        self.sync_worker.start()
         
         # Start health monitoring timer
         print("Setting up health monitoring timer")

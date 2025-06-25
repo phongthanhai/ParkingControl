@@ -1,26 +1,43 @@
 import requests
 import time
-from PyQt5.QtCore import QObject, pyqtSignal
+import cv2
+import threading
+from io import BytesIO
+from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from app.utils.auth_manager import AuthManager
 from app.utils.connection_state import ConnectionManager
-from config import API_BASE_URL
+from config import API_BASE_URL, PLATE_RECOGNIZER_API_KEY, PLATE_RECOGNIZER_URL, OCR_RATE_LIMIT
 
 class SimpleApiClient(QObject):
     """
-    Simplified API client that eliminates complex threading and uses circuit breaker pattern.
+    Singleton API client that eliminates complex threading and uses simple async patterns.
     
-    Key improvements:
-    1. No QThreadPool - uses synchronous calls with fast timeouts
-    2. Circuit breaker integration for fast-fail behavior
-    3. Simplified error handling
-    4. No complex callback mechanisms
-    5. Thread-safe through mutex-free design
+    Key features:
+    1. Singleton pattern for shared state
+    2. True async methods using QTimer for non-blocking operations
+    3. Circuit breaker integration for fast-fail behavior
+    4. PlateRecognizer integration
+    5. Simple callback-based async interface
     """
+    
+    # Singleton implementation
+    _instance = None
+    _lock = threading.Lock()
     
     # Simple signals for status updates
     connection_changed = pyqtSignal(bool)  # True = online, False = offline
     
+    def __new__(cls, base_url=API_BASE_URL):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(SimpleApiClient, cls).__new__(cls)
+                cls._instance._initialized = False
+            return cls._instance
+    
     def __init__(self, base_url=API_BASE_URL):
+        if self._initialized:
+            return
+            
         super().__init__()
         
         self.base_url = base_url
@@ -30,25 +47,38 @@ class SimpleApiClient(QObject):
         # Connect to connection manager signals
         self.connection_manager.state_changed.connect(self.connection_changed.emit)
         
-        # Fast timeouts for quick failure detection
-        self.fast_timeout = (2.0, 3.0)      # 2s connect, 3s read - for guard-control
-        self.health_timeout = (1.0, 2.0)    # 1s connect, 2s read - for health checks
+        # Simple timeouts for quick failure detection
+        self.fast_timeout = (1.0, 2.0)      # Reduced for better responsiveness
+        self.health_timeout = (0.5, 1.0)    # Very fast for health checks
+        self.plate_recognizer_timeout = (2.0, 3.0)  # For external PlateRecognizer API
         
         # Create session for connection reuse
         self.session = requests.Session()
         
         # Configure session with reasonable settings
         adapter = requests.adapters.HTTPAdapter(
-            pool_connections=5,
-            pool_maxsize=10,
-            max_retries=0,  # No auto-retry - we handle this
+            pool_connections=3,
+            pool_maxsize=5,
+            max_retries=0,
             pool_block=False
         )
         self.session.mount('http://', adapter)
         self.session.mount('https://', adapter)
         
+        # PlateRecognizer rate limiting
+        self.last_plate_call = 0
+        self.plate_rate_limit_lock = threading.Lock()
+        
+        self._initialized = True
         print("SimpleApiClient initialized with circuit breaker integration")
     
+    @classmethod
+    def get_instance(cls):
+        """Get the singleton instance"""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
     def is_online(self):
         """Check if API is available according to circuit breaker"""
         return self.connection_manager.is_online()
@@ -56,14 +86,11 @@ class SimpleApiClient(QObject):
     def get_connection_status(self):
         """Get detailed connection status"""
         return self.connection_manager.get_status()
+
+    # === SYNCHRONOUS METHODS (for immediate results) ===
     
     def health_check(self):
-        """
-        Perform a quick health check to test server availability.
-        
-        Returns:
-            bool: True if server is reachable, False otherwise
-        """
+        """Perform a quick health check to test server availability."""
         if not self.connection_manager.is_online():
             print("Health check skipped - circuit breaker OPEN")
             return False
@@ -98,18 +125,9 @@ class SimpleApiClient(QObject):
         except Exception as e:
             self.connection_manager.record_failure(f"Health check error: {str(e)}", "health-check")
             return False
-    
+
     def login(self, username, password):
-        """
-        Authenticate user and store the token.
-        
-        Args:
-            username (str): User's username
-            password (str): User's password
-            
-        Returns:
-            tuple: (success, message, data)
-        """
+        """Authenticate user and store the token."""
         if not self.connection_manager.should_attempt_operation("login"):
             return False, "API unavailable - circuit breaker OPEN", None
         
@@ -166,20 +184,96 @@ class SimpleApiClient(QObject):
             error_msg = f"Login error: {str(e)}"
             self.connection_manager.record_failure(error_msg, "login")
             return False, error_msg, None
-    
-    def post_guard_control(self, data, files=None):
-        """
-        Send guard-control request with fast-fail behavior.
-        This is the critical method that was causing the race condition.
+
+    def get(self, endpoint, params=None, timeout=None):
+        """Perform synchronous GET request."""
+        if not self.connection_manager.should_attempt_operation("api-call"):
+            return False, "API unavailable - circuit breaker OPEN"
         
-        Args:
-            data (dict): Form data for the request
-            files (dict): Files to upload
+        headers = self._get_auth_headers()
+        if not headers:
+            return False, "Authentication required"
+        
+        try:
+            response = self.session.get(
+                f"{self.base_url}/{endpoint}",
+                params=params,
+                headers=headers,
+                timeout=timeout or self.fast_timeout
+            )
             
-        Returns:
-            tuple: (success, response_data_or_error_message)
-        """
-        # CRITICAL: Check circuit breaker FIRST - fail fast if offline
+            if response.status_code == 200:
+                self.connection_manager.record_success("api-call")
+                try:
+                    return True, response.json()
+                except:
+                    return True, response.text
+            elif response.status_code == 401:
+                return False, "Authentication failed"
+            else:
+                error_msg = f"API error: HTTP {response.status_code}"
+                self.connection_manager.record_failure(error_msg, "api-call")
+                return False, error_msg
+                
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+            error_msg = "Request timeout"
+            self.connection_manager.record_failure(error_msg, "api-call")
+            return False, error_msg
+        except requests.exceptions.ConnectionError as e:
+            error_msg = f"Connection error: {str(e)}"
+            self.connection_manager.record_failure(error_msg, "api-call")
+            return False, error_msg
+        except Exception as e:
+            error_msg = f"Request error: {str(e)}"
+            self.connection_manager.record_failure(error_msg, "api-call")
+            return False, error_msg
+
+    def post(self, endpoint, data=None, json_data=None, timeout=None):
+        """Perform synchronous POST request."""
+        if not self.connection_manager.should_attempt_operation("api-call"):
+            return False, "API unavailable - circuit breaker OPEN"
+        
+        headers = self._get_auth_headers()
+        if not headers:
+            return False, "Authentication required"
+        
+        try:
+            response = self.session.post(
+                f"{self.base_url}/{endpoint}",
+                data=data,
+                json=json_data,
+                headers=headers,
+                timeout=timeout or self.fast_timeout
+            )
+            
+            if response.status_code in [200, 201]:
+                self.connection_manager.record_success("api-call")
+                try:
+                    return True, response.json()
+                except:
+                    return True, response.text
+            elif response.status_code == 401:
+                return False, "Authentication failed"
+            else:
+                error_msg = f"API error: HTTP {response.status_code}"
+                self.connection_manager.record_failure(error_msg, "api-call")
+                return False, error_msg
+                
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
+            error_msg = "Request timeout"
+            self.connection_manager.record_failure(error_msg, "api-call")
+            return False, error_msg
+        except requests.exceptions.ConnectionError as e:
+            error_msg = f"Connection error: {str(e)}"
+            self.connection_manager.record_failure(error_msg, "api-call")
+            return False, error_msg
+        except Exception as e:
+            error_msg = f"Request error: {str(e)}"
+            self.connection_manager.record_failure(error_msg, "api-call")
+            return False, error_msg
+
+    def post_guard_control(self, data, files=None):
+        """Send guard-control request with fast-fail behavior."""
         if not self.connection_manager.should_attempt_operation("guard-control"):
             print("Guard-control BLOCKED - circuit breaker OPEN (offline mode)")
             return False, "API unavailable - using offline mode"
@@ -196,216 +290,186 @@ class SimpleApiClient(QObject):
                 data=data,
                 files=files,
                 headers=headers,
-                timeout=self.fast_timeout  # Fast timeout!
+                timeout=self.fast_timeout
             )
             
             if response.status_code in [200, 201]:
                 self.connection_manager.record_success("guard-control")
-                return True, response.json()
+                try:
+                    return True, response.json()
+                except:
+                    return True, response.text
             else:
-                error_msg = f"Guard-control failed HTTP {response.status_code}"
+                error_msg = f"Guard-control error: HTTP {response.status_code}"
                 self.connection_manager.record_failure(error_msg, "guard-control")
                 return False, error_msg
                 
-        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
-            error_msg = "Guard-control timeout"
-            self.connection_manager.record_failure(error_msg, "guard-control")
-            return False, error_msg
-        except requests.exceptions.ConnectionError:
-            error_msg = "Guard-control connection failed"
-            self.connection_manager.record_failure(error_msg, "guard-control")
-            return False, error_msg
         except Exception as e:
             error_msg = f"Guard-control error: {str(e)}"
             self.connection_manager.record_failure(error_msg, "guard-control")
             return False, error_msg
-    
-    def get(self, endpoint, params=None, timeout=None):
+
+    def recognize_plate(self, image, timeout=None):
         """
-        Send GET request with circuit breaker protection.
+        Synchronous plate recognition with rate limiting and circuit breaker protection.
         
-        Args:
-            endpoint (str): API endpoint
-            params (dict): Query parameters
-            timeout (tuple, optional): Connection and read timeout (ignored - uses fast_timeout)
-            
         Returns:
-            tuple: (success, response_data_or_error_message)
+            tuple: (success, (plate_text, confidence) or error_message)
         """
-        if not self.connection_manager.is_online():
-            return False, "API unavailable - circuit breaker OPEN"
-        
-        headers = self._get_auth_headers()
-        if not headers:
-            return False, "Authentication required"
-        
-        # Determine operation type from endpoint for better tracking
-        operation_type = "general"
-        if "blacklist" in endpoint:
-            operation_type = "blacklist"
-        elif "occupancy" in endpoint:
-            operation_type = "occupancy"
-        elif "logs" in endpoint:
-            operation_type = "logs"
-        
-        # Note: timeout parameter is accepted for compatibility but ignored
-        # SimpleApiClient always uses fast_timeout for consistent behavior
-        effective_timeout = self.fast_timeout
-        
         try:
-            response = self.session.get(
-                f"{self.base_url}/{endpoint.lstrip('/')}",
-                params=params,
-                headers=headers,
-                timeout=effective_timeout
+            # Check rate limiting
+            with self.plate_rate_limit_lock:
+                if time.time() - self.last_plate_call < OCR_RATE_LIMIT:
+                    return False, "Rate limit - too many requests"
+                self.last_plate_call = time.time()
+            
+            # Convert image to bytes
+            _, img_encoded = cv2.imencode('.jpg', image)
+            img_bytes = BytesIO(img_encoded.tobytes())
+            
+            # Make API request
+            response = requests.post(
+                PLATE_RECOGNIZER_URL,
+                files={'upload': img_bytes},
+                headers={'Authorization': f'Token {PLATE_RECOGNIZER_API_KEY}'},
+                timeout=timeout or self.plate_recognizer_timeout
             )
             
-            if response.status_code == 200:
-                self.connection_manager.record_success(operation_type)
-                return True, response.json()
+            if response.status_code == 201:
+                results = response.json()
+                if results['results']:
+                    plate_data = results['results'][0]
+                    return True, (plate_data['plate'], plate_data['score'])
+                else:
+                    return False, "No plate detected"
+            elif response.status_code == 429:
+                return False, "API rate limit exceeded"
             else:
-                error_msg = f"GET {endpoint} failed HTTP {response.status_code}"
-                self.connection_manager.record_failure(error_msg, operation_type)
-                return False, error_msg
+                return False, f"PlateRecognizer API error: {response.status_code}"
                 
-        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
-            error_msg = f"GET {endpoint} timeout"
-            self.connection_manager.record_failure(error_msg, operation_type)
-            return False, error_msg
-        except requests.exceptions.ConnectionError:
-            error_msg = f"GET {endpoint} connection failed"
-            self.connection_manager.record_failure(error_msg, operation_type)
-            return False, error_msg
         except Exception as e:
-            error_msg = f"GET {endpoint} error: {str(e)}"
-            self.connection_manager.record_failure(error_msg, operation_type)
-            return False, error_msg
-    
-    def post(self, endpoint, data=None, json_data=None):
-        """
-        Send POST request with circuit breaker protection.
-        
-        Args:
-            endpoint (str): API endpoint
-            data (dict): Form data
-            json_data (dict): JSON data
-            
-        Returns:
-            tuple: (success, response_data_or_error_message)
-        """
-        if not self.connection_manager.is_online():
-            return False, "API unavailable - circuit breaker OPEN"
-        
-        headers = self._get_auth_headers()
-        if not headers:
-            return False, "Authentication required"
-        
-        # Determine operation type from endpoint
-        operation_type = "general"
-        if "refresh-token" in endpoint:
-            operation_type = "auth"
-        
-        try:
-            if json_data:
-                headers['Content-Type'] = 'application/json'
-                response = self.session.post(
-                    f"{self.base_url}/{endpoint.lstrip('/')}",
-                    json=json_data,
-                    headers=headers,
-                    timeout=self.fast_timeout
-                )
-            else:
-                response = self.session.post(
-                    f"{self.base_url}/{endpoint.lstrip('/')}",
-                    data=data,
-                    headers=headers,
-                    timeout=self.fast_timeout
-                )
-            
-            if response.status_code in [200, 201]:
-                self.connection_manager.record_success(operation_type)
-                return True, response.json()
-            else:
-                error_msg = f"POST {endpoint} failed HTTP {response.status_code}"
-                self.connection_manager.record_failure(error_msg, operation_type)
-                return False, error_msg
-                
-        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout):
-            error_msg = f"POST {endpoint} timeout"
-            self.connection_manager.record_failure(error_msg, operation_type)
-            return False, error_msg
-        except requests.exceptions.ConnectionError:
-            error_msg = f"POST {endpoint} connection failed"
-            self.connection_manager.record_failure(error_msg, operation_type)
-            return False, error_msg
-        except Exception as e:
-            error_msg = f"POST {endpoint} error: {str(e)}"
-            self.connection_manager.record_failure(error_msg, operation_type)
-            return False, error_msg
-    
+            return False, f"PlateRecognizer error: {str(e)}"
+
     def refresh_token(self):
-        """
-        Attempt to refresh the authentication token.
+        """Enhanced token refresh with retry logic and fallback."""
+        if not self.auth_manager.refresh_token:
+            # No refresh token available, try credential login
+            return self._attempt_credential_login()
         
-        Returns:
-            bool: True if token refresh succeeded, False otherwise
-        """
-        if not self.connection_manager.should_attempt_operation("auth"):
-            print("Token refresh skipped - circuit breaker OPEN")
-            return False
+        refresh_url = f"{self.base_url}/login/refresh-token"
         
-        refresh_token = self.auth_manager.refresh_token
-        if not refresh_token:
-            print("No refresh token available")
-            return False
-        
-        try:
-            response = self.session.post(
-                f"{self.base_url}/refresh-token",
-                json={"refresh_token": refresh_token},
-                headers={'Content-Type': 'application/json'},
-                timeout=self.fast_timeout
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                self.auth_manager.access_token = data['access_token']
-                self.auth_manager.token_type = data['token_type']
-                if 'refresh_token' in data:
-                    self.auth_manager.refresh_token = data['refresh_token']
+        # Try refresh token first
+        for attempt in range(2):
+            try:
+                headers = {'accept': 'application/json'}
+                data = {'refresh_token': self.auth_manager.refresh_token}
                 
-                self.connection_manager.record_success("auth")
-                print("Token refreshed successfully")
-                return True
-            else:
-                error_msg = f"Token refresh failed HTTP {response.status_code}"
-                self.connection_manager.record_failure(error_msg, "auth")
-                return False
+                response = self.session.post(
+                    refresh_url,
+                    json=data,
+                    headers=headers,
+                    timeout=self.fast_timeout
+                )
                 
-        except Exception as e:
-            error_msg = f"Token refresh error: {str(e)}"
-            self.connection_manager.record_failure(error_msg, "auth")
+                if response.status_code == 200:
+                    token_data = response.json()
+                    self.auth_manager.access_token = token_data['access_token']
+                    self.auth_manager.token_type = token_data['token_type']
+                    if 'refresh_token' in token_data:
+                        self.auth_manager.refresh_token = token_data['refresh_token']
+                    
+                    self.connection_manager.record_success("token-refresh")
+                    return True
+                elif response.status_code == 401:
+                    # Refresh token is invalid, try credential login
+                    return self._attempt_credential_login()
+                else:
+                    if attempt == 0:  # First attempt failed, try once more
+                        continue
+                    break
+                    
+            except Exception as e:
+                if attempt == 0:  # First attempt failed, try once more
+                    continue
+                print(f"Token refresh error: {str(e)}")
+                break
+        
+        # If refresh failed, try credential login
+        return self._attempt_credential_login()
+    
+    def _attempt_credential_login(self):
+        """Fallback login using stored credentials."""
+        if not self.auth_manager.username or not self.auth_manager.password:
             return False
+        
+        success, message, data = self.login(
+            self.auth_manager.username, 
+            self.auth_manager.password
+        )
+        return success
+
+    # === SIMPLE ASYNC METHODS (non-blocking UI) ===
+    
+    def get_async(self, endpoint, callback=None, params=None, context=None):
+        """Perform GET request asynchronously using QTimer."""
+        def _perform_request():
+            success, result = self.get(endpoint, params)
+            if callback:
+                callback(success, result, context)
+        
+        QTimer.singleShot(0, _perform_request)
+    
+    def post_async(self, endpoint, callback=None, data=None, json_data=None, context=None):
+        """Perform POST request asynchronously using QTimer."""
+        def _perform_request():
+            success, result = self.post(endpoint, data, json_data)
+            if callback:
+                callback(success, result, context)
+        
+        QTimer.singleShot(0, _perform_request)
+    
+    def recognize_plate_async(self, image, callback=None, context=None):
+        """Perform plate recognition asynchronously."""
+        def _perform_recognition():
+            success, result = self.recognize_plate(image)
+            if callback:
+                callback(success, result, context)
+        
+        QTimer.singleShot(0, _perform_recognition)
+    
+    def refresh_token_async(self, callback=None, context=None):
+        """Perform token refresh asynchronously."""
+        def _perform_refresh():
+            success = self.refresh_token()
+            message = "Token refreshed successfully" if success else "Token refresh failed"
+            if callback:
+                callback(success, message, context)
+        
+        QTimer.singleShot(0, _perform_refresh)
+
+    # === UTILITY METHODS ===
     
     def _get_auth_headers(self):
-        """Get authentication headers if available"""
-        if self.auth_manager.access_token and self.auth_manager.token_type:
-            return {
-                "Authorization": f"{self.auth_manager.token_type} {self.auth_manager.access_token}"
-            }
-        return None
+        """Get authorization headers for API requests."""
+        if not self.auth_manager.access_token:
+            return None
+        
+        return {
+            'Authorization': f'{self.auth_manager.token_type} {self.auth_manager.access_token}',
+            'accept': 'application/json'
+        }
     
     def force_offline(self, reason="Manual"):
-        """Force the API to offline mode"""
+        """Force the connection to offline state."""
         self.connection_manager.force_offline(reason)
     
     def force_online(self, reason="Manual"):
-        """Force the API to online mode"""
+        """Force the connection to online state."""
         self.connection_manager.force_online(reason)
     
     def cleanup(self):
-        """Clean up resources"""
+        """Clean up resources."""
         try:
             self.session.close()
         except:
-            pass 
+            pass

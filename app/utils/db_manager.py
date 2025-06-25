@@ -614,28 +614,26 @@ class DBManager:
             return getattr(self, cache_attr)
             
         try:
-            # Import API client
-            from app.controllers.api_client import ApiClient
-            from app.utils.auth_manager import AuthManager
-            from config import API_BASE_URL, LOT_CAPACITY
+            # Use singleton SimpleApiClient instead of separate ApiClient
+            from app.controllers.simple_api_client import SimpleApiClient
+            from config import LOT_CAPACITY
             
-            # Create API client
-            api_client = ApiClient(base_url=API_BASE_URL)
-            auth_manager = AuthManager()
+            # Get singleton instance
+            api_client = SimpleApiClient.get_instance()
             
-            # Only proceed if we have authentication
-            if auth_manager.access_token:
+            # Only proceed if we have authentication and circuit breaker allows
+            if api_client.auth_manager.access_token and api_client.is_online():
                 # Try to get lot capacity from API
-                success, data = api_client.get(f'parking-lots/{lot_id}', timeout=(2.0, 3.0))
+                success, data = api_client.get(f'parking-lots/{lot_id}')
                 
-                if success and 'capacity' in data:
+                if success and isinstance(data, dict) and 'capacity' in data:
                     # Cache the result
                     setattr(self, cache_attr, data['capacity'])
                     setattr(self, cache_time_attr, current_time)
                     print(f"Retrieved lot capacity from API: {data['capacity']}")
                     return data['capacity']
             else:
-                print("Not authenticated, using default lot capacity")
+                print("Not authenticated or API offline, using default lot capacity")
         except Exception as e:
             print(f"Error fetching lot capacity from API: {str(e)}")
         

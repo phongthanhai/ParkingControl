@@ -8,7 +8,6 @@ from config import CAMERA_SOURCES, GPIO_PINS, AUTO_CLOSE_DELAY, VIETNAMESE_PLATE
 from app.controllers.lane_controller import LaneWorker, LaneState
 import cv2
 from app.controllers.simple_api_client import SimpleApiClient
-from app.controllers.api_client import RefreshWorker
 from app.utils.connection_state import ConnectionManager
 from app.utils.db_manager import DBManager
 from app.utils.image_storage import ImageStorage
@@ -198,70 +197,64 @@ class ControlScreen(QWidget):
         self.lanes_in_manual_mode = {}  # Track which lanes are in manual input mode
         self.worker_guard = threading.Lock()  # Protects worker creation/deletion
         
-        # Connect the UI update signal
-        self.ui_update_signal.connect(self._process_ui_update)
+        # Use singleton SimpleApiClient instead of separate instance
+        self.api_client = SimpleApiClient.get_instance()
         
-        # Initialize UI responsiveness monitor
-        self.ui_monitor_timer = QTimer(self)
-        self.ui_monitor_timer.timeout.connect(self._check_ui_responsiveness)
-        self.ui_monitor_timer.start(1000)  # Check every second
-        self.last_ui_check = QElapsedTimer()
-        self.last_ui_check.start()
-        self.ui_blocked_threshold = 500  # ms
+        # Remove complex API worker tracking
+        self.previously_offline = False
         
-        # Initialize database worker for async operations
+        # Simple loading states
+        self.loading_states = {}
+        
+        # Initialize blacklist cache
+        self.blacklisted_plates = set()
+        self.last_blacklist_update = 0
+        self.blacklist_cache_duration = 300  # 5 minutes
+        
+        # Initialize database manager
+        self.db_manager = DBManager()
+        
+        # Initialize image storage
+        self.image_storage = ImageStorage()
+        
+        # Initialize the database worker for async operations
         self.db_worker = DBWorker()
         self.db_worker.operation_complete.connect(self._handle_db_operation_complete)
-        self.pending_db_operations = {}  # Track pending operations
+        self.db_worker.start()
         
-        # CRITICAL FIX: Replace complex API client with simple one
-        self.api_client = SimpleApiClient(base_url=API_BASE_URL)
+        # Track pending database operations
+        self.pending_db_operations = {}
         
-        # CRITICAL FIX: Use centralized connection manager instead of local api_available
-        self.connection_manager = ConnectionManager()
+        # UI responsiveness monitoring
+        self.last_ui_check = QElapsedTimer()
+        self.last_ui_check.start()
+        self.ui_blocked_threshold = 500  # 500ms threshold for UI blocking
         
-        # Connect to connection state changes
-        self.connection_manager.state_changed.connect(self._handle_connection_state_change)
-        self.connection_manager.transition_detected.connect(self._handle_connection_transition)
+        # Connect UI update signal for thread-safe UI updates
+        self.ui_update_signal.connect(self._process_ui_update)
         
-        # REMOVED: All the old api_available, consecutive_failures, api_retry_count logic
-        # The circuit breaker handles this now
-        
-        # Setup simplified health check timer
-        self.health_check_timer = QTimer(self)
-        self.health_check_timer.timeout.connect(self._perform_health_check)
-        self.health_check_timer.start(5000)  # Check every 5 seconds
-        
-        # Debug flags
-        self.debug_blacklist = False  # Set to True to enable extensive blacklist logging
-        
-        self.local_blacklist_logs = []
-        
-        # Connect log_signal for sync service
-        # This signal will be captured by SyncService to handle log synchronization
-        print("Setting up log_signal for sync service")
-        
+        # Setup everything
         self._setup_gpio()
         self._setup_ui()
+        self._setup_camera_workers()
         
-        # Delayed initialization of camera workers for stability
-        QTimer.singleShot(500, self._setup_camera_workers)
+        # Connect to connection manager for API status updates
+        self.api_client.connection_changed.connect(self._handle_connection_state_change)
         
-        # Setup watchdog timer for worker health check
-        self.watchdog_timer = QTimer(self)
-        self.watchdog_timer.timeout.connect(self._check_workers_health)
-        self.watchdog_timer.start(30000)  # Check every 30 seconds (increased from 10 to give more time for manual input)
+        # Start health monitoring timer - simplified
+        self.health_timer = QTimer()
+        self.health_timer.timeout.connect(self._perform_health_check)
+        self.health_timer.start(5000)  # Check every 5 seconds
         
-        # Setup timer for occupancy updates
-        self.occupancy_timer = QTimer(self)
-        self.occupancy_timer.timeout.connect(self._update_occupancy)
-        self.occupancy_timer.start(60000)  # Update occupancy every 60 seconds
+        # Start UI responsiveness check
+        self.ui_timer = QTimer()
+        self.ui_timer.timeout.connect(self._check_ui_responsiveness)
+        self.ui_timer.start(200)  # Check every 200ms
         
-        # Setup refresh button
-        self.add_refresh_button()
-        
-        # Initial data load
-        QTimer.singleShot(1000, self.refresh_data)
+        # Initial data loading with delays to prevent overwhelming
+        QTimer.singleShot(1000, self._update_occupancy)
+        QTimer.singleShot(2000, self._fetch_logs)
+        QTimer.singleShot(3000, self._update_blacklist_cache)
 
     def _setup_gpio(self):
         try:
@@ -1421,48 +1414,22 @@ class ControlScreen(QWidget):
         except Exception as e:
             print(f"Error updating API status UI: {str(e)}")
 
-    def _attempt_token_refresh(self, timeout, custom_callback=None):
-        """Attempt to refresh token or re-login if necessary"""
-        print("Attempting to refresh the authentication token")
+    def _attempt_token_refresh(self, timeout=None, custom_callback=None):
+        """Simplified token refresh using async API"""
+        def handle_refresh_result(success, message, context):
+            if success:
+                print("Token refreshed successfully")
+                self.api_available = True
+                self._update_api_status(True)
+                if custom_callback:
+                    custom_callback(True, message)
+            else:
+                print(f"Token refresh failed: {message}")
+                if custom_callback:
+                    custom_callback(False, message)
         
-        # Use a more efficient approach to prevent UI blocking
-        auth_manager = AuthManager()
-        
-        # Define token refresh callback
-        def handle_refresh_result(refresh_success, refresh_message):
-            try:
-                if refresh_success:
-                    print("Authentication refreshed successfully")
-                    self.api_available = True
-                    self.last_successful_connection = time.time()
-                    self._update_api_status(True)
-                    
-                    # If we have a custom callback, use it instead of default behavior
-                    if custom_callback:
-                        custom_callback(refresh_success, refresh_message)
-                        return
-                    
-                    # Default behavior - update data after reconnection
-                    QTimer.singleShot(500, self._update_occupancy)
-                    QTimer.singleShot(1000, self._fetch_logs)
-                else:
-                    print(f"Token refresh failed: {refresh_message}")
-                    
-                    # If we have a custom callback, use it
-                    if custom_callback:
-                        custom_callback(refresh_success, refresh_message)
-                        return
-                    
-                    # Default behavior - fall back to credential login if refresh token fails
-                    self._attempt_relogin(timeout)
-            except Exception as e:
-                print(f"Error handling refresh result: {str(e)}")
-        
-        # Create a refresh worker with callback
-        worker = RefreshWorker(self.api_client, handle_refresh_result)
-        
-        # Start the worker in the thread pool
-        QThreadPool.globalInstance().start(worker)
+        # Use simple async refresh
+        self.api_client.refresh_token_async(callback=handle_refresh_result)
 
     def _attempt_relogin(self, timeout):
         """Attempt to re-login with stored credentials as fallback"""
@@ -1508,29 +1475,24 @@ class ControlScreen(QWidget):
                                "Session expired. Please restart the application to log in again.")
 
     def _update_occupancy(self):
-        """Update the occupancy display with data from API asynchronously"""
-        # Set loading state while waiting for API
-        self.occupancy_label.setText("Loading occupancy data...")
-        self.occupancy_label.setStyleSheet("""
-            font-size: 24px;
-            font-weight: bold;
-            color: white;
-            background-color: #7f8c8d;
-            padding: 10px;
-            border-radius: 4px;
-            margin: 10px 0;
-        """)
+        """Update occupancy using simple async pattern"""
+        if not self.api_client.is_online():
+            self.occupancy_label.setText("Occupancy data unavailable (offline)")
+            return
         
-        # Define the API call function
-        def fetch_occupancy():
-            from config import LOT_ID
-            return self.api_client.get(
-                f'services/lot-occupancy/{LOT_ID}',
-                timeout=(3.0, 5.0)
-            )
+        def handle_result(success, result, context):
+            if success:
+                self._process_occupancy_data(result)
+            else:
+                self.occupancy_label.setText("Occupancy data unavailable")
+                print(f"Failed to fetch occupancy: {result}")
         
-        # Perform the call asynchronously
-        self._perform_async_api_call("occupancy", fetch_occupancy)
+        # Simple async call
+        self.api_client.get_async(
+            f'services/lot-occupancy/{LOT_ID}',
+            callback=handle_result,
+            context="occupancy"
+        )
 
     def _process_occupancy_data(self, data):
         """Process occupancy data after async fetch"""
@@ -1560,37 +1522,26 @@ class ControlScreen(QWidget):
             self.occupancy_label.setText("Error processing data")
 
     def _fetch_logs(self):
-        """Fetch logs for the current lot from the API and add local blacklist entries"""
-        try:
-            # Get lot_id from config
-            from config import LOT_ID
-            
-            # Use reasonable timeout for log fetching
-            logs_timeout = (3.0, 7.0)  # 3s connect, 7s read
-            
-            # Fetch logs with pagination
-            success, response = self.api_client.get(
-                'services/logs/', 
-                params={'skip': 0, 'limit': 100, 'lot_id': LOT_ID},
-                timeout=logs_timeout
-            )
-            
-            # Clear existing log entries
-            self._clear_log_table()
-            
-            # Add fetched log entries to the log area
-            if success and response:
-                for log_entry in response:
+        """Fetch recent logs using simple async pattern"""
+        if not self.api_client.is_online():
+            return
+        
+        def handle_result(success, result, context):
+            if success and isinstance(result, list):
+                # Clear existing logs and add new ones
+                self.log_table.setRowCount(0)
+                for log_entry in result:
                     self._add_log_entry(log_entry)
             else:
-                print(f"Error fetching logs: {response}")
-            
-            # Add local blacklist entries back to the log table
-            for blacklist_entry in self.local_blacklist_logs:
-                self._add_log_entry(blacklist_entry)
-            
-        except Exception as e:
-            print(f"Error fetching logs: {str(e)}")
+                print(f"Failed to fetch logs: {result}")
+        
+        # Simple async call
+        self.api_client.get_async(
+            'services/logs',
+            callback=handle_result,
+            params={'limit': 50, 'lot_id': LOT_ID},
+            context="logs"
+        )
 
     def refresh_data(self):
         """Refresh all dynamic data from the API"""
@@ -1828,23 +1779,47 @@ class ControlScreen(QWidget):
             print("No filters applied, showing all logs")
 
     def _update_blacklist_cache(self):
-        """Fetch and update the local blacklist cache asynchronously"""
-        # Log current blacklist state before update
-        print(f"Updating blacklist cache - current entries: {len(self.blacklisted_plates)}")
-        if self.debug_blacklist:
-            print(f"Current blacklist before update: {self.blacklisted_plates}")
-            
-        # Define the API call function to use in the thread
-        def fetch_blacklist():
-            print("Sending blacklist API request...")
-            return self.api_client.get(
-                'vehicles/blacklisted/',
-                params={'skip': 0, 'limit': 1000},
-                timeout=(3.0, 5.0)
-            )
+        """Update blacklist using simple async pattern"""
+        if not self.api_client.is_online():
+            return
         
-        # Perform the call asynchronously
-        self._perform_async_api_call("blacklist", fetch_blacklist)
+        print("Updating blacklist cache - current entries:", len(self.blacklisted_plates))
+        print("Sending blacklist API request...")
+        
+        def handle_result(success, result, context):
+            if success:
+                print(f"Blacklist API response - success: {success}, data: {result}")
+                
+                if result is not None:
+                    # Create a new set for blacklisted plates
+                    new_blacklist = set()
+                    
+                    for vehicle in result:
+                        if vehicle.get('is_blacklisted', False):
+                            plate = vehicle.get('plate_id', '').upper()
+                            new_blacklist.add(plate)
+                            print(f"Adding blacklisted plate: {plate}")
+                    
+                    # Before updating the blacklist, log the change
+                    old_count = len(self.blacklisted_plates)
+                    new_count = len(new_blacklist)
+                    print(f"Updating blacklist: old count={old_count}, new count={new_count}")
+                    
+                    # Replace the cache atomically
+                    self.blacklisted_plates = new_blacklist
+                    self.last_blacklist_update = time.time()
+                    print(f"Blacklist updated: {len(self.blacklisted_plates)} vehicles")
+                else:
+                    print("Received None for blacklist data - keeping current blacklist")
+            else:
+                print(f"Failed to update blacklist: {result}")
+        
+        # Simple async call
+        self.api_client.get_async(
+            'services/blacklist',
+            callback=handle_result,
+            context="blacklist"
+        )
 
     def _is_blacklisted(self, plate):
         """Check if a license plate is blacklisted using local cache"""
@@ -1874,259 +1849,17 @@ class ControlScreen(QWidget):
         QTimer.singleShot(3000, lambda: self.status_label.setText(""))
 
     def _perform_async_api_call(self, operation_type, api_func, callback=None):
-        """Perform API call in a non-blocking way with visual feedback"""
-        # Create operation ID
-        operation_id = f"{operation_type}_{time.time()}"
+        """DEPRECATED: Use SimpleApiClient async methods instead"""
+        print(f"Warning: _perform_async_api_call is deprecated. Use SimpleApiClient async methods for {operation_type}")
         
-        # Show loading indicator if needed
-        self._safe_update_ui(lambda: self._show_loading_indicator(operation_type, True))
-        
-        # Create a worker thread for the API call
-        class ApiWorker(QThread):
-            finished = pyqtSignal(str, bool, object)
-            api_status_changed = pyqtSignal(bool)
-            
-            def __init__(self, op_id, func, callback, parent=None):
-                super().__init__()
-                self.op_id = op_id
-                self.func = func
-                self.callback = callback
-                self._running = True
-                self._parent = parent
-                
-            def run(self):
-                try:
-                    if self._running and not self.isInterruptionRequested():
-                        result = self.func()
-                        if self._running and not self.isInterruptionRequested():
-                            # Check for backend API call errors
-                            if isinstance(result, tuple) and len(result) >= 2 and result[0] is False:
-                                # This is an (success, error_message) tuple indicating API failure
-                                error_msg = result[1]
-                                
-                                # Make sure this is a backend API failure, not PlateRecognizer API
-                                if not "PlateRecognizer" in str(error_msg):
-                                    print(f"Backend API call failed: {error_msg}")
-                                    
-                                    # Check if the parent has the API-related attributes
-                                    if hasattr(self._parent, 'api_available'):
-                                        self._parent.api_available = False
-                                        if hasattr(self._parent, 'ui_update_signal'):
-                                            # Use the signal to update API status safely
-                                            self._parent.ui_update_signal.emit(
-                                                lambda: self._parent._update_api_status(False)
-                                            )
-                                else:
-                                    print(f"PlateRecognizer API call failed: {error_msg} (not affecting backend API status)")
-                            self.finished.emit(self.op_id, True, result)
-                except Exception as e:
-                    if self._running and not self.isInterruptionRequested():
-                        # Check if this is a PlateRecognizer API exception
-                        if "PlateRecognizer" in str(e):
-                            print(f"PlateRecognizer API call exception: {str(e)} (not affecting backend API status)")
-                        else:
-                            # Backend API is down
-                            if hasattr(self._parent, 'api_available'):
-                                self._parent.api_available = False
-                                if hasattr(self._parent, 'ui_update_signal'):
-                                    # Use the signal to update API status safely
-                                    self._parent.ui_update_signal.emit(
-                                        lambda: self._parent._update_api_status(False)
-                                    )
-                            print(f"Backend API call exception: {str(e)}")
-                        self.finished.emit(self.op_id, False, str(e))
-                    
-            def stop(self):
-                self._running = False
-                # Request interruption to allow safe early termination
-                self.requestInterruption()
-        
-        # Create and start worker
-        worker = ApiWorker(operation_id, api_func, callback, self)
-        
-        # Store reference to prevent garbage collection - do this before connecting signal
-        if not hasattr(self, '_api_workers'):
-            self._api_workers = {}
-        
-        # Clean up any previous thread with the same operation type
-        for old_id in list(self._api_workers.keys()):
-            if old_id.startswith(operation_type) and self._api_workers[old_id].isRunning():
-                try:
-                    old_worker = self._api_workers[old_id]
-                    old_worker.stop()
-                    old_worker.finished.disconnect()  # Disconnect signals before stopping
-                    if not old_worker.wait(300):  # Wait up to 300ms
-                        print(f"Warning: Thread {old_id} not responding to stop request")
-                    del self._api_workers[old_id]
-                except Exception as e:
-                    print(f"Error cleaning up thread {old_id}: {str(e)}")
-        
-        # Connect signal after thread is stored and before starting
-        worker.finished.connect(lambda op_id, success, result: 
-                               self._handle_async_result(op_id, success, result, worker.callback))
-        
-        # Add worker cleanup when finished
-        worker.finished.connect(lambda op_id, success, result: 
-                               self._cleanup_api_worker(operation_id))
-        
-        self._api_workers[operation_id] = worker
-        
-        # Start the worker
-        worker.start()
-        
-        return operation_id
-    
-    def _cleanup_api_worker(self, worker_id):
-        """Clean up a worker thread after it's finished"""
-        if not hasattr(self, '_api_workers'):
-            return
-        
+        # Simple fallback - just execute the function
         try:
-            if worker_id in self._api_workers:
-                worker = self._api_workers[worker_id]
-                # Only remove after thread has stopped
-                if not worker.isRunning():
-                    # Disconnect signals before removal to prevent any late callbacks
-                    try:
-                        worker.finished.disconnect()
-                    except:
-                        pass
-                    # Wait a brief moment to ensure any pending callbacks are processed
-                    QTimer.singleShot(100, lambda: self._api_workers.pop(worker_id, None))
-                else:
-                    # Thread is still running - don't remove, but schedule a check later
-                    print(f"Worker {worker_id} is still running, postponing cleanup")
-                    # Schedule a later check on the thread to clean it up
-                    QTimer.singleShot(500, lambda: self._cleanup_api_worker(worker_id))
+            result = api_func()
+            if callback:
+                callback(True, result)
         except Exception as e:
-            print(f"Error cleaning up API worker {worker_id}: {str(e)}")
-
-    def _handle_async_result(self, operation_id, success, result, callback=None):
-        """Handle the result from an async API call"""
-        # Extract operation type from ID
-        operation_type = operation_id.split('_')[0]
-        
-        # Hide loading indicator
-        self._safe_update_ui(lambda: self._show_loading_indicator(operation_type, False))
-        
-        # If a custom callback was provided, call it with the result
-        if callback is not None:
-            try:
-                if isinstance(result, tuple) and len(result) >= 2:
-                    # API calls typically return (success_bool, data) tuple
-                    callback(result[0], result[1])
-                else:
-                    # For other results, pass through the success flag and result
-                    callback(success, result)
-                # If callback was executed, we're done - don't process further
-                return
-            except Exception as e:
-                print(f"Error executing callback for {operation_type}: {str(e)}")
-        
-        # For non-health check operations, detect connection failures and trigger immediate health check
-        if operation_type != "health" and not success:
-            # Check if this is a connection failure
-            if isinstance(result, str) and any(msg in result.lower() for msg in ["connection", "timeout", "failed"]):
-                # This looks like a connection failure - trigger immediate health check
-                print(f"Detected possible connection failure: {result}")
-                # Use a very short delay to avoid race conditions but still be responsive
-                QTimer.singleShot(100, lambda: self._check_api_health(force=True))
-        
-        # Process result based on operation type
-        try:
-            if operation_type == "blacklist":
-                if success:
-                    # The result contains a tuple of (success, data)
-                    api_success, api_data = result
-                    
-                    # Log the raw API response for debugging
-                    print(f"Blacklist API response - success: {api_success}, data: {api_data}")
-                    
-                    if api_success:
-                        # Only update the cache if we got a valid response
-                        if api_data is not None:
-                            # Create a new set for blacklisted plates
-                            new_blacklist = set()
-                            
-                            for vehicle in api_data:
-                                if vehicle.get('is_blacklisted', False):
-                                    plate = vehicle.get('plate_id', '').upper()
-                                    new_blacklist.add(plate)
-                                    print(f"Adding blacklisted plate: {plate}")
-                            
-                            # Before updating the blacklist, log the change
-                            old_count = len(self.blacklisted_plates)
-                            new_count = len(new_blacklist)
-                            print(f"Updating blacklist: old count={old_count}, new count={new_count}")
-                            
-                            # Only replace the cache if we have a confirmed response (empty array or with data)
-                            if new_count > 0 or api_data == []:
-                                # Replace the cache atomically
-                                self.blacklisted_plates = new_blacklist
-                                self.last_blacklist_update = time.time()
-                                print(f"Blacklist updated: {len(self.blacklisted_plates)} vehicles")
-                            else:
-                                print("Ignoring empty blacklist response - keeping current blacklist")
-                        else:
-                            print("Received None for blacklist data - keeping current blacklist")
-                    else:
-                        print(f"Failed to update blacklist: {api_data}")
-                else:
-                    print(f"Failed to execute blacklist API call: {result}")
-            
-            elif operation_type == "logs":
-                if success:
-                    # The result contains a tuple of (success, data)
-                    api_success, api_data = result
-                    
-                    if api_success:
-                        # Clear existing log entries
-                        self._clear_log_table()
-                        
-                        # Add log entries to the log area if there are any
-                        if api_data:
-                            for log_entry in api_data:
-                                self._add_log_entry(log_entry)
-                        else:
-                            print("No log data available")
-                    else:
-                        print(f"Failed to fetch logs: {api_data}")
-                else:
-                    print(f"Failed to execute logs API call: {result}")
-            
-            elif operation_type == "occupancy":
-                if success:
-                    # The result contains a tuple of (success, data)
-                    api_success, api_data = result
-                    
-                    if api_success and api_data:
-                        self._process_occupancy_data(api_data)
-                    else:
-                        self.occupancy_label.setText("Occupancy data unavailable")
-                        self.occupancy_label.setStyleSheet("""
-                            font-size: 24px;
-                            font-weight: bold;
-                            color: white;
-                            background-color: #7f8c8d;
-                            padding: 10px;
-                            border-radius: 4px;
-                            margin: 10px 0;
-                        """)
-                else:
-                    print(f"Failed to execute occupancy API call: {result}")
-        
-        except Exception as e:
-            print(f"Error processing {operation_type} result: {str(e)}")
-        
-        # Clean up worker reference - do this in a safe way
-        try:
-            if hasattr(self, '_api_workers') and operation_id in self._api_workers:
-                worker = self._api_workers[operation_id]
-                # Only remove if it's no longer running
-                if not worker.isRunning():
-                    del self._api_workers[operation_id]
-        except Exception as e:
-            print(f"Error cleaning up thread reference: {str(e)}")
+            if callback:
+                callback(False, str(e))
 
     def _show_loading_indicator(self, operation_type, is_loading):
         """Show or hide loading indicator for specific operation"""
@@ -2375,10 +2108,7 @@ class ControlScreen(QWidget):
         self._attempt_token_refresh((3.0, 5.0), after_refresh)
 
     def _perform_health_check(self):
-        """
-        Simplified health check that uses the circuit breaker.
-        No more complex consecutive failure tracking - the circuit breaker handles it.
-        """
+        """Simplified health check that uses the circuit breaker."""
         try:
             # Simply call the health check - circuit breaker manages the rest
             is_healthy = self.api_client.health_check()
@@ -2395,13 +2125,7 @@ class ControlScreen(QWidget):
             print(f"Health check error: {str(e)}")
 
     def _handle_connection_state_change(self, is_online):
-        """
-        Handle connection state changes from the circuit breaker.
-        This replaces the old _update_api_status method.
-        
-        Args:
-            is_online (bool): True if online, False if offline
-        """
+        """Handle connection state changes from the circuit breaker."""
         try:
             if is_online:
                 self.api_status_indicator.setStyleSheet("background-color: green; border-radius: 7px;")

@@ -27,7 +27,7 @@ class SyncWorker(QThread):
         super().__init__()
         self.sync_service = sync_service
         self.db_manager = DBManager()
-        self.mutex = threading.Lock()
+        self.mutex = QMutex()  # Use QMutex instead of threading.Lock()
         self._running = True
         self._paused = False
         self._current_operation = None

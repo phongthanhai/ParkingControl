@@ -211,6 +211,9 @@ class ControlScreen(QWidget):
         self.last_blacklist_update = 0
         self.blacklist_cache_duration = 300  # 5 minutes
         
+        # FIXED: Initialize local blacklist logs for UI display
+        self.local_blacklist_logs = []
+        
         # Initialize database manager
         self.db_manager = DBManager()
         
@@ -1528,8 +1531,8 @@ class ControlScreen(QWidget):
         
         def handle_result(success, result, context):
             if success and isinstance(result, list):
-                # Clear existing logs and add new ones
-                self.log_table.setRowCount(0)
+                # FIXED: Clear existing logs and add new ones using the new UI structure
+                self._clear_log_table()
                 for log_entry in result:
                     self._add_log_entry(log_entry)
             else:
@@ -1747,7 +1750,7 @@ class ControlScreen(QWidget):
         # Fetch filtered logs
         success, response = self.api_client.get('services/logs/', params=params)
         
-        # Clear existing log entries
+        # FIXED: Clear existing log entries using new UI structure
         self._clear_log_table()
         
         # Add filtered log entries
@@ -1755,14 +1758,15 @@ class ControlScreen(QWidget):
             for log_entry in response:
                 self._add_log_entry(log_entry)
         
-        # Add blacklist entries (filtered as needed)
-        for blacklist_entry in self.local_blacklist_logs:
-            # Apply the same filters to local blacklist entries
-            if lane_filter != "all" and blacklist_entry.get("lane") != lane_filter:
-                continue
-            if type_filter != "all" and blacklist_entry.get("type") != type_filter:
-                continue
-            self._add_log_entry(blacklist_entry)
+        # Add blacklist entries (filtered as needed) - FIXED: Check if attribute exists
+        if hasattr(self, 'local_blacklist_logs'):
+            for blacklist_entry in self.local_blacklist_logs:
+                # Apply the same filters to local blacklist entries
+                if lane_filter != "all" and blacklist_entry.get("lane") != lane_filter:
+                    continue
+                if type_filter != "all" and blacklist_entry.get("type") != type_filter:
+                    continue
+                self._add_log_entry(blacklist_entry)
         
         # Show applied filters
         filter_msg = "Filters applied: "
@@ -1814,9 +1818,9 @@ class ControlScreen(QWidget):
             else:
                 print(f"Failed to update blacklist: {result}")
         
-        # Simple async call
+        # Simple async call - FIXED: Use correct endpoint
         self.api_client.get_async(
-            'services/blacklist',
+            'vehicles/blacklisted/',
             callback=handle_result,
             context="blacklist"
         )
